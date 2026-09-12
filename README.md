@@ -9,7 +9,7 @@ mvn -q test-compile
 java -ea -cp "target/classes;target/test-classes" com.bidarena.AuctionEngineTest
 ```
 
-实现路线和复用边界见 [REUSE_MAP.md](REUSE_MAP.md)。校园跑腿项目仅作为认证、钱包、流水、Worker 和工程实践参考，不复制其订单业务语义。
+实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)。校园跑腿项目仅作为认证、钱包、流水、Worker 和工程实践参考，不复制其订单业务语义。
 
 ## 开发环境
 
@@ -32,11 +32,12 @@ npm run dev
 ## 设计与联调
 
 - 总体架构、一致性、资金和恢复策略见 [DESIGN.md](DESIGN.md)。
-- HTTP、WebSocket、错误码、联调顺序和验收步骤见 [FRONTEND_BACKEND_INTEGRATION.md](FRONTEND_BACKEND_INTEGRATION.md)。
+- HTTP 契约见 [docs/openapi.yaml](docs/openapi.yaml)。
+- WebSocket 事件与 `seq` 恢复见 [docs/REALTIME_AND_COMMAND_FLOW.md](docs/REALTIME_AND_COMMAND_FLOW.md)。
 - 领域边界与不变量见 [docs/DOMAIN_DESIGN.md](docs/DOMAIN_DESIGN.md)。
 - 资金冻结、锁顺序与幂等见 [docs/FUNDING_AND_CONCURRENCY.md](docs/FUNDING_AND_CONCURRENCY.md)。
-- 队列、命令流和实时事件见 [docs/REALTIME_AND_COMMAND_FLOW.md](docs/REALTIME_AND_COMMAND_FLOW.md)。
-- 机器可读 API 契约见 [docs/openapi.yaml](docs/openapi.yaml)。
+- 页面与交互原型见 [docs/PRODUCT_PROTOTYPE.md](docs/PRODUCT_PROTOTYPE.md)。
+- 提交与交付规范见 [CONTRIBUTING.md](CONTRIBUTING.md)，验收追溯见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
 
 文档明确区分目标架构与当前实现状态；不要把 Mock 前端或内存领域引擎当作生产资金系统。
 
