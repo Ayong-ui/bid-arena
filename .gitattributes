@@ -1,0 +1,16 @@
+# 统一换行，避免跨平台产生虚假 diff
+* text=auto eol=lf
+
+# Windows 脚本保留 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件不参与文本转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.jar binary
+*.woff binary
+*.woff2 binary
