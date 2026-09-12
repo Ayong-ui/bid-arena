@@ -124,7 +124,7 @@
 - ✅ 补 `GET /agent/auctions/{auctionId}/result`（Agent 可读结果）。
 - ✅ 补 `POST /admin/agent-tokens/{tokenId}/revoke`（吊销生效）。
 - ✅ ledger 归属：保留独立 `GET /wallets/me/ledger`；`/wallets/me` 只返回余额，冲突随联调文档删除而消除。
-- ✅ Agent 路径补充独立 server（`:8081`）；`CreateAgentTokenRequest` 补 `agentUserId`；新增 `AuctionResult` schema。
+- ✅ Agent 路径补充独立 server（`:8090`）；`CreateAgentTokenRequest` 补 `agentUserId`；新增 `AuctionResult` schema。
 - ⏳ `SETTLING` 在前端类型中的体现：待 P4 由 openapi 生成前端类型时解决。
 
 ## 7. 文档更新时机

@@ -13,7 +13,7 @@
 | P2 | HTTP API + 鉴权 + RBAC + 统一响应 | ⬜ | 依赖 P1 与 openapi 修正 |
 | P3 | WebSocket + seq/快照恢复 | ⬜ | 事件契约见 `docs/REALTIME_AND_COMMAND_FLOW.md` |
 | P4 | 前端接入真实 HTTP/WS，替换 Mock | ⬜ | 需先生成前端类型 |
-| P5 | Agent API（:8081）+ 模拟脚本 + Compose/E2E | ⬜ | — |
+| P5 | Agent API（:8090）+ 模拟脚本 + Compose/E2E | ⬜ | — |
 | P6 | 交付收尾：README 边界、录屏、测试证据 | ⬜ | — |
 
 ## 2. 必交文档状态

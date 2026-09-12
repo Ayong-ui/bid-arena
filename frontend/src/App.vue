@@ -392,7 +392,7 @@ onUnmounted(() => window.clearInterval(timer));
         <div class="page-heading"><div><p class="kicker">AUTOMATION WORKBENCH</p><h1>竞拍 Agent</h1><p class="muted">配置受限 Agent，观察授权拍卖并提交自动出价。</p></div><span class="status-pill running"><i />{{ agentEnabled ? "运行中" : "已暂停" }}</span></div>
         <div class="detail-grid">
           <article class="form-panel"><div class="panel-heading"><h3>Agent 配置</h3><span>Mock Token</span></div>
-            <div class="summary-row"><span>服务端点</span><b>http://localhost:8081</b></div>
+            <div class="summary-row"><span>服务端点</span><b>http://localhost:8090</b></div>
             <div class="summary-row"><span>Token</span><b>ag_••••••••9f2a</b></div>
             <label>授权拍卖<select><option>Leica M6 经典胶片相机（a1）</option><option>Mid-century 胡桃木边柜（a2）</option></select></label>
             <label>出价策略<select v-model="agentStrategy"><option>狙击加价</option><option>固定上限</option><option>人工确认</option></select></label>

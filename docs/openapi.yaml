@@ -197,7 +197,7 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
   /agent/auctions/{auctionId}:
     servers:
-      - url: http://localhost:8081/api/v1
+      - url: http://localhost:8090/api/v1
     get:
       tags: [Agent]
       security: [{agentToken: []}]
@@ -209,7 +209,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
   /agent/auctions/{auctionId}/bids:
     servers:
-      - url: http://localhost:8081/api/v1
+      - url: http://localhost:8090/api/v1
     post:
       tags: [Agent]
       security: [{agentToken: []}]
@@ -228,7 +228,7 @@ paths:
         '429': {$ref: '#/components/responses/RateLimited'}
   /agent/auctions/{auctionId}/result:
     servers:
-      - url: http://localhost:8081/api/v1
+      - url: http://localhost:8090/api/v1
     get:
       tags: [Agent]
       security: [{agentToken: []}]
