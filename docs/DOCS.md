@@ -34,7 +34,7 @@
 | 文件 | 权威范围 | 状态 |
 |---|---|---|
 | `DESIGN.md` | 架构边界、出价事务与结算方案、并发与失败恢复（原文必交） | ✅ 保留 |
-| `DECISIONS.md` | 技术选型与取舍：背景、候选、选择、代价、验证（原文必交） | ➕ 待创建 |
+| `DECISIONS.md` | 技术选型与取舍：背景、候选、选择、代价、验证（原文必交） | ✅ 已写 D-1~D-9（验证结果随实现补全） |
 | `docs/DOMAIN_DESIGN.md` | 领域边界、聚合、不变量、两个一致性边界 | ✅ 已重写 |
 | `docs/FUNDING_AND_CONCURRENCY.md` | 差额冻结、锁顺序、幂等、结算/取消的失败分支 | ✅ 已重写 |
 | `docs/PRODUCT_PROTOTYPE.md` | 页面地图、组件、交互原型 | ✅ 已创建 |
@@ -114,7 +114,7 @@
 |---|---|---|---|
 | `全栈评测-拍卖间-业务理解与产品原型分析.md` | 重写为 `docs/PRODUCT_PROTOTYPE.md` | ✅ 已删除原文 | 大量复述原文规则，仅页面/组件原型部分不可替代 |
 | `FRONTEND_BACKEND_INTEGRATION.md` | 拆解后删除 | ✅ 已删除 | 接口→`openapi.yaml`，事件→`REALTIME`，步骤→`CONTRIBUTING`/`README` |
-| `REUSE_MAP.md` | 删除 | ✅ 已删除（待并入 `DECISIONS.md` 的“未采用方案”） | 所述“跑腿项目”不存在 |
+| `REUSE_MAP.md` | 删除 | ✅ 已删除（已并入 `DECISIONS.md` 的“未采用方案汇总”） | 所述“跑腿项目”不存在 |
 | `docs/DOMAIN_DESIGN.md` | 删去数值与状态机复述 | ✅ 已重写 | 保留边界、聚合、不变量 |
 | `docs/FUNDING_AND_CONCURRENCY.md` | 聚焦差额冻结/锁顺序/幂等 | ✅ 已重写 | 删除对原文规则的转述 |
 | `docs/openapi.yaml` | 补缺口 | ✅ 已修正 | 见下方清单 |

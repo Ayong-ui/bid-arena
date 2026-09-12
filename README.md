@@ -29,14 +29,16 @@ npm run dev
 - 前端开发地址：`http://localhost:5173`
 - 健康检查：`GET http://localhost:8080/api/v1/health`
 
-## 设计与联调
+## 设计与决策
 
-- 总体架构、一致性、资金和恢复策略见 [DESIGN.md](DESIGN.md)。
+- 业务全景（角色、主链路、四条不变式）、分层与一致性方案见 [DESIGN.md](DESIGN.md)。
+- 技术选型与取舍（背景、候选、代价、验证结果）见 [DECISIONS.md](DECISIONS.md)。
 - HTTP 契约见 [docs/openapi.yaml](docs/openapi.yaml)。
 - WebSocket 事件与 `seq` 恢复见 [docs/REALTIME_AND_COMMAND_FLOW.md](docs/REALTIME_AND_COMMAND_FLOW.md)。
 - 领域边界与不变量见 [docs/DOMAIN_DESIGN.md](docs/DOMAIN_DESIGN.md)。
 - 资金冻结、锁顺序与幂等见 [docs/FUNDING_AND_CONCURRENCY.md](docs/FUNDING_AND_CONCURRENCY.md)。
 - 页面与交互原型见 [docs/PRODUCT_PROTOTYPE.md](docs/PRODUCT_PROTOTYPE.md)。
+- 进度看板见 [docs/STATUS.md](docs/STATUS.md)，文档地图与权威边界见 [docs/DOCS.md](docs/DOCS.md)。
 - 提交与交付规范见 [CONTRIBUTING.md](CONTRIBUTING.md)，验收追溯见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
 
 文档明确区分目标架构与当前实现状态；不要把 Mock 前端或内存领域引擎当作生产资金系统。
@@ -61,4 +63,4 @@ npm run dev
 - `周航`：另一位竞拍者，作为已有竞价数据展示。
 - `管理员`：可创建、开始和取消本地拍卖。
 
-建议验证路径：管理员创建并开始草稿拍卖 → 切换为林默 → 加入并出价 → 查看钱包冻结积分 → 在拍卖详情中等待倒计时结束 → 查看最终结果。MVP 的数据只保存在当前页面内，刷新后会恢复初始演示数据；真实 HTTP、MySQL 和 WebSocket 接入按 `DESIGN.md` 与联调文档后续替换 Mock 层。
+建议验证路径：管理员创建并开始草稿拍卖 → 切换为林默 → 加入并出价 → 查看钱包冻结积分 → 在拍卖详情中等待倒计时结束 → 查看最终结果。MVP 的数据只保存在当前页面内，刷新后会恢复初始演示数据；真实 HTTP、MySQL 和 WebSocket 接入按 `DESIGN.md` 与 `docs/openapi.yaml` 后续替换 Mock 层（见 `docs/STATUS.md` 的 P4）。
