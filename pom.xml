@@ -17,6 +17,7 @@
     <jjwt.version>0.13.0</jjwt.version>
     <junit.version>5.14.4</junit.version>
     <testcontainers.version>1.21.4</testcontainers.version>
+    <archunit.version>1.5.0</archunit.version>
   </properties>
 
   <dependencies>
@@ -126,6 +127,13 @@
       <groupId>org.testcontainers</groupId>
       <artifactId>junit-jupiter</artifactId>
       <version>${testcontainers.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- 架构规则可测试化：守卫上下文边界与依赖方向（见 DESIGN.md §2.4） -->
+    <dependency>
+      <groupId>com.tngtech.archunit</groupId>
+      <artifactId>archunit-junit5</artifactId>
+      <version>${archunit.version}</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
