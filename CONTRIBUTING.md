@@ -134,12 +134,12 @@ mvn -q test-compile         # 后端可编译
 | 仓库地址 | GitHub / Gitee，含完整提交历史 | <https://github.com/Ayong-ui/bid-arena> | ✅ |
 | 演示录屏 | 3~5 分钟：真人加入、脚本并发、Agent 出价、最后五秒延时、结算与资金结果 | 随提交邮件 | ⬜ |
 | 线上地址 | 加分项，非必须 | — | ⬜ |
-| `.env.example` | 不包含真实密钥 | 仓库根目录 | 🟨 |
+| `.env.example` | 不包含真实密钥 | 仓库根目录 | ✅ |
 | Compose | 一键启动 MySQL（推荐含前后端） | `docker-compose.yml` | 🟨 |
-| 迁移 + 种子 | 自动执行，不手工建表/插账号 | `db/migration/` | 🟨 |
+| 迁移 + 种子 | 自动执行，不手工建表/插账号 | `db/migration/` | ✅ 空库执行实测 |
 | 一键测试命令 | 可复制执行 | `README.md` | ⬜ |
 | 模拟脚本 | 支持多机器人参数与随机种子 | `scripts/` | ⬜ |
-| 必交文档 | `DESIGN.md` / `DECISIONS.md` / `AI_USAGE.md` / `DEBUG_LOG.md` / `AGENT_TOOL_SPEC.md` | 仓库根目录 | ⬜ |
+| 必交文档 | `DESIGN.md` / `DECISIONS.md` / `AI_USAGE.md` / `DEBUG_LOG.md` / `AGENT_TOOL_SPEC.md` | 仓库根目录 | 🟨（`DEBUG_LOG.md` 已完成） |
 | OpenAPI | 覆盖原文要求的全部能力 | `docs/openapi.yaml` | 🟨 |
 | README | 快速启动完整路径 + 演示账号 + 未完成边界 | `README.md` | 🟨 |
 

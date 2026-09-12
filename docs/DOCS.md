@@ -27,7 +27,7 @@
 |---|---|---|
 | `docs/openapi.yaml` | HTTP 路径、请求/响应字段、错误码、HTTP 状态码 | ✅ 已修正（见 §6） |
 | `docs/REALTIME_AND_COMMAND_FLOW.md` | WebSocket 事件类型、`seq` 语义、快照恢复、命令流顺序 | ✅ 已重写 |
-| `db/migration/*.sql` | 数据库表、列、约束、索引 | 🔁 待演进（V2 缺表） |
+| `db/migration/*.sql` | 数据库表、列、约束、索引 | ✅ V1+V2 已在空库执行验证（后续只追加新版本） |
 
 ### 第 2 层｜设计与决策（只写 why / how，不复述规则）
 

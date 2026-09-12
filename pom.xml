@@ -139,6 +139,23 @@
   </dependencies>
 
   <build>
+    <!--
+      迁移脚本放在仓库根目录 db/migration（评审与文档直接可见），
+      同时通过 resources 打进 classpath，使 Flyway 以 classpath:db/migration 读取。
+      不能用 filesystem: 相对路径：打成 jar / 进容器后该路径不存在。
+      声明了 <resources> 就会覆盖 Maven 默认值，所以 src/main/resources 必须显式列出。
+    -->
+    <resources>
+      <resource>
+        <directory>db/migration</directory>
+        <targetPath>db/migration</targetPath>
+        <filtering>false</filtering>
+      </resource>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>false</filtering>
+      </resource>
+    </resources>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

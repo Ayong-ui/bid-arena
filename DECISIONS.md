@@ -42,7 +42,13 @@
 
 **验证结果**：
 - ✅ 已实测：`docker compose config` 通过，输出中不再包含 migration 挂载，MySQL 发布端口为 `3307`。
-- ⏳ 待 P1：`V2` 迁移在已有数据的库上执行成功（这是本条决策的**关键验证点**，也是 A 方案被否决的原因）。
+- ✅ 已实测（P1）：`V1` + `V2` 在**全新空库**上由应用启动自动执行成功，`flyway_schema_history` 两条记录 `success = 1`；中文种子数据往返校验通过（`title = '演示拍品 · 复古机械键盘'` 返回 1）。
+- ✅ 已实测（故障路径）：`V2` 首次因语法错误失败时，Flyway 留下 `success = 0` 记录且 schema 处于半应用状态。处理方式为**整库重建**而非 `flyway repair` 或手工补列，理由与过程见 `DEBUG_LOG.md` DBG-1。
+
+**执行细节**（工程约定，不改变本条决策）：
+- 脚本保留在仓库根目录 `db/migration/`（评审直接可见），通过 `pom.xml` 的 `<resources>` + `targetPath` 映射为 `classpath:db/migration`。不能用 `filesystem:` 相对路径，打成 jar 或进容器后该路径不存在。
+- Flyway 脚本编码显式固定为 UTF-8，不依赖平台默认字符集（教训见 `DEBUG_LOG.md` DBG-1）。
+- 陷阱：Maven 增量资源拷贝可能不刷新 `target/classes` 下的脚本副本（见 `DEBUG_LOG.md` DBG-2），因此一键测试命令统一使用 `mvn clean verify`。
 
 ---
 
@@ -177,12 +183,16 @@
 | Agent API | `8090` |
 | MySQL（宿主机映射） | `3307` |
 | 前端开发服务器 | `5173` |
+| WebSocket | `18080`（默认值，可配 `server.websocket.port`） |
 
-**代价**：与常见默认端口不同，所有文档与前端配置必须一致。
+**代价**：与常见默认端口不同，所有文档与前端配置必须一致；WebSocket 目前是**独立监听端口**而不是与 HTTP 复用同一端口。
+
+**背景补充（P1 实测发现）**：`solon-boot-websocket` 启动的是基于 java_websocket 的独立服务器，不共用 smarthttp 的监听端口。未配置时它静默绑定到 `18080`，而当时这份端口规划里没有它——属于**真实存在的端口漂移**。已实测确认该值可被 `server.websocket.port` 覆盖（设 `18081` 后实际绑定 `18081`，`18080` 不再监听），因此不需要换框架，只需在 P2 建 `app.yml` 时把它纳入环境变量驱动并与前端、nginx 保持一致。
 
 **验证结果**：
 - ✅ 已实测：`docs/openapi.yaml`（3 处 Agent server）、`DESIGN.md`、`docs/STATUS.md`、`docs/DOCS.md`、`frontend/src/App.vue`、`docker-compose.yml`、`.env.example` 已全部同步为 8090 / 3307；`docker compose config` 显示 `published: "3307"`。
-- ⏳ 待 P1：实际监听端口实测。
+- ✅ 已实测：后端实际监听 `8080`；`server.websocket.port=18081` 时实际监听 `18081` 且 `18080` 空闲（用 `netstat -ano` 比对监听 PID 与 `jps` 得到的应用 PID 一致，确认不是旧进程残留）。
+- ⏳ 待 P2：把 `SERVER_PORT` / `WS_PORT` 改为 `app.yml` 驱动（当前 `SERVER_PORT` 写在 `.env.example` 里但尚未被应用读取，属于已知不一致）。
 
 ---
 
@@ -200,6 +210,34 @@
 
 ---
 
+## D-10　不变量下沉到数据库约束
+
+**背景**：原文要求 INV-1（可用额非负）与 INV-4（成交唯一）在并发下成立。若只靠应用层的 `if` 判断，任何一条遗漏分支、任何绕过服务的写入（运维 SQL、后续新增的入口、Agent 专用路径）都可能破坏不变量，而且事后无法判断是谁写坏的。
+
+**候选方案**：A. 只在应用层校验；B. **应用层校验 + 数据库约束（CHECK / 外键 / 唯一键）**；C. 只用数据库触发器。
+
+**最终选择**：**B**。
+
+**理由**：两者职责不同，不能相互替代——应用层校验的价值是**给出可读的业务错误**（返回哪一个错误码、怎么告诉用户），数据库约束的价值是**“无论如何都写不进去”**。触发器（C）被否决的理由见未采用方案汇总。
+
+**代价**：约束会拒绝部分看起来合理的写入。例如赢家扣款时如果没有把本场冻结同步归零，`frozen_amount <= total_balance` 会直接报错。这强迫“扣总额”与“解冻”必须落在同一句 `UPDATE` 或同一事务里——正是想要的效果，但要求实现者理解约束语义而不是把报错当成噪声。另外，约束报错是 SQL 异常，必须在服务层翻译成业务错误码，否则会以 500 漏给调用方。
+
+**验证结果**：✅ **已实测**——7 项反向验证全部被数据库拒绝，且验证后数据仍与种子一致：
+
+| 反向验证 | 预期 | 实际 |
+|---|---|---|
+| 冻结额 > 总余额（可用额为负） | 拒绝 | `ERROR 3819 Check constraint 'ck_wallets_available_nonneg' is violated` |
+| 总余额写成负数 | 拒绝 | `ERROR 3819`（同样由可用额约束先拦住） |
+| 给不存在的用户建钱包 | 拒绝 | `ERROR 1452 ... fk_wallets_user FOREIGN KEY` |
+| 非法流水类型（`HACK`） | 拒绝 | `ERROR 3819 ck_ledger_type` |
+| 流水金额为 0 | 拒绝 | `ERROR 3819 ck_ledger_amount_positive` |
+| 同一 `(auction,user,requestId)` 重复插入 | 拒绝 | `ERROR 1062 Duplicate entry ... for key 'bid_requests.PRIMARY'` |
+| 同一拍卖重复成交记录 | 拒绝 | `ERROR 1062 Duplicate entry 'auc_demo_0001' for key 'settlements.PRIMARY'` |
+
+> 注意：INV-2（领先者唯一）与 INV-3（请求幂等）**不能**只靠约束表达，仍需事务内的行锁与条件更新，见 D-4。本条决策只负责把可以静态表达的部分下沉。
+
+---
+
 ## 未采用方案汇总
 
 | 方案 | 未采用原因 | 如果重来会怎样 |
@@ -208,6 +246,8 @@
 | Docker Remote API over TLS | 证书 SAN 与当前 IP 不符；重签需重启 dockerd，影响他人容器 | 维持 SSH 方式 |
 | 复用 VM 已有 mysql8（3306） | 与其它项目共用库，迁移与种子会互相污染 | 独立容器 3307 |
 | `docker-entrypoint-initdb.d` 迁移 | 只在空数据卷首次执行；远程 bind mount 失效 | Flyway（D-2） |
+| 用数据库触发器维护不变量 | 逻辑分散在表上，调试与演练时需要跨层跳跃；触发器内的错误码无法传给业务层；后续改规则要再发一次迁移 | 约束声明不变量的**边界**（D-10），事务过程仍写在服务层（D-4） |
+| 只在应用层校验不变量 | 任何绕过服务的写入（运维 SQL、新入口）都能破坏不变量，事后无法定位 | 下沉到 CHECK / 外键 / 唯一键（D-10） |
 | Maven 多模块 + 独立 worker 进程 | 编译期强制与 ArchUnit 等价；进程分离不增加正确性证据 | 单模块 + 包边界 + ArchUnit（D-6） |
 | 7 个限界上下文 | 多数上下文在本领域不存在；`settlement` 是事务边界而非上下文 | 4 个上下文（`DESIGN.md` §2.1） |
 | Redis 作为事实来源 / 分布式锁 | 引入第二个事实来源，失效时无法自证一致性 | MySQL 唯一约束 + 行锁（D-4） |

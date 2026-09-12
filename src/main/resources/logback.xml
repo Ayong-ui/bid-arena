@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  日志配置。
+
+  两个刻意的选择：
+    1. 不使用 ANSI 颜色。默认的彩色输出会在重定向到文件后留下转义序列，
+       导致日志无法直接 grep，而日志是本题要求的证据类型之一。
+    2. 显式声明 UTF-8。日志里有中文（业务错误、迁移说明），
+       不能依赖平台默认字符集。
+  Windows 控制台默认代码页为 GBK，看到中文乱码时执行 `chcp 65001` 即可，
+  这不影响写入文件的字节。
+-->
+<configuration>
+
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{40} - %msg%n</pattern>
+      <charset>UTF-8</charset>
+    </encoder>
+  </appender>
+
+  <!-- 保证即使控制台未重定向，日志也会留档一份，便于事后对账与排查 -->
+  <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>logs/bid-arena.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+      <fileNamePattern>logs/bid-arena.%d{yyyy-MM-dd}.log</fileNamePattern>
+      <maxHistory>14</maxHistory>
+    </rollingPolicy>
+    <encoder>
+      <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{40} - %msg%n</pattern>
+      <charset>UTF-8</charset>
+    </encoder>
+  </appender>
+
+  <!-- 连接池与迁移的 DEBUG 信息量很大，压到 INFO；出问题时临时调低即可 -->
+  <logger name="com.zaxxer.hikari" level="INFO"/>
+  <logger name="org.flywaydb" level="INFO"/>
+
+  <root level="INFO">
+    <appender-ref ref="CONSOLE"/>
+    <appender-ref ref="FILE"/>
+  </root>
+
+</configuration>
