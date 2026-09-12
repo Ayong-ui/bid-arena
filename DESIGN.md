@@ -75,6 +75,73 @@ Vue 3 + Pinia  ──HTTP/JSON──>  Solon API  ──事务/行锁──> MyS
 - **MySQL**：用户、钱包、流水、拍卖、参与者、出价、幂等请求、成交和 Agent Token 的权威数据。
 - **WebSocket**：只做提交后通知，广播失败不回滚已提交事务；客户端可用快照恢复。
 
+### 2.1 限界上下文
+
+按**业务概念**划分，不按数据表划分。本项目只需要 **4 个上下文**，每个都对应一条真实的业务边界：
+
+| 上下文 | 拥有的概念 | 对外提供的用例 |
+|---|---|---|
+| `identity` | 用户、角色、密码哈希、状态、会话令牌 | 登录、查询当前用户、管理员 RBAC |
+| `wallet` | 钱包、冻结金额、资金流水 | 冻结、释放、扣款、查询余额与流水 |
+| `auction` | 拍卖、参与者、出价、`seq`、成交结果 | 创建 / 开始 / 取消、加入、出价、结算、查询 |
+| `agentaccess` | Agent Token 摘要、范围、权限、过期、吊销、限流 | 签发、吊销、校验 Agent 请求 |
+
+**刻意不拆成 7 个上下文**：参考方案中的 errand 等上下文来自另一个领域，此处不存在；`settlement` 也不是独立上下文——它与出价共享“拍卖生命周期”这一概念，只是**事务边界**不同（见 §3）。把事务边界误当成上下文边界，会凭空制造跨上下文事务，违背本项目的取舍原则。
+
+两个一致性边界落在上下文之间：
+
+- **出价事务** = `auction` 决策 + `wallet` 资金变动，同一 MySQL 事务。
+- **结算事务** = `auction` 判定赢家 + `wallet` 扣款与释放，同一 MySQL 事务。
+
+### 2.2 四层依赖隔离与端口适配器
+
+每个上下文内部都是同一种四层结构，依赖方向**只能向内**：
+
+```text
+bootstrap/          装配与启动（唯一允许知道所有上下文的地方）
+  adapter/          入站：HTTP / WebSocket / Agent；出站：JDBC / 时钟
+    application/    用例编排、事务边界、端口调用
+      domain/       聚合、值对象、不变量、领域端口（接口）——零外部依赖
+```
+
+| 层 | 允许依赖 | 明确禁止 |
+|---|---|---|
+| `domain` | 仅 JDK | 框架注解、`java.sql`、JSON、任何其它层 |
+| `application` | 本层、`domain` | `adapter`、`bootstrap`、框架 web/JDBC 类型 |
+| `adapter` | 本层、`application`、`domain` | `bootstrap` |
+| `bootstrap` | 全部 | —— |
+
+**端口与适配器**：需要外部能力时，**由使用方在 `domain` 定义接口**（如钱包记账端口、时钟），实现放在基础设施侧，在 `bootstrap` 注入。因此 `domain` 永远不 import JDBC、HTTP 或 Solon。
+
+**充血模型**：状态流转与规则写在聚合内部（如拍卖聚合自己判断能否接受出价、是否触发延时），而不是散落在 Service 的 `if-else` 里。`AuctionEngine` 的规则将迁入 `auction.domain`，去掉 `synchronized` 与内存 Map，由数据库事务提供并发正确性。
+
+### 2.3 包结构
+
+按上下文分包，层在上下文内部：
+
+```text
+com.bidarena
+├── shared/                   共享内核：Money、Id、Clock 接口、领域异常
+├── identity/{domain,application,adapter}
+├── wallet/{domain,application,adapter}
+├── auction/{domain,application,adapter}
+├── agentaccess/{domain,application,adapter}
+└── bootstrap/                装配、配置、Application
+```
+
+跨上下文只允许 `application` 依赖另一个上下文的**端口接口或应用服务**；`adapter` 之间禁止互相引用；跨上下文的具体实现在 `bootstrap` 装配。
+
+### 2.4 依赖规则可测试化
+
+上述约束不靠约定，靠 `ArchUnit` 写成单元测试，`mvn test` 即守卫：
+
+- `domain` 不得依赖 `application` / `adapter` / `bootstrap`，也不得依赖 `org.noear`、`java.sql`、`com.fasterxml.jackson`。
+- `application` 不得依赖 `adapter` / `bootstrap`。
+- 不同上下文的 `domain` 之间不得直接引用。
+- 任意两个包之间不得存在循环依赖。
+
+**仍然是一个可部署单元**：不引入微服务、消息中间件或事件溯源；上下文是代码边界，不是网络边界。
+
 ## 3. 状态机与事务
 
 状态流转：`DRAFT -> RUNNING -> SETTLING -> FINISHED`；`DRAFT/RUNNING -> CANCELLED`。只有 `RUNNING` 且服务端接收时间严格早于 `ends_at` 才能出价。
