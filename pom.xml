@@ -1,11 +1,155 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-  <groupId>com.bidarena</groupId><artifactId>bid-arena-core</artifactId><version>0.1.0-SNAPSHOT</version>
-  <properties><maven.compiler.release>17</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding><solon.version>3.0.1</solon.version></properties>
+  <groupId>com.bidarena</groupId>
+  <artifactId>bid-arena-core</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+
+  <properties>
+    <maven.compiler.release>17</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <solon.version>3.0.1</solon.version>
+    <hikari.version>6.3.3</hikari.version>
+    <mysql.version>9.7.0</mysql.version>
+    <flyway.version>13.6.0</flyway.version>
+    <jjwt.version>0.13.0</jjwt.version>
+    <junit.version>5.14.4</junit.version>
+    <testcontainers.version>1.21.4</testcontainers.version>
+  </properties>
+
   <dependencies>
-    <dependency><groupId>org.noear</groupId><artifactId>solon</artifactId><version>${solon.version}</version></dependency>
-    <dependency><groupId>org.noear</groupId><artifactId>solon-test</artifactId><version>${solon.version}</version><scope>test</scope></dependency>
+    <!-- 运行时容器：HTTP 服务器 + MVC + WebSocket -->
+    <dependency>
+      <groupId>org.noear</groupId>
+      <artifactId>solon-boot-smarthttp</artifactId>
+      <version>${solon.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.noear</groupId>
+      <artifactId>solon-web</artifactId>
+      <version>${solon.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.noear</groupId>
+      <artifactId>solon-boot-websocket</artifactId>
+      <version>${solon.version}</version>
+    </dependency>
+
+    <!-- 配置 / 序列化 / 日志 -->
+    <dependency>
+      <groupId>org.noear</groupId>
+      <artifactId>solon-serialization-jackson</artifactId>
+      <version>${solon.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.noear</groupId>
+      <artifactId>solon-logging-logback</artifactId>
+      <version>${solon.version}</version>
+    </dependency>
+
+    <!-- 数据访问：Solon JDBC + 连接池 + MySQL 驱动 -->
+    <dependency>
+      <groupId>org.noear</groupId>
+      <artifactId>solon-data</artifactId>
+      <version>${solon.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.zaxxer</groupId>
+      <artifactId>HikariCP</artifactId>
+      <version>${hikari.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.mysql</groupId>
+      <artifactId>mysql-connector-j</artifactId>
+      <version>${mysql.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- 数据库迁移（应用内自动迁移，见 DECISIONS D-2/D-6） -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+      <version>${flyway.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-mysql</artifactId>
+      <version>${flyway.version}</version>
+    </dependency>
+
+    <!-- 鉴权：JWT + BCrypt -->
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-api</artifactId>
+      <version>${jjwt.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-impl</artifactId>
+      <version>${jjwt.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-jackson</artifactId>
+      <version>${jjwt.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mindrot</groupId>
+      <artifactId>jbcrypt</artifactId>
+      <version>0.4</version>
+    </dependency>
+
+    <!-- 测试 -->
+    <dependency>
+      <groupId>org.noear</groupId>
+      <artifactId>solon-test</artifactId>
+      <version>${solon.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>mysql</artifactId>
+      <version>${testcontainers.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${testcontainers.version}</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
-  <build><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.13.0</version></plugin><plugin><groupId>org.codehaus.mojo</groupId><artifactId>exec-maven-plugin</artifactId><version>3.3.0</version></plugin></plugins></build>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.5.2</version>
+      </plugin>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.3.0</version>
+        <configuration>
+          <mainClass>com.bidarena.Application</mainClass>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
 </project>
