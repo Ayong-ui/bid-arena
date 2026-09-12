@@ -1,0 +1,337 @@
+openapi: 3.0.3
+info:
+  title: Bid Arena API
+  version: 0.1.0
+  description: |
+    拍卖间 HTTP 契约。金额为整数积分，ID 使用字符串，服务端是唯一裁判。
+servers:
+  - url: http://localhost:8080/api/v1
+tags:
+  - name: Auth
+  - name: Auctions
+  - name: Bids
+  - name: Wallet
+  - name: Admin
+  - name: Agent
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LoginRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAuth'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /auth/ws-tickets:
+    post:
+      tags: [Auth]
+      security: [{bearerAuth: []}]
+      operationId: createWebSocketTicket
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeWsTicket'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /users/me:
+    get:
+      tags: [Auth]
+      security: [{bearerAuth: []}]
+      operationId: currentUser
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeUser'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /wallets/me:
+    get:
+      tags: [Wallet]
+      security: [{bearerAuth: []}]
+      operationId: currentWallet
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeWallet'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /wallets/me/ledger:
+    get:
+      tags: [Wallet]
+      security: [{bearerAuth: []}]
+      operationId: walletLedger
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeLedgerPage'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /auctions:
+    get:
+      tags: [Auctions]
+      security: [{bearerAuth: []}]
+      operationId: listAuctions
+      parameters:
+        - in: query
+          name: status
+          schema: {$ref: '#/components/schemas/AuctionStatus'}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAuctionPage'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /auctions/{auctionId}:
+    get:
+      tags: [Auctions]
+      security: [{bearerAuth: []}]
+      operationId: getAuction
+      parameters: [{$ref: '#/components/parameters/AuctionId'}]
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAuction'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /auctions/{auctionId}/join:
+    post:
+      tags: [Auctions]
+      security: [{bearerAuth: []}]
+      operationId: joinAuction
+      parameters: [{$ref: '#/components/parameters/AuctionId'}]
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeParticipant'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /auctions/{auctionId}/bids:
+    get:
+      tags: [Bids]
+      security: [{bearerAuth: []}]
+      operationId: listBids
+      parameters:
+        - {$ref: '#/components/parameters/AuctionId'}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeBidPage'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      tags: [Bids]
+      security: [{bearerAuth: []}]
+      operationId: placeBid
+      parameters:
+        - {$ref: '#/components/parameters/AuctionId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BidRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeBidResult'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+  /auctions/{auctionId}/result:
+    get:
+      tags: [Auctions]
+      security: [{bearerAuth: []}]
+      operationId: auctionResult
+      parameters: [{$ref: '#/components/parameters/AuctionId'}]
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeResult'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /admin/auctions:
+    post:
+      tags: [Admin]
+      security: [{bearerAuth: []}]
+      operationId: createAuction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateAuctionRequest'}
+      responses:
+        '201': {$ref: '#/components/responses/EnvelopeAuction'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /admin/auctions/{auctionId}/start:
+    post:
+      tags: [Admin]
+      security: [{bearerAuth: []}]
+      operationId: startAuction
+      parameters: [{$ref: '#/components/parameters/AuctionId'}]
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAuction'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /admin/auctions/{auctionId}/cancel:
+    post:
+      tags: [Admin]
+      security: [{bearerAuth: []}]
+      operationId: cancelAuction
+      parameters: [{$ref: '#/components/parameters/AuctionId'}]
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAuction'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /admin/agent-tokens:
+    post:
+      tags: [Admin]
+      security: [{bearerAuth: []}]
+      operationId: createAgentToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateAgentTokenRequest'}
+      responses:
+        '201': {$ref: '#/components/responses/EnvelopeAgentToken'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /agent/auctions/{auctionId}:
+    get:
+      tags: [Agent]
+      security: [{agentToken: []}]
+      operationId: agentAuction
+      parameters: [{$ref: '#/components/parameters/AuctionId'}]
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAuction'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /agent/auctions/{auctionId}/bids:
+    post:
+      tags: [Agent]
+      security: [{agentToken: []}]
+      operationId: agentBid
+      parameters:
+        - {$ref: '#/components/parameters/AuctionId'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/BidRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeBidResult'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+    agentToken: {type: http, scheme: bearer, bearerFormat: AUCTION_AGENT_TOKEN}
+  parameters:
+    AuctionId: {in: path, name: auctionId, required: true, schema: {type: string}}
+    IdempotencyKey: {in: header, name: Idempotency-Key, required: true, schema: {type: string, minLength: 8, maxLength: 128}}
+    Page: {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+    Size: {in: query, name: size, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+  schemas:
+    Envelope:
+      type: object
+      required: [code, message, data, requestId]
+      properties:
+        code: {type: string, example: OK}
+        message: {type: string, example: ok}
+        data: {}
+        requestId: {type: string}
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string, format: password, minLength: 8}
+    AuthData:
+      type: object
+      properties:
+        accessToken: {type: string}
+        expiresAt: {type: string, format: date-time}
+        user: {$ref: '#/components/schemas/User'}
+    User:
+      type: object
+      required: [id, name, role]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        role: {type: string, enum: [BIDDER, ADMIN]}
+    AuctionStatus: {type: string, enum: [DRAFT, RUNNING, SETTLING, FINISHED, CANCELLED]}
+    AuctionSnapshot:
+      type: object
+      required: [id, title, status, startPrice, minIncrement, currentPrice, extensionCount, participantCount, seq, serverTime]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        description: {type: string}
+        status: {$ref: '#/components/schemas/AuctionStatus'}
+        startPrice: {type: integer, minimum: 0}
+        minIncrement: {type: integer, minimum: 1}
+        currentPrice: {type: integer, minimum: 0}
+        leader: {type: string, nullable: true}
+        endsAt: {type: string, format: date-time, nullable: true}
+        extensionCount: {type: integer, minimum: 0}
+        participantCount: {type: integer, minimum: 0}
+        seq: {type: integer, minimum: 0}
+        serverTime: {type: string, format: date-time}
+    BidRequest:
+      type: object
+      required: [requestId, amount]
+      properties:
+        requestId: {type: string, minLength: 8, maxLength: 128}
+        amount: {type: integer, minimum: 1}
+    BidResult:
+      type: object
+      properties:
+        accepted: {type: boolean}
+        idempotent: {type: boolean}
+        price: {type: integer}
+        leader: {type: string, nullable: true}
+        extensions: {type: integer}
+        seq: {type: integer}
+        serverTime: {type: string, format: date-time}
+    CreateAuctionRequest:
+      type: object
+      required: [title, startPrice, minIncrement, durationSeconds]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 120}
+        description: {type: string, maxLength: 2000}
+        startPrice: {type: integer, minimum: 1}
+        minIncrement: {type: integer, minimum: 1}
+        durationSeconds: {type: integer, minimum: 10, maximum: 86400}
+    CreateAgentTokenRequest:
+      type: object
+      required: [name, scopes, expiresAt]
+      properties:
+        name: {type: string, maxLength: 80}
+        auctionIds: {type: array, items: {type: string}}
+        scopes: {type: array, items: {type: string, enum: [auction:read, auction:bid]}}
+        expiresAt: {type: string, format: date-time}
+    Wallet:
+      type: object
+      properties:
+        totalBalance: {type: integer}
+        frozenAmount: {type: integer}
+        availableBalance: {type: integer}
+    LedgerEntry:
+      type: object
+      properties:
+        id: {type: string}
+        type: {type: string, enum: [FREEZE, RELEASE, SETTLE]}
+        amount: {type: integer}
+        auctionId: {type: string, nullable: true}
+        createdAt: {type: string, format: date-time}
+    ErrorData:
+      type: object
+      additionalProperties: true
+    WsTicket: {type: object, properties: {ticket: {type: string}, expiresAt: {type: string, format: date-time}}}
+    Participant: {type: object, properties: {auctionId: {type: string}, userId: {type: string}, joinedAt: {type: string, format: date-time}}}
+    AgentToken: {type: object, properties: {token: {type: string}, tokenId: {type: string}, expiresAt: {type: string, format: date-time}}}
+  responses:
+    EnvelopeAuth: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AuthData'}}}]}}}}
+    EnvelopeWsTicket: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/WsTicket'}}}]}}}}
+    EnvelopeUser: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeWallet: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeLedgerPage: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeAuction: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeAuctionPage: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeBidPage: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeBidResult: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeResult: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeParticipant: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeAgentToken: {description: Created; token is returned once, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    BadRequest: {description: Invalid request, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    Unauthorized: {description: Authentication required, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    Forbidden: {description: Permission denied, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    NotFound: {description: Resource not found, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    Conflict: {description: Business conflict such as BID_TOO_LOW, BID_LATE, NOT_JOINED, INVALID_STATE, or IDEMPOTENCY_REPLAY, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    RateLimited: {description: Rate limited, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}

@@ -1,0 +1,29 @@
+# Java / Maven
+target/
+*.class
+*.jar
+*.war
+*.log
+.mvn/wrapper/maven-wrapper.jar
+
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.local
+
+# Local environment and IDE files
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.iml
+
+# Local runtime data
+data/
+tmp/
+logs/
+
+# Source requirement PDF is intentionally kept out of the public repository.
+*.pdf
