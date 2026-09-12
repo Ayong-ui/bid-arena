@@ -1,6 +1,10 @@
 # Bid Arena（拍卖间）
 
+仓库地址：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开启分支保护）
+
 这是一个公开管理的 Bid Arena 拍卖系统仓库。当前包含可运行的领域核心、Vue Mock 前端、数据库迁移草案和完整的后端设计契约；真实 HTTP、MySQL Repository、鉴权和 WebSocket 正按文档逐步实现。
+
+实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
 ## 运行核心测试
 
@@ -8,8 +12,6 @@
 mvn -q test-compile
 java -ea -cp "target/classes;target/test-classes" com.bidarena.AuctionEngineTest
 ```
-
-实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)。校园跑腿项目仅作为认证、钱包、流水、Worker 和工程实践参考，不复制其订单业务语义。
 
 ## 开发环境
 
