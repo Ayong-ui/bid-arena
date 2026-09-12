@@ -181,7 +181,23 @@ paths:
       responses:
         '201': {$ref: '#/components/responses/EnvelopeAgentToken'}
         '403': {$ref: '#/components/responses/Forbidden'}
+  /admin/agent-tokens/{tokenId}/revoke:
+    post:
+      tags: [Admin]
+      security: [{bearerAuth: []}]
+      operationId: revokeAgentToken
+      parameters:
+        - in: path
+          name: tokenId
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAgentToken'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /agent/auctions/{auctionId}:
+    servers:
+      - url: http://localhost:8081/api/v1
     get:
       tags: [Agent]
       security: [{agentToken: []}]
@@ -192,6 +208,8 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
   /agent/auctions/{auctionId}/bids:
+    servers:
+      - url: http://localhost:8081/api/v1
     post:
       tags: [Agent]
       security: [{agentToken: []}]
@@ -208,6 +226,19 @@ paths:
         '200': {$ref: '#/components/responses/EnvelopeBidResult'}
         '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/RateLimited'}
+  /agent/auctions/{auctionId}/result:
+    servers:
+      - url: http://localhost:8081/api/v1
+    get:
+      tags: [Agent]
+      security: [{agentToken: []}]
+      operationId: agentAuctionResult
+      parameters: [{$ref: '#/components/parameters/AuctionId'}]
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeResult'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
@@ -290,9 +321,10 @@ components:
         durationSeconds: {type: integer, minimum: 10, maximum: 86400}
     CreateAgentTokenRequest:
       type: object
-      required: [name, scopes, expiresAt]
+      required: [name, agentUserId, scopes, expiresAt]
       properties:
         name: {type: string, maxLength: 80}
+        agentUserId: {type: string}
         auctionIds: {type: array, items: {type: string}}
         scopes: {type: array, items: {type: string, enum: [auction:read, auction:bid]}}
         expiresAt: {type: string, format: date-time}
@@ -315,6 +347,16 @@ components:
       additionalProperties: true
     WsTicket: {type: object, properties: {ticket: {type: string}, expiresAt: {type: string, format: date-time}}}
     Participant: {type: object, properties: {auctionId: {type: string}, userId: {type: string}, joinedAt: {type: string, format: date-time}}}
+    AuctionResult:
+      type: object
+      required: [auctionId, status, finalPrice, reason]
+      properties:
+        auctionId: {type: string}
+        status: {$ref: '#/components/schemas/AuctionStatus'}
+        winner: {type: string, nullable: true}
+        finalPrice: {type: integer, minimum: 0}
+        reason: {type: string, enum: [TIMEOUT, NO_BIDS, CANCELLED]}
+        settledAt: {type: string, format: date-time, nullable: true}
     AgentToken: {type: object, properties: {token: {type: string}, tokenId: {type: string}, expiresAt: {type: string, format: date-time}}}
   responses:
     EnvelopeAuth: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AuthData'}}}]}}}}
@@ -326,7 +368,7 @@ components:
     EnvelopeAuctionPage: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
     EnvelopeBidPage: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
     EnvelopeBidResult: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
-    EnvelopeResult: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeResult: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AuctionResult'}}}]}}}}
     EnvelopeParticipant: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
     EnvelopeAgentToken: {description: Created; token is returned once, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
     BadRequest: {description: Invalid request, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
