@@ -1,527 +1,489 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { useAuctionStore, type Auction, type User } from "./store";
-const store = useAuctionStore();
-const view = ref<"auctions" | "wallet" | "admin" | "agent">("auctions");
-const selectedId = ref<string | null>(null);
-const bidAmount = ref<number | null>(null);
-const toast = ref("");
-const loginOpen = ref(false);
-const newTitle = ref("");
-const newDuration = ref(60);
-const agentEnabled = ref(true);
-const agentStrategy = ref("狙击加价");
-const agentBidAmount = ref<number | null>(null);
-const agentLogs = ref([{ time: "刚刚", action: "GET /agent/auctions/a1", result: "200 OK" }]);
-let timer: number | undefined;
-const selected = computed(() =>
-  selectedId.value
-    ? (store.auctions.find((a) => a.id === selectedId.value) ?? null)
-    : null,
-);
-const running = computed(() =>
-  store.auctions.filter((a) => a.status === "RUNNING"),
-);
-const drafts = computed(() =>
-  store.auctions.filter((a) => a.status === "DRAFT"),
-);
-const finished = computed(() =>
-  store.auctions.filter((a) => ["FINISHED", "CANCELLED"].includes(a.status)),
-);
-const nextBid = computed(() =>
-  selected.value
-    ? selected.value.currentPrice + selected.value.minIncrement
-    : 0,
-);
-function notify(x: string) {
-  toast.value = x;
-  window.setTimeout(() => (toast.value = ""), 2400);
+/**
+ * 拍卖间前端。
+ *
+ * 与 Mock 版最大的区别：**界面上每一个数字都来自服务端**。
+ * 价格、钱包、参与人数、剩余时间都来自 HTTP 快照或 WS 事件，
+ * 本地只保留"用户正在输入什么"这类纯输入状态。
+ * 这条边界是刻意的：Mock 版里前端自己算钱和倒计时，一旦和服务端不一致，
+ * 用户看到的就变成了一个不存在的事实。
+ */
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useArenaStore, type LiveAuction } from './store'
+import type { AuctionStatus } from './api/types'
+
+const store = useArenaStore()
+
+const view = ref<'auctions' | 'wallet' | 'admin' | 'agent'>('auctions')
+const loginOpen = ref(false)
+const email = ref('')
+const password = ref('')
+const loginBusy = ref(false)
+const bidAmount = ref<number | null>(null)
+const newTitle = ref('')
+const newDescription = ref('')
+const newStartPrice = ref(100)
+const newMinIncrement = ref(50)
+const newDuration = ref(60)
+let timer: number | undefined
+
+const apiBase = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
+
+onMounted(async () => {
+  await store.restore()
+  timer = window.setInterval(() => store.tick(), 1_000)
+})
+onUnmounted(() => {
+  if (timer) window.clearInterval(timer)
+  store.closeAuction()
+})
+
+const heading = computed(() => {
+  if (view.value === 'wallet') return '我的资金'
+  if (view.value === 'admin') return '运营台'
+  if (view.value === 'agent') return '智能体接入'
+  return store.current ? '竞价详情' : '拍卖大厅'
+})
+const roleLabel = computed(() => (store.currentUser?.role === 'ADMIN' ? '管理员' : '竞拍者'))
+const initial = computed(() => (store.currentUser?.name ?? '?').slice(0, 1).toUpperCase())
+const serverClock = computed(() => new Date(store.serverNow).toLocaleTimeString('zh-CN'))
+const statusLabels: Record<AuctionStatus, string> = {
+  DRAFT: '草稿',
+  RUNNING: '进行中',
+  SETTLING: '结算中',
+  FINISHED: '已结束',
+  CANCELLED: '已取消',
 }
-function money(x: number) {
-  return x.toLocaleString("zh-CN");
+
+function money(value: number | null | undefined): string {
+  return (value ?? 0).toLocaleString('zh-CN')
 }
-function remaining(e: number | null) {
-  if (!e) return "--";
-  const s = Math.max(0, Math.ceil((e - store.now) / 1000));
-  return `${Math.floor(s / 60)
-    .toString()
-    .padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
+
+function statusLabel(status: AuctionStatus): string {
+  return statusLabels[status] ?? status
 }
-function label(s: Auction["status"]) {
-  return {
-    DRAFT: "草稿",
-    RUNNING: "进行中",
-    FINISHED: "已结束",
-    CANCELLED: "已取消",
-  }[s];
+
+function shortId(id: string | null | undefined): string {
+  if (!id) return '—'
+  return id.length > 12 ? `${id.slice(0, 11)}…` : id
 }
-function select(a: Auction) {
-  selectedId.value = a.id;
-  bidAmount.value = a.currentPrice + a.minIncrement;
+
+function displayName(text: string | null): string {
+  if (!text) return '—'
+  return text === store.myAnonId ? '你' : text
 }
-function bid() {
-  if (!selected.value || bidAmount.value == null) return;
-  const r = store.placeBid(selected.value.id, bidAmount.value);
-  notify(r.message);
-  if (r.accepted) bidAmount.value = r.price + selected.value.minIncrement;
+
+function bidderLabel(userId: string): string {
+  if (userId === store.currentUser?.id) return '你'
+  const anon = store.anonOf(userId)
+  return anon ? displayName(anon) : shortId(userId)
 }
-function join() {
-  if (selected.value) notify(store.joinAuction(selected.value.id));
+
+function openLogin(): void {
+  loginOpen.value = true
+  store.clearNotice()
 }
-function create() {
-  if (!newTitle.value.trim()) return notify("请填写拍品名称");
-  const a = store.createAuction(newTitle.value.trim());
-  newTitle.value = "";
-  selectedId.value = a.id;
-  notify("拍卖已创建，点击开始即可开放竞价");
+
+function fillDemo(account: { email: string; password: string }): void {
+  email.value = account.email
+  password.value = account.password
 }
-function switchUser(u: User) {
-  store.login(u);
-  loginOpen.value = false;
-  notify(`已切换为${u.name}`);
+
+async function submitLogin(): Promise<void> {
+  if (!email.value || !password.value) {
+    notify('请填写邮箱和密码')
+    return
+  }
+  loginBusy.value = true
+  const ok = await store.login({ email: email.value.trim(), password: password.value })
+  loginBusy.value = false
+  if (ok) {
+    loginOpen.value = false
+    password.value = ''
+    view.value = 'auctions'
+  }
 }
-function runAgentBid() {
-  if (!agentBidAmount.value) return notify("请填写 Agent 出价");
-  const result = store.placeBid("a1", agentBidAmount.value);
-  agentLogs.value.unshift({ time: "刚刚", action: "POST /agent/auctions/a1/bids", result: result.accepted ? "200 OK" : "409 " + result.message });
-  notify(result.accepted ? "Agent 出价已提交" : result.message);
+
+async function open(auction: LiveAuction | { id: string }): Promise<void> {
+  bidAmount.value = null
+  await store.openAuction(auction.id)
+  if (store.current) bidAmount.value = store.nextBid
 }
-onMounted(() => (timer = window.setInterval(() => store.tick(), 1000)));
-onUnmounted(() => window.clearInterval(timer));
+
+function back(): void {
+  store.closeAuction()
+  bidAmount.value = null
+}
+
+function bump(multiplier: number): void {
+  if (!store.current) return
+  bidAmount.value = store.current.currentPrice + store.current.minIncrement * multiplier
+}
+
+async function submitBid(): Promise<void> {
+  if (bidAmount.value === null) return
+  const ok = await store.placeBid(bidAmount.value)
+  // 出价被拒时金额原地保留：用户想改的数字通常只是差一点点。
+  if (ok && store.current) bidAmount.value = store.nextBid
+}
+
+async function submitCreate(): Promise<void> {
+  if (!newTitle.value.trim()) {
+    notify('请填写拍品名称')
+    return
+  }
+  const ok = await store.createAuction({
+    title: newTitle.value.trim(),
+    description: newDescription.value.trim() || undefined,
+    startPrice: newStartPrice.value,
+    minIncrement: newMinIncrement.value,
+    durationSeconds: newDuration.value,
+  })
+  if (ok) {
+    newTitle.value = ''
+    newDescription.value = ''
+  }
+}
+
+function notify(text: string): void {
+  store.setNotice('error', text)
+}
+
+/** 结算由服务端的到点任务完成，前端不做任何"猜测已结束"。 */
+function settledLabel(code: string): string {
+  return { FREEZE: '冻结', RELEASE: '释放', SETTLE: '成交扣款' }[code] ?? code
+}
 </script>
+
 <template>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
-        <span class="brand-mark">BA</span
-        ><span><b>BID ARENA</b><small>拍卖间 MVP</small></span>
+        <span class="brand-mark">BA</span>
+        <span><b>BID ARENA</b><small>实时拍卖间</small></span>
       </div>
       <nav>
-        <button
-          :class="{ active: view === 'auctions' }"
-          @click="view = 'auctions'"
-        >
-          ◈　拍卖大厅</button
-        ><button
-          :class="{ active: view === 'wallet' }"
-          @click="view = 'wallet'"
-        >
-          ▣　我的钱包</button
-        ><button
-          v-if="store.currentUser.role === 'ADMIN'"
-          :class="{ active: view === 'admin' }"
-          @click="view = 'admin'"
-        >
-          ⚙　管理控制台
-        </button>
-        <button
-          :class="{ active: view === 'agent' }"
-          @click="view = 'agent'"
-        >
-          ◎　竞拍 Agent
-        </button>
+        <button :class="{ active: view === 'auctions' }" @click="view = 'auctions'">🏛 拍卖大厅</button>
+        <button :class="{ active: view === 'wallet' }" @click="view = 'wallet'">◎ 我的资金</button>
+        <button v-if="store.isAdmin" :class="{ active: view === 'admin' }" @click="view = 'admin'">⚙ 运营台</button>
+        <button :class="{ active: view === 'agent' }" @click="view = 'agent'">🐍 智能体接入</button>
       </nav>
       <div class="sidebar-note">
-        <span class="live-dot"></span>本地 Mock 模式<br /><small
-          >数据保存在浏览器中</small
-        >
+        <span :class="['live-dot', store.feedState === 'live' ? '' : 'off']"></span>{{ store.feedLabel }}
+        <br /><small>服务器时间 {{ serverClock }}</small>
+        <br /><small>命令入口：HTTP / Agent，WebSocket 只读</small>
       </div>
     </aside>
+
     <main class="workspace">
       <header class="topbar">
-        <div>
-          <span class="breadcrumb">BID ARENA / </span
-          ><strong>{{
-            view === "auctions"
-              ? "拍卖大厅"
-              : view === "wallet"
-                ? "我的钱包"
-              : view === "agent"
-                ? "竞拍 Agent"
-                : "管理控制台"
-          }}</strong>
-        </div>
+        <div><span class="breadcrumb">拍卖间</span> / <strong>{{ heading }}</strong></div>
         <div class="top-actions">
-          <span class="mock-badge">LOCAL MVP</span
-          ><button class="user-button" @click="loginOpen = true">
-            <span class="avatar">{{ store.currentUser.name[0] }}</span
-            >{{ store.currentUser.name }}⌄
-          </button>
+          <span class="mock-badge">LIVE API · {{ apiBase }}</span>
+          <button v-if="!store.loggedIn" class="outline-button" @click="openLogin">登录</button>
+          <div v-else class="user-button">
+            <span class="avatar">{{ initial }}</span>
+            {{ store.currentUser?.name }} · {{ roleLabel }}
+            <button class="small-button" @click="store.logout()">退出</button>
+          </div>
         </div>
       </header>
-      <section v-if="view === 'auctions'" class="content">
-        <div class="page-heading">
-          <div>
-            <p class="kicker">LIVE MARKETPLACE</p>
-            <h1>发现正在发生的竞价</h1>
-            <p class="muted">实时观察拍卖进度，出价后等待全场结果。</p>
-          </div>
-          <div class="wallet-chip">
-            <span>可用余额</span><b>◎ {{ money(store.wallet.available) }}</b>
-          </div>
-        </div>
-        <div v-if="selected" class="auction-detail">
-          <button class="back-link" @click="selectedId = null">
-            ← 返回拍卖列表
-          </button>
-          <div class="detail-grid">
-            <article class="hero-panel">
-              <div class="hero-top">
-                <span class="status-pill" :class="selected.status.toLowerCase()"
-                  ><i />{{ label(selected.status) }}</span
-                ><span class="seq"
-                  >SEQ {{ selected.seq.toString().padStart(3, "0") }}</span
-                >
-              </div>
-              <h2>{{ selected.title }}</h2>
-              <p class="muted">{{ selected.description }}</p>
-              <div class="hero-price">
-                <span>当前最高价</span
-                ><strong>◎ {{ money(selected.currentPrice) }}</strong>
-                <div class="leader">
-                  领先者
-                  <b>{{
-                    selected.leaderId
-                      ? store.userName(selected.leaderId)
-                      : "暂无出价"
-                  }}</b>
-                </div>
-              </div>
-              <div class="countdown">
-                <span>距离结束</span><b>{{ remaining(selected.endsAt) }}</b
-                ><small>延时 {{ selected.extensionCount }} / 3 次</small>
-              </div>
-            </article>
-            <article class="bid-panel">
-              <div class="panel-label">
-                参与竞价
-                <span
-                  v-if="selected.participants.includes(store.currentUser.id)"
-                  class="joined"
-                  >已加入</span
-                >
-              </div>
-              <button
-                v-if="
-                  !selected.participants.includes(store.currentUser.id) &&
-                  selected.status === 'RUNNING'
-                "
-                class="outline-button full"
-                @click="join"
-              >
-                加入本场拍卖</button
-              ><template v-else
-                ><label>你的出价</label>
-                <div class="bid-input">
-                  <span>◎</span
-                  ><input
-                    v-model.number="bidAmount"
-                    type="number"
-                    :min="nextBid"
-                    :step="selected.minIncrement"
-                  /><span>积分</span>
-                </div>
-                <p class="hint">
-                  最低出价 ◎ {{ money(nextBid) }} · 每次至少加价
-                  {{ selected.minIncrement }}
-                </p>
-                <button
-                  class="primary-button full"
-                  :disabled="selected.status !== 'RUNNING'"
-                  @click="bid"
-                >
-                  提交出价　↗
-                </button></template
-              >
-              <div class="connection">
-                <span class="live-dot" />实时状态已同步
-              </div>
-            </article>
-          </div>
-          <div class="detail-columns">
-            <article class="table-panel">
-              <div class="panel-heading">
-                <h3>出价记录</h3>
-                <span>{{ selected.bids.length }} 次出价</span>
-              </div>
-              <div
-                v-for="item in [...selected.bids].reverse()"
-                :key="item.id"
-                class="bid-row"
-              >
-                <span class="bid-avatar">{{ item.userName[0] }}</span>
-                <div>
-                  <b>{{ item.userName }}</b
-                  ><small>{{ item.time }}</small>
-                </div>
-                <strong>◎ {{ money(item.amount) }}</strong>
-              </div>
-              <div v-if="!selected.bids.length" class="empty">
-                还没有出价，成为第一个竞拍者。
-              </div>
-            </article>
-            <article class="table-panel summary">
-              <div class="panel-heading"><h3>本场信息</h3></div>
-              <div class="summary-row">
-                <span>起拍价</span><b>◎ {{ money(selected.startPrice) }}</b>
-              </div>
-              <div class="summary-row">
-                <span>参与人数</span
-                ><b>{{ selected.participants.length }} 人</b>
-              </div>
-              <div v-if="selected.status === 'FINISHED'" class="result-box">
-                <span>拍卖结果</span
-                ><b>{{
-                  !selected.leaderId
-                    ? "无人出价，本场流拍"
-                    : selected.leaderId === store.currentUser.id
-                      ? "恭喜，你赢得了拍品"
-                      : `赢家：${store.userName(selected.leaderId)}`
-                }}</b>
-              </div>
-            </article>
-          </div>
-        </div>
-        <template v-else
-          ><div class="section-heading">
-            <h2>进行中的拍卖</h2>
-            <span>{{ running.length }} 场进行中</span>
-          </div>
-          <div class="auction-grid">
-            <article
-              v-for="a in running"
-              :key="a.id"
-              class="auction-card"
-              @click="select(a)"
-            >
-              <div class="card-cover" :class="a.tone">
-                <span class="cover-tag">LIVE AUCTION</span
-                ><span class="cover-icon">{{ a.icon }}</span>
-              </div>
-              <div class="card-body">
-                <div class="card-status">
-                  <span class="status-pill running"><i />进行中</span
-                  ><span class="time-left">{{ remaining(a.endsAt) }}</span>
-                </div>
-                <h3>{{ a.title }}</h3>
-                <p>{{ a.description }}</p>
-                <div class="card-price">
-                  <span>当前价</span
-                  ><strong>◎ {{ money(a.currentPrice) }}</strong>
-                </div>
-                <div class="card-foot">
-                  <span
-                    >{{ a.participants.length }} 位参与者 · 延时
-                    {{ a.extensionCount }}/3</span
-                  ><button class="icon-button">→</button>
-                </div>
-              </div>
-            </article>
-            <div v-if="!running.length" class="empty-wide">
-              当前没有进行中的拍卖
-            </div>
-          </div>
-          <div class="section-heading lower">
-            <h2>其他拍卖</h2>
-            <span>{{ drafts.length + finished.length }} 场</span>
-          </div>
-          <div class="compact-list">
-            <button
-              v-for="a in [...drafts, ...finished]"
-              :key="a.id"
-              @click="select(a)"
-            >
-              <span class="compact-icon">{{ a.icon }}</span
-              ><span class="compact-title"
-                ><b>{{ a.title }}</b
-                ><small>{{ a.description }}</small></span
-              ><span class="status-pill" :class="a.status.toLowerCase()"
-                ><i />{{ label(a.status) }}</span
-              ><strong>◎ {{ money(a.currentPrice) }}</strong
-              ><span>→</span>
-            </button>
-          </div></template
-        >
-      </section>
-      <section v-else-if="view === 'wallet'" class="content">
-        <div class="page-heading">
-          <div>
-            <p class="kicker">YOUR ACCOUNT</p>
-            <h1>我的钱包</h1>
-            <p class="muted">查看余额、冻结积分和竞价流水。</p>
-          </div>
-        </div>
-        <div class="balance-grid">
-          <div>
-            <span>总余额</span><b>◎ {{ money(store.wallet.total) }}</b>
-          </div>
-          <div>
-            <span>冻结中</span
-            ><b class="orange">◎ {{ money(store.wallet.frozen) }}</b>
-          </div>
-          <div>
-            <span>可用余额</span
-            ><b class="green">◎ {{ money(store.wallet.available) }}</b>
-          </div>
-        </div>
-        <article class="table-panel ledger">
-          <div class="panel-heading">
-            <h3>资金流水</h3>
-            <span>本地模拟记录</span>
-          </div>
-          <div
-            v-for="item in store.wallet.ledger"
-            :key="item.id"
-            class="ledger-row"
-          >
-            <span class="ledger-icon" :class="item.type">{{
-              item.type === "freeze" ? "↑" : item.type === "release" ? "↓" : "✓"
-            }}</span>
-            <div>
-              <b>{{ item.label }}</b
-              ><small>{{ item.time }}<template v-if="item.auctionId"> · {{ store.auctions.find((a) => a.id === item.auctionId)?.title }}</template></small>
-            </div>
-            <strong :class="item.type === 'freeze' ? 'orange' : 'green'"
-              >{{ item.type === "freeze" ? "-" : "+" }}◎
-              {{ money(item.amount) }}</strong
-            >
-          </div>
-        </article>
-      </section>
-      <section v-else-if="view === 'agent'" class="content">
-        <div class="page-heading"><div><p class="kicker">AUTOMATION WORKBENCH</p><h1>竞拍 Agent</h1><p class="muted">配置受限 Agent，观察授权拍卖并提交自动出价。</p></div><span class="status-pill running"><i />{{ agentEnabled ? "运行中" : "已暂停" }}</span></div>
-        <div class="detail-grid">
-          <article class="form-panel"><div class="panel-heading"><h3>Agent 配置</h3><span>Mock Token</span></div>
-            <div class="summary-row"><span>服务端点</span><b>http://localhost:8090</b></div>
-            <div class="summary-row"><span>Token</span><b>ag_••••••••9f2a</b></div>
-            <label>授权拍卖<select><option>Leica M6 经典胶片相机（a1）</option><option>Mid-century 胡桃木边柜（a2）</option></select></label>
-            <label>出价策略<select v-model="agentStrategy"><option>狙击加价</option><option>固定上限</option><option>人工确认</option></select></label>
-            <label>最高出价<input v-model.number="agentBidAmount" type="number" placeholder="例如：320" /></label>
-            <button class="primary-button full" @click="runAgentBid">提交 Agent 出价　↗</button>
-            <button class="outline-button full" @click="agentEnabled = !agentEnabled">{{ agentEnabled ? "暂停 Agent" : "启用 Agent" }}</button>
-          </article>
-          <article class="table-panel"><div class="panel-heading"><h3>授权拍卖</h3><span>Token scope: auction:read, auction:bid</span></div>
-            <div class="admin-row"><div><b>Leica M6 经典胶片相机</b><small>RUNNING · 当前价 ◎ {{ money(store.auctions[0].currentPrice) }}</small></div><span class="status-pill running"><i />可出价</span></div>
-            <div class="admin-row"><div><b>Mid-century 胡桃木边柜</b><small>RUNNING · 当前价 ◎ {{ money(store.auctions[1].currentPrice) }}</small></div><span class="status-pill running"><i />可出价</span></div>
-            <div class="panel-heading" style="margin-top:24px"><h3>调用日志</h3><span>最近请求</span></div>
-            <div v-for="log in agentLogs" :key="log.time + log.action" class="admin-row"><div><b>{{ log.action }}</b><small>{{ log.time }}</small></div><strong>{{ log.result }}</strong></div>
-          </article>
-        </div>
-      </section>
-      <section v-else class="content">
-        <div class="page-heading">
-          <div>
-            <p class="kicker">OPERATIONS</p>
-            <h1>管理控制台</h1>
-            <p class="muted">创建和控制本地模拟拍卖。</p>
-          </div>
-        </div>
-        <div class="admin-layout">
-          <article class="form-panel">
-            <div class="panel-heading">
-              <h3>创建新拍卖</h3>
-              <span>草稿不会自动开始</span>
-            </div>
-            <label
-              >拍品名称<input
-                v-model="newTitle"
-                placeholder="例如：复古胶片相机" /></label
-            ><label
-              >拍卖时长<select v-model.number="newDuration">
-                <option :value="30">30 秒（演示）</option>
-                <option :value="60">60 秒</option>
-                <option :value="180">180 秒</option>
-              </select></label
-            ><button class="primary-button full" @click="create">
-              创建拍卖　＋
-            </button>
-          </article>
-          <article class="table-panel">
-            <div class="panel-heading">
-              <h3>拍卖控制</h3>
-              <span>{{ drafts.length }} 个草稿</span>
-            </div>
-            <div
-              v-for="a in [...drafts, ...running]"
-              :key="a.id"
-              class="admin-row"
-            >
+
+      <div class="content">
+        <!-- ── 未登录 ─────────────────────────────────────────────── -->
+        <section v-if="!store.loggedIn" class="empty-wide">
+          <p class="kicker">AUTH REQUIRED</p>
+          <h2>请先登录</h2>
+          <p class="muted">
+            所有接口都需要 JWT（<code>Authorization: Bearer …</code>）。
+            接口文档见 <code>docs/openapi.yaml</code>，演示账号见 README。
+          </p>
+          <button class="primary-button" @click="openLogin">登录 / 选择演示账号</button>
+        </section>
+
+        <!-- ── 拍卖大厅 ───────────────────────────────────────────── -->
+        <template v-else-if="view === 'auctions'">
+          <section v-if="!store.current" class="auction-list">
+            <div class="page-heading">
               <div>
-                <b>{{ a.title }}</b
-                ><small
-                  >{{ label(a.status) }} · ◎ {{ money(a.currentPrice) }}</small
-                >
+                <p class="kicker">AUCTION HALL</p>
+                <h1>拍卖大厅</h1>
+                <p class="muted">数据来自 <code>GET /auctions</code>；进入详情后由 WebSocket 推送增量。</p>
               </div>
-              <button
-                v-if="a.status === 'DRAFT'"
-                class="small-button"
-                @click="
-                  store.startAuction(a.id);
-                  notify('拍卖已开始');
-                "
-              >
-                开始</button
-              ><button
-                v-else
-                class="small-button danger"
-                @click="
-                  store.cancelAuction(a.id);
-                  notify('拍卖已取消');
-                "
-              >
-                取消
-              </button>
+              <div class="wallet-chip">
+                <span>可用余额</span>
+                <b>◎ {{ money(store.wallet?.availableBalance) }}</b>
+              </div>
             </div>
-          </article>
-        </div>
-        <article class="table-panel settlement-panel">
-          <div class="panel-heading">
-            <h3>成交记录</h3>
-            <span>{{ store.settlements.length }} 条记录</span>
-          </div>
-          <div v-if="!store.settlements.length" class="empty">
-            暂无成交记录，拍卖结束后会自动出现在这里。
-          </div>
-          <div
-            v-for="item in store.settlements"
-            :key="item.id"
-            class="admin-row settlement-row"
-          >
+
+            <div class="section-heading">
+              <h2>进行中</h2>
+              <span>{{ store.runningAuctions.length }} 场</span>
+            </div>
+            <div class="auction-grid">
+              <article v-for="auction in store.runningAuctions" :key="auction.id" class="auction-card" @click="open(auction)">
+                <div class="card-cover olive"><span class="cover-tag">LIVE</span><span class="cover-icon">🔨</span></div>
+                <div class="card-body">
+                  <div class="card-status">
+                    <span class="status-pill running"><i></i>{{ statusLabel(auction.status) }}</span>
+                    <span class="time-left">{{ auction.participantCount }} 人参与</span>
+                  </div>
+                  <h3>{{ auction.title }}</h3>
+                  <p>{{ auction.description || '—' }}</p>
+                  <div class="card-price">
+                    <span>当前价</span><strong>◎ {{ money(auction.currentPrice) }}</strong>
+                  </div>
+                  <div class="card-foot">
+                    <span>领先 {{ displayName(auction.leader ? shortId(auction.leader) : null) }}</span>
+                    <span class="icon-button">→</span>
+                  </div>
+                </div>
+              </article>
+              <p v-if="!store.runningAuctions.length" class="empty-wide">
+                {{ store.listLoading ? '加载中…' : '暂无进行中的拍卖' }}
+              </p>
+            </div>
+
+            <div class="lower">
+              <div class="section-heading">
+                <h2>草稿 / 已结束</h2>
+                <span>{{ store.otherAuctions.length }} 场</span>
+              </div>
+              <div class="compact-list">
+                <button v-for="auction in store.otherAuctions" :key="auction.id" @click="open(auction)">
+                  <span class="compact-icon">📦</span>
+                  <span class="compact-title">
+                    <b>{{ auction.title }}</b>
+                    <small>{{ statusLabel(auction.status) }} · 版本 seq {{ auction.seq }}</small>
+                  </span>
+                  <strong>◎ {{ money(auction.currentPrice) }}</strong>
+                </button>
+                <p v-if="!store.otherAuctions.length" class="empty">暂无其他拍卖</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- ── 详情 ─────────────────────────────────────────────── -->
+          <section v-else class="auction-detail">
+            <button class="back-link" @click="back">← 返回拍卖大厅</button>
+            <div class="detail-grid">
+              <section class="hero-panel">
+                <div class="hero-top">
+                  <span :class="['status-pill', store.current.status.toLowerCase()]">
+                    <i></i>{{ statusLabel(store.current.status) }}
+                  </span>
+                  <span class="seq">seq {{ store.current.seq }} · {{ store.feedLabel }}</span>
+                </div>
+                <h2>{{ store.current.title }}</h2>
+                <p class="muted">{{ store.current.description || '—' }}</p>
+                <div class="hero-price">
+                  <span>当前价</span>
+                  <strong>◎ {{ money(store.current.currentPrice) }}</strong>
+                  <div class="leader">
+                    领先者<b>{{ store.isMyLead ? '你' : displayName(store.current.leaderAnon) }}</b>
+                  </div>
+                </div>
+                <div class="countdown">
+                  剩余 <b>{{ store.remainingLabel }}</b>
+                  <small>
+                    起拍 ◎ {{ money(store.current.startPrice) }} · 最小加价 ◎ {{ money(store.current.minIncrement) }} ·
+                    已延时 {{ store.current.extensionCount }} 次 · {{ store.current.participantCount }} 人参与
+                  </small>
+                </div>
+              </section>
+
+              <section class="bid-panel">
+                <div class="panel-label">
+                  出价
+                  <span v-if="store.joined" class="joined">已加入</span>
+                </div>
+                <label for="bid-amount">金额（最低 ◎ {{ money(store.nextBid) }}）</label>
+                <div class="bid-input">
+                  <span>◎</span>
+                  <input id="bid-amount" v-model.number="bidAmount" type="number" :min="store.nextBid" inputmode="numeric" />
+                </div>
+                <p class="hint">金额必须 ≥ 当前价 + 最小加价；同一金额重试会复用同一个幂等键。</p>
+                <div class="bid-actions">
+                  <button class="small-button" @click="bump(1)">+ 最小加价</button>
+                  <button class="small-button" @click="bump(2)">+ 两倍</button>
+                </div>
+                <button
+                  v-if="!store.joined && store.current.status === 'RUNNING'"
+                  class="primary-button full"
+                  @click="store.joinCurrent()"
+                >
+                  加入本场拍卖
+                </button>
+                <button v-else class="primary-button full" :disabled="!store.canBid" @click="submitBid">
+                  {{ store.bidInFlight ? '提交中…' : store.current.status === 'RUNNING' ? '提交出价' : '本场已结束' }}
+                </button>
+                <div class="connection">
+                  {{ store.feedLabel }}
+                  <template v-if="store.feedDetail.attempt">（第 {{ store.feedDetail.attempt }} 次重连）</template>
+                </div>
+              </section>
+            </div>
+
+            <div class="detail-columns">
+              <section class="table-panel">
+                <div class="panel-heading">
+                  <h3>出价记录</h3>
+                  <span>{{ store.bids.length }} 条 · 匿名标识</span>
+                </div>
+                <div v-for="(bid, index) in store.bids" :key="bid.id" class="bid-row">
+                  <span class="bid-avatar">{{ index === 0 ? '①' : '·' }}</span>
+                  <div>
+                    <b>{{ bidderLabel(bid.userId) }}</b>
+                    <small>{{ new Date(bid.serverTime).toLocaleTimeString('zh-CN') }} · seq {{ bid.seq }}</small>
+                  </div>
+                  <strong>◎ {{ money(bid.amount) }}</strong>
+                </div>
+                <p v-if="!store.bids.length" class="empty">还没有人出价</p>
+              </section>
+
+              <section class="table-panel">
+                <div class="panel-heading"><h3>结算</h3></div>
+                <template v-if="store.settlement">
+                  <div class="summary-row"><span>结果</span><b>{{ statusLabel(store.settlement.status) }}</b></div>
+                  <div class="summary-row"><span>原因</span><b>{{ store.settlement.reason }}</b></div>
+                  <div class="summary-row"><span>成交价</span><b>◎ {{ money(store.settlement.finalPrice) }}</b></div>
+                  <div class="result-box">
+                    中标者
+                    <b>{{ store.settlement.winner ? displayName(store.anonOf(store.settlement.winner ?? null)) : '无人中标' }}</b>
+                  </div>
+                </template>
+                <p v-else class="empty">
+                  {{ store.current.status === 'RUNNING' ? '竞价结束后由服务端到点结算' : '结果查询中（未结算时接口返回 404）' }}
+                </p>
+              </section>
+            </div>
+          </section>
+        </template>
+
+        <!-- ── 我的资金 ───────────────────────────────────────────── -->
+        <template v-else-if="view === 'wallet'">
+          <div class="page-heading">
             <div>
-              <b>{{ item.auctionTitle }}</b
-              ><small>{{ item.settledAt }} · {{ item.reason }}</small>
+              <p class="kicker">WALLET</p>
+              <h1>我的资金</h1>
+              <p class="muted">来自 <code>GET /wallets/me</code> 与 <code>GET /wallets/me/ledger</code>，前端不做任何加减。</p>
             </div>
-            <span>{{ item.winnerName ?? "无人出价" }}</span>
-            <strong v-if="item.winnerId">◎ {{ money(item.amount) }}</strong
-            ><strong v-else class="muted">--</strong>
           </div>
-        </article>
-      </section>
-    </main>
-    <div v-if="toast" class="toast">{{ toast }}</div>
-    <div
-      v-if="loginOpen"
-      class="modal-backdrop"
-      @click.self="loginOpen = false"
-    >
-      <div class="login-modal">
-        <button class="close" @click="loginOpen = false">×</button>
-        <p class="kicker">SWITCH PERSONA</p>
-        <h2>切换演示账号</h2>
-        <p class="muted">MVP 使用本地账号，不需要密码。</p>
-        <button
-          v-for="u in store.users"
-          :key="u.id"
-          class="persona"
-          @click="switchUser(u)"
-        >
-          <span class="avatar">{{ u.name[0] }}</span
-          ><span
-            ><b>{{ u.name }}</b
-            ><small>{{ u.role === "ADMIN" ? "管理员" : "竞拍者" }}</small></span
-          ><span>→</span>
-        </button>
+          <div class="balance-grid">
+            <div><span>总额</span><b>◎ {{ money(store.wallet?.totalBalance) }}</b></div>
+            <div><span>冻结（在拍）</span><b class="orange">◎ {{ money(store.wallet?.frozenAmount) }}</b></div>
+            <div><span>可用</span><b class="green">◎ {{ money(store.wallet?.availableBalance) }}</b></div>
+          </div>
+          <section class="table-panel ledger">
+            <div class="panel-heading">
+              <h3>资金流水</h3>
+              <button class="small-button" @click="store.refreshWallet()">刷新</button>
+            </div>
+            <div v-for="entry in store.ledger" :key="entry.id" class="ledger-row">
+              <span :class="['ledger-icon', entry.type.toLowerCase()]">{{ entry.type.slice(0, 1) }}</span>
+              <div>
+                <b>{{ settledLabel(entry.type) }}</b>
+                <small>{{ new Date(entry.createdAt).toLocaleString('zh-CN') }} · {{ shortId(entry.auctionId) }}</small>
+              </div>
+              <strong>◎ {{ money(entry.amount) }}</strong>
+            </div>
+            <p v-if="!store.ledger.length" class="empty">暂无流水</p>
+          </section>
+        </template>
+
+        <!-- ── 运营台 ─────────────────────────────────────────────── -->
+        <template v-else-if="view === 'admin'">
+          <div class="page-heading">
+            <div>
+              <p class="kicker">OPERATIONS</p>
+              <h1>运营台</h1>
+              <p class="muted">创建 / 开始 / 取消走 <code>/admin/auctions</code>；结算由服务端到点任务执行。</p>
+            </div>
+          </div>
+          <div class="admin-layout">
+            <form class="form-panel" @submit.prevent="submitCreate">
+              <div class="panel-label">新建拍品</div>
+              <label>名称<input v-model="newTitle" type="text" maxlength="120" /></label>
+              <label>描述<input v-model="newDescription" type="text" maxlength="2000" /></label>
+              <label>起拍价<input v-model.number="newStartPrice" type="number" min="1" /></label>
+              <label>最小加价<input v-model.number="newMinIncrement" type="number" min="1" /></label>
+              <label>时长（秒）<input v-model.number="newDuration" type="number" min="10" max="86400" /></label>
+              <button class="primary-button full" type="submit">创建拍品</button>
+            </form>
+            <section class="table-panel">
+              <div class="panel-heading"><h3>拍品管理</h3><span>共 {{ store.auctions.length }} 件</span></div>
+              <div v-for="auction in store.auctions" :key="auction.id" class="admin-row">
+                <div>
+                  <b>{{ auction.title }}</b>
+                  <small>{{ statusLabel(auction.status) }} · seq {{ auction.seq }} · ◎ {{ money(auction.currentPrice) }}</small>
+                </div>
+                <button v-if="auction.status === 'DRAFT'" class="small-button" @click="store.startAuction(auction.id)">开始</button>
+                <button
+                  v-if="auction.status === 'DRAFT' || auction.status === 'RUNNING'"
+                  class="small-button danger"
+                  @click="store.cancelAuction(auction.id)"
+                >
+                  取消
+                </button>
+              </div>
+              <p v-if="!store.auctions.length" class="empty">暂无拍品</p>
+            </section>
+          </div>
+        </template>
+
+        <!-- ── 智能体 ─────────────────────────────────────────────── -->
+        <template v-else>
+          <div class="page-heading">
+            <div>
+              <p class="kicker">AGENT API</p>
+              <h1>智能体接入</h1>
+              <p class="muted">
+                本页面的数据<b>不来自</b> Agent 接口：Agent API（<code>:8090</code>、Agent Token、限流）属于后续里程碑，
+                当前尚未实现，因此这里不会显示任何伪造的调用记录。
+              </p>
+            </div>
+          </div>
+          <section class="table-panel">
+            <div class="panel-heading"><h3>契约中已定义、但尚未实现的接口</h3><span>P5 交付</span></div>
+            <div v-for="item in [
+              'GET /agent/auctions —— 列出可参与的拍卖（agent:read）',
+              'GET /agent/auctions/{auctionId} —— 读取快照（agent:read）',
+              'GET /agent/auctions/{auctionId}/bids —— 读取出价记录（agent:read）',
+              'POST /agent/auctions/{auctionId}/bids —— 由智能体出价（agent:bid）',
+              'GET /agent/wallet —— 智能体钱包（agent:read）',
+            ]" :key="item" class="admin-row">
+              <div><b>{{ item }}</b><small>当前返回 404：路由尚未挂载</small></div>
+            </div>
+          </section>
+        </template>
       </div>
-    </div>
+    </main>
   </div>
+
+  <div v-if="loginOpen && !store.loggedIn" class="modal-backdrop" @click.self="loginOpen = false">
+    <form class="login-modal" @submit.prevent="submitLogin">
+      <button class="close" type="button" @click="loginOpen = false">×</button>
+      <h2>登录</h2>
+      <p class="muted">JWT 由服务端签发，前端只保存令牌与过期时间。</p>
+      <label>邮箱<input v-model="email" type="email" autocomplete="username" /></label>
+      <label>密码<input v-model="password" type="password" autocomplete="current-password" /></label>
+      <button class="primary-button full" type="submit" :disabled="loginBusy">
+        {{ loginBusy ? '登录中…' : '登录' }}
+      </button>
+      <p class="hint">演示账号（点击填入）</p>
+      <button
+        v-for="account in store.demoAccounts"
+        :key="account.email"
+        class="persona"
+        type="button"
+        @click="fillDemo(account)"
+      >
+        <span class="avatar">{{ account.label.slice(-1) }}</span>
+        <span><b>{{ account.label }}</b><small>{{ account.email }}</small></span>
+        <span>填入</span>
+      </button>
+    </form>
+  </div>
+
+  <div v-if="store.notice" class="toast" @click="store.clearNotice()">{{ store.notice.text }}</div>
 </template>
