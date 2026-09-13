@@ -69,11 +69,48 @@ HTTP 集成测试与 WS 集成测试**共用同一个自启动的服务实例**�
 
 架构那 9 条的变异注入与还原由脚本完成（`python tools/arch_mutation_check.py`，输出 `KILLED`/`SURVIVED`；当前 9/9 KILLED）：每次只改一处、跑 `ArchitectureTest`、断言命中了**预期的那条规则**，再还原。
 
+### 前端（P4）
+
+前端不连库，单测用假 HTTP、假 socket、内存存储，覆盖“与边界打交道的那一层”：契约生成类型、HTTP 客户端、实时订阅状态机、Pinia store。共 **56 个用例**（`cd frontend && npm test`），类型检查与构建通过（`npm run typecheck` / `npm run build`）。
+
+| 测试文件 | 数量 | 覆盖 |
+|---|---:|---|
+| `src/api/client.test.ts` | 12 | 统一封套：`code` 为权威（不是 HTTP 状态）、`IDEMPOTENCY_REPLAY` 视为成功、非契约响应拒绝、鉴权头、出价幂等键头、超时中止、401 触发会话清理、`BID_TOO_LOW` 最低加价提示 |
+| `src/api/contract.test.ts` | 4 | 生成类型与 `openapi.yaml` 的关键字段/枚举对齐（D-26） |
+| `src/realtime/feed.test.ts` | 14 | `(auctionId, seq, type)` 去重、缺口拉 HTTP 快照并丢弃旧事件/补放新事件、无基线先缓存、快照持续落后时有限重试、重连换新票并重置基线、退避封顶、快照失败保留连接、握手原因码透出、坏帧忽略、`stop()` 后不再重连 |
+| `src/store/arena.test.ts` | 18 | 登录与 401 清会话、实时事件驱动价格/领先者/延时、倒计时用服务端时间校准、结算 404 不是错误、出价取服务端价格、重试复用幂等键/改金额换新键、`NOT_JOINED` 自动加入、`BID_TOO_LOW` 不复用键、运营台创建/开始 |
+| `src/anonymous.test.ts` | 8 | 匿名标识确定性、与服务端固定向量一致（跨端契约） |
+
+真后端联调（先启动后端，再 `BID_ARENA_LIVE=1 npm run test:live`）**3/3 绿**：
+`src/api/live.test.ts` 登录→创建→开始→加入→出价→幂等重放→钱包→结果→取消，以及未登录/错口令的封套形态；
+`src/realtime/live.test.ts` 真连 WS 收到 `BID_ACCEPTED` 与 `BID_REJECTED`，且帧里不含原始 `user_id`。
+
+前端同样做变异验证（`cd frontend && python tools/mutation_check.py`，当前 **16/16 KILLED**）：
+
+| 变异 | 预期被谁抓住 | 实测结果 |
+|---|---|---|
+| F1：把 `IDEMPOTENCY_REPLAY` 当失败 | 重放不是错误 | `client.test.ts` 失败 |
+| F2：不发 `Authorization` 头 | 鉴权头必须带上 | `client.test.ts` 失败 |
+| F3：出价不带 `Idempotency-Key` 头 | 重试不能重复下单 | `client.test.ts` 失败 |
+| F4：只看 HTTP 状态不看业务码 | `code` 为权威 | `client.test.ts` 失败 |
+| F5：非契约响应当成功 | 代理返回 HTML 不能假装成功 | `client.test.ts` 失败 |
+| F6：请求超时不再中止 | 按钮不能永远禁用 | `client.test.ts` 失败 |
+| F7：`BID_TOO_LOW` 不提示最低加价 | 按错误码分支 | `client.test.ts` 失败 |
+| F8：令牌失效不清理会话 | 401 必须清会话 | `client.test.ts` 失败 |
+| F9：匿名标识取前 8 字节 | 与服务端算法一致 | `anonymous.test.ts` 失败 |
+| F10：会话过期不再判定 | 过期令牌当有效必然 401 | `anonymous.test.ts` 失败 |
+| F11：去重键丢掉 `type` | 同一次提交的 `AUCTION_EXTENDED` 被误杀 | `feed.test.ts` 失败 |
+| F12：不检测 `seq` 缺口 | 跳着应用会缺一次状态变更 | `feed.test.ts` 失败 |
+| F13：快照恢复时不丢弃旧事件 | 同一笔出价被叠加两次 | `feed.test.ts` 失败 |
+| F14：出价重试不复用幂等键 | 网络抖动会变成两次出价 | 曾 `SURVIVED`（测试只在成功路径留痕，见 `DEBUG_LOG.md` DBG-21）；修好断言后 `KILLED` |
+| F15：倒计时改用本机时钟 | 时钟不同步时算错剩余时间 | `arena.test.ts` 失败 |
+| F16：`NOT_JOINED` 不自动加入重试 | 用户点一次出价却什么都没发生 | `arena.test.ts` 失败 |
+
 ### 尚未验证的部分
 
 以下内容**当前没有任何测试**，属于已知缺口而非已完成：
-Agent 凭据（D1）、前端与模拟脚本（E1/E4/F1）、前端 store 的缺口恢复实现（C5 的客户端一半，服务端一半已在 P3 完成）、
-录屏与现场核验（H 组）。架构包边界规则（D-6）已不再是缺口：`ArchitectureTest` 九条 + 9/9 变异验证。
+Agent 凭据（D1）、模拟脚本与一键 E2E（E1/F1）、录屏与现场核验（H 组）。
+前端（E4）与前端 store 的缺口恢复（C5 客户端一半）已不再是缺口：P4 已交付 56 个单测 + 3 个真后端联调 + 16/16 变异验证。架构包边界规则（D-6）已由 `ArchitectureTest` 九条 + 9/9 变异验证。
 
 ## A. 拍卖与资金规则（原文 第 2 页）
 
@@ -109,7 +146,7 @@ Agent 凭据（D1）、前端与模拟脚本（E1/E4/F1）、前端 store 的缺
 | C2 | 出价请求 | 至少含 `requestId` 与 `amount` | `HttpAuctionController.BidRequest` + `openapi.yaml` | `HttpApiIntegrationTest.bidFlowWithIdempotentReplay`（首次 200 `OK` / 重放 200 `IDEMPOTENCY_REPLAY` 且 `seq` 不变）、`bidGuards`（未加入 409 `NOT_JOINED`、加价不足 409 `BID_TOO_LOW`、金额 0 → 400）、`idempotencyKeyResolution`（缺 `requestId` 400；header 与 body 不一致 400） | ✅ |
 | C3 | 确认事件字段 | 含 `auctionId` / 单调 `seq` / `serverTime` / `type` | `auction/domain/AuctionEvent`（信封）+ `AuctionEvents`（payload 工厂） | `WsIntegrationTest.handshakeSendsSnapshotThenConnectionState`、`bidIsBroadcastToAllParticipantsOnce`、`seqIsGaplessForSubscriber`；`WsEventBroadcasterTest.frameShapeHidesRawUserId` 断言四字段在顶层且 `seq` 与 payload 内一致 | ✅ |
 | C4 | 推荐事件类型 | 快照、加入、接受、拒绝（仅本人）、延时、结束、连接状态 | `auction/domain/AuctionEventType`（7 类 + 可见范围） | `WsIntegrationTest` 逐类断言（`handshakeSendsSnapshotThenConnectionState`、`bidIsBroadcastToAllParticipantsOnce`、`rejectionIsUnicastOnly`、`extensionSharesSeq`、`cancelBroadcastsFinish`）；范围契约见 `WsEventBroadcasterTest.scopeContract` | ✅ |
-| C5 | seq 缺口处理 | 发现缺口时重新获取权威快照，不猜测 | 服务端：`GET /auctions/{id}` 快照 + 事件 `seq` 单调且无缺口；客户端规则见 `docs/REALTIME_AND_COMMAND_FLOW.md` §6 | 服务端侧已验：`WsIntegrationTest.seqIsGaplessForSubscriber`（版本号只允许相等或 +1）、`reconnectSnapshotCatchesUp`（重连快照严格更新）；客户端 store 待 P4 | 🟨 |
+| C5 | seq 缺口处理 | 发现缺口时重新获取权威快照，不猜测 | 服务端：`GET /auctions/{id}` 快照 + 事件 `seq` 单调且无缺口；客户端规则见 `docs/REALTIME_AND_COMMAND_FLOW.md` §6，实现在 `frontend/src/realtime/feed.ts`（D-28） | 服务端：`WsIntegrationTest.seqIsGaplessForSubscriber`（版本号只允许相等或 +1）、`reconnectSnapshotCatchesUp`（重连快照严格更新）；客户端：`feed.test.ts` 14 用例 + 真后端 `realtime/live.test.ts`；变异 F11/F12/F13 被杀 | ✅ |
 
 ## D. 竞拍 Agent Token（原文 第 3 页）
 
@@ -122,9 +159,9 @@ Agent 凭据（D1）、前端与模拟脚本（E1/E4/F1）、前端 store 的缺
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
 | E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `scripts/` 模拟脚本 | 脚本输出断言与摘要 | ⬜ |
-| E2 | 自动化测试 | 覆盖原文列出的全部测试点 | `src/test` | 后端 **125/125** 绿（`mvn clean verify`）；前端与 Agent 侧测试待 P4/P5 | 🟨 |
+| E2 | 自动化测试 | 覆盖原文列出的全部测试点 | 后端 `src/test`；前端 `frontend/src` | 后端 **125/125** 绿（`mvn clean verify`）；前端 **56 单测** + **3 真后端联调** + **16 变异 KILLED**；Agent 侧测试待 P5 | 🟨 |
 | E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：116 个用例跑在真实 MySQL 8.4 上（HTTP/WS 集成测试共用同一个自启动服务实例），另 9 个为纯静态架构守卫 | ✅ |
-| E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend` 测试 | 测试报告 | ⬜ |
+| E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend/src/store/arena.test.ts`（Pinia store，18 个用例）+ `frontend/src/realtime/feed.test.ts`（14）+ `frontend/src/api/client.test.ts`（12）等 | 见上文「前端（P4）」：56 单测 + 3 真后端联调 + 16/16 变异；`npm run typecheck` 与 `vite build` 通过 | ✅ |
 
 ## F. 快速启动与初始数据（原文 第 4 页）
 

@@ -75,8 +75,10 @@ fix bug
 ```powershell
 git status --short          # 确认无误提交文件
 mvn -q test-compile         # 后端可编译
-# 集成测试与前端检查命令随实现补充，见 docs/STATUS.md
+# 后端全量（需指定 BID_ARENA_TEST_DB_*）：mvn clean verify
+# 前端：cd frontend; npm test; npm run typecheck
 python tools/arch_mutation_check.py   # 架构规则的反向确认（期望 9/9 KILLED）
+# 前端变异：cd frontend; python tools/mutation_check.py（期望 16/16 KILLED）
 ```
 
 逐项确认：
@@ -139,7 +141,7 @@ python tools/arch_mutation_check.py   # 架构规则的反向确认（期望 9/9
 | `.env.example` | 不包含真实密钥 | 仓库根目录 | ✅ |
 | Compose | 一键启动 MySQL（推荐含前后端） | `docker-compose.yml` | 🟨 |
 | 迁移 + 种子 | 自动执行，不手工建表/插账号 | `db/migration/` | ✅ 空库执行实测 |
-| 一键测试命令 | 可复制执行 | `README.md` | ⬜ |
+| 一键测试命令 | 可复制执行 | `README.md`（后端 `mvn clean verify`；前端 `npm test` / `npm run typecheck` / `npm run test:live`） | ✅ |
 | 模拟脚本 | 支持多机器人参数与随机种子 | `scripts/` | ⬜ |
 | 必交文档 | `DESIGN.md` / `DECISIONS.md` / `AI_USAGE.md` / `DEBUG_LOG.md` / `AGENT_TOOL_SPEC.md` | 仓库根目录 | 🟨（`DEBUG_LOG.md` 已完成） |
 | OpenAPI | 覆盖原文要求的全部能力 | `docs/openapi.yaml` | 🟨 |

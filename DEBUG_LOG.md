@@ -1053,3 +1053,63 @@ while (!client.connectBlocking(AWAIT_MILLIS, TimeUnit.MILLISECONDS)) {
 **工程结论**
 
 共享服务实例的测试基座里，"连接/启动"这类环境动作的预算要按**最坏负载**给，而不是按空闲时的实测值给；但也不能只用"把 5 秒改成 60 秒"这种粗暴做法——那会让真正的连接故障也拖到 60 秒才报错。按截止时间重试同时保住了"快速失败"和"抗抖动"。注意这次修的是**测试基座的时间预算**，不是产品的连接行为（生产端没有任何改动）。
+
+---
+
+## DBG-21：变异 F14 存活——一条"验证幂等键复用"的测试其实没有验证
+
+**现象**
+
+P4 给前端补变异验证（`frontend/tools/mutation_check.py` 的 F11~F16），把"出价重试不复用幂等键"这条真实缺陷注入 `arena.ts`：
+
+```python
+("F14", "出价重试不复用幂等键（网络抖动会变成两次出价）",
+ "src/store/arena.ts",
+ "    if (pendingBid && pendingBid.auctionId === auctionId && pendingBid.amount === amount) return pendingBid.requestId",
+ "    if (false) return pendingBid!.requestId",
+ "src/store/arena.test.ts")
+```
+
+结果：`SURVIVED  F14  rc=0`——测试全绿。
+
+**定位**
+
+对应的用例标题就是「网络失败重试复用同一个幂等键」，看起来正是为这条规则写的。但它的假 API 只在**成功**分支里记录调用：
+
+```ts
+world.api.placeBid = async (_auctionId, body) => {
+  if (failing) throw new ApiError({ code: 'NETWORK', serverMessage: '请求超时' })
+  world.bids.push({ requestId: body.requestId, amount: body.amount })  // 只有第二次会走到这
+  return ok(BID_RESULT)
+}
+...
+expect(world.bids).toHaveLength(1)
+```
+
+第一次（失败）那笔的 `requestId` **从未被写下来**，断言只看"成功的出价条数 = 1"。无论第二次用的是不是同一个键，条数都是 1，所以这条断言和被测规则无关。它验证的是"失败不会留下记录"，恰恰不是幂等键复用。
+
+**修复**
+
+让假 API 记录**每一次尝试**（验证失败那次的键也要留痕），再断言两次的键相同、且等于最终落库的键：
+
+```ts
+const attempts: string[] = []
+world.api.placeBid = async (_auctionId, body) => {
+  attempts.push(body.requestId)
+  if (failing) throw new ApiError({ code: 'NETWORK', serverMessage: '请求超时' })
+  world.bids.push({ requestId: body.requestId, amount: body.amount })
+  return ok(BID_RESULT)
+}
+...
+expect(attempts).toHaveLength(2)
+expect(attempts[1]).toBe(attempts[0])
+expect(attempts[1]).toBe(world.bids[0].requestId)
+```
+
+**验证**
+
+重跑变异：`F14 KILLED`；前端 16 个变异 **16/16 KILLED**；全量单测 56 绿、类型检查与 `vite build` 通过；真实后端联调 `src/api/live.test.ts` + `src/realtime/live.test.ts` 3/3 绿。
+
+**工程结论**
+
+"测试标题写了什么"和"断言真的检查了什么"是两件事。这次存活不是因为规则写错，而是因为**观察点选错了**——只在成功路径留痕，就不可能观察到"失败与成功用的是同一个键"。凡是断言"两次操作等价/一致"的用例，必须保证两次操作各自的痕迹都在场，否则它只能证明"只有一次成功"，证明不了"是同一次"。

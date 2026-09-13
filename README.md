@@ -121,26 +121,52 @@ curl -s -X POST http://localhost:8080/api/v1/auth/ws-tickets \
 - 进度看板见 [docs/STATUS.md](docs/STATUS.md)，文档地图与权威边界见 [docs/DOCS.md](docs/DOCS.md)。
 - 提交与交付规范见 [CONTRIBUTING.md](CONTRIBUTING.md)，验收追溯见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
 
-文档明确区分目标架构与当前实现状态；不要把 Mock 前端当作生产前端，也不要把"尚未接入 HTTP"理解成"资金逻辑未实现"——资金的正确性已经由真实 MySQL 集成测试与变异测试验证。
+文档明确区分目标架构与当前实现状态；前端已经接入真实 HTTP/WebSocket（见下文「前端」），不再有本地 Mock 事实来源。资金的正确性由真实 MySQL 集成测试与变异测试验证。
 
 ## 公开仓库约定
 
 原始评测 PDF、`.env`、依赖目录、构建产物和本地运行数据不会提交。需求原文和业务分析以 Markdown 形式保留，便于审阅和版本追踪。提交前执行 `git status --short`，确认没有 Token、密码或个人配置。
 
-## 前端 MVP（当前可运行）
+## 前端（Vue 3 + TypeScript + Pinia）
 
-前端 MVP 位于 `frontend/`，不依赖后端，使用 Vue 3 + TypeScript + Pinia 和本地 Mock 数据验证核心页面流程。
+前端位于 `frontend/`，**接入真实后端**：类型由 `docs/openapi.yaml` 生成（`npm run gen:api`，D-26）；
+金额、状态、倒计时全部来自 HTTP 快照与 WebSocket 事件，本地不再自己算（D-27/D-28）。
+
+```powershell
+# 1. 先启动后端（见上文），确认 8080 与 18080 可访问
+# 2. 启动前端
+cd frontend
+npm install
+npm run dev        # http://localhost:5173/
+```
+
+页面用种子里的三个演示账号登录（与原文一致）：
+
+- `admin@example.com / Admin123456!`：管理员，可创建、开始、取消拍卖。
+- `bidder_a@example.com / Test123456!`、`bidder_b@example.com / Test123456!`：两名竞拍者。
+
+建议验证路径：管理员登录创建并开始拍卖 → 换成 `bidder_a` 加入并出价 → 查看钱包冻结与流水 →
+另开一个浏览器用 `bidder_b` 加价，`bidder_a` 的详情页会通过 WebSocket 实时更新价格、领先者与剩余时间 →
+等待倒计时结束查看结果。倒计时以服务端时间为准；断线时页面显示“重连中/正在恢复快照”，恢复后由权威快照对齐。
+
+前端自测（不需要后端）：
 
 ```powershell
 cd frontend
-npm install
-npm run dev
+npm test           # 56 个单测（api client / realtime feed / store / anonymous）
+npm run typecheck  # vue-tsc
+npm run build      # vite build
 ```
 
-打开 <http://localhost:5173/>。页面右上角可切换演示身份：
+联调测试（需要后端已在 8080 运行）：
 
-- `林默`：竞拍者，可加入拍卖、出价、查看钱包和流水。
-- `周航`：另一位竞拍者，作为已有竞价数据展示。
-- `管理员`：可创建、开始和取消本地拍卖。
+```powershell
+cd frontend
+$env:BID_ARENA_LIVE="1"
+$env:BID_ARENA_DEMO_ADMIN_EMAIL="admin@example.com";     $env:BID_ARENA_DEMO_ADMIN_PASSWORD="Admin123456!"
+$env:BID_ARENA_DEMO_BIDDER_EMAIL="bidder_a@example.com"; $env:BID_ARENA_DEMO_BIDDER_PASSWORD="Test123456!"
+npm run test:live  # HTTP 契约 2 个 + WebSocket 事件流 1 个
+```
 
-建议验证路径：管理员创建并开始草稿拍卖 → 切换为林默 → 加入并出价 → 查看钱包冻结积分 → 在拍卖详情中等待倒计时结束 → 查看最终结果。MVP 的数据只保存在当前页面内，刷新后会恢复初始演示数据；真实 HTTP、MySQL 和 WebSocket 接入按 `DESIGN.md` 与 `docs/openapi.yaml` 后续替换 Mock 层（见 `docs/STATUS.md` 的 P4）。
+测试有效性同样经过变异验证（`python tools/mutation_check.py`，16/16 KILLED），证据汇总见
+[`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) 的「前端（P4）」一节。
