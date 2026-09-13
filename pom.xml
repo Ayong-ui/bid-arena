@@ -166,6 +166,15 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.2</version>
+        <configuration>
+          <!--
+            断言消息含中文。JVM 默认取平台编码（Windows 上常为 GBK），
+            会让失败信息在控制台和报告中变成乱码，而测试失败时最需要读的正是这句话。
+            固定 UTF-8 后，报告文件在任意平台上都可读；
+            控制台若仍乱码，是终端代码页的问题（Windows 下执行 chcp 65001 即可）。
+          -->
+          <argLine>-Dfile.encoding=UTF-8</argLine>
+        </configuration>
       </plugin>
       <plugin>
         <groupId>org.codehaus.mojo</groupId>
