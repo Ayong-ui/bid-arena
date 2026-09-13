@@ -47,6 +47,12 @@ public class AuctionRepository {
             int durationSeconds,
             int participantCount) {}
 
+    /** 一条出价。{@code seq} 是单场拍卖内单调递增的服务端序号，客户端据此检测丢事件。 */
+    public record BidRow(long id, String userId, long amount, String requestId, long seq, Instant serverTime) {}
+
+    /** 参与记录；{@code joinedAt} 用于 join 接口回显。 */
+    public record ParticipantRow(String auctionId, String userId, Instant joinedAt) {}
+
     /** 幂等记录。{@code resultPrice}/{@code resultSeq} 仅在成功完成时有值。 */
     public record RequestRow(String status, String resultCode, Long resultPrice, Long resultSeq) {
         public boolean done() {
@@ -224,10 +230,64 @@ public class AuctionRepository {
                 AuctionRepository::mapAuction, auctionId));
     }
 
-    public List<AuctionRow> list(int limit, int offset) {
+    /**
+     * 列表分页；{@code status} 为 {@code null} 时不筛选。
+     *
+     * <p>筛选与分页都下推到 SQL：在 Java 里先取全表再过滤，会随数据量增长而变慢，
+     * 而且 {@code total} 会算错（分页总数必须是**筛选后**的总数）。
+     */
+    public List<AuctionRow> list(AuctionStatus status, int limit, int offset) {
+        return Db.read(dataSource, conn -> status == null
+                ? Db.queryList(conn,
+                        SELECT_AUCTION + "ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?",
+                        AuctionRepository::mapAuction, limit, offset)
+                : Db.queryList(conn,
+                        SELECT_AUCTION + "WHERE a.status = ? ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?",
+                        AuctionRepository::mapAuction, status.name(), limit, offset));
+    }
+
+    /** 与 {@link #list} 同一筛选条件下的总数，用于分页元数据。 */
+    public long count(AuctionStatus status) {
+        return Db.read(dataSource, conn -> {
+            Long total = status == null
+                    ? Db.queryOne(conn, "SELECT COUNT(*) FROM auctions", rs -> rs.getLong(1))
+                    : Db.queryOne(conn, "SELECT COUNT(*) FROM auctions WHERE status = ?",
+                            rs -> rs.getLong(1), status.name());
+            return total == null ? 0L : total;
+        });
+    }
+
+    /** 出价分页，按 {@code server_seq} 倒序（最新在前）。 */
+    public List<BidRow> pageBids(String auctionId, int limit, int offset) {
         return Db.read(dataSource, conn -> Db.queryList(conn,
-                SELECT_AUCTION + "ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?",
-                AuctionRepository::mapAuction, limit, offset));
+                "SELECT id, user_id, amount, request_id, server_seq, server_time FROM bids "
+                        + "WHERE auction_id = ? ORDER BY server_seq DESC LIMIT ? OFFSET ?",
+                rs -> new BidRow(rs.getLong("id"), rs.getString("user_id"), rs.getLong("amount"),
+                        rs.getString("request_id"), rs.getLong("server_seq"), Db.instant(rs, "server_time")),
+                auctionId, limit, offset));
+    }
+
+    public long countBids(String auctionId) {
+        return Db.read(dataSource, conn -> {
+            Long total = Db.queryOne(conn, "SELECT COUNT(*) FROM bids WHERE auction_id = ?",
+                    rs -> rs.getLong(1), auctionId);
+            return total == null ? 0L : total;
+        });
+    }
+
+    /** 读参与记录；不存在返回 null。用于 join 后回显 {@code joinedAt}。 */
+    public ParticipantRow findParticipant(String auctionId, String userId) {
+        return Db.read(dataSource, conn -> findParticipant(conn, auctionId, userId));
+    }
+
+    /** 事务内版本：join 之后必须在同一事务里读回，否则可能读到别的连接尚未提交的状态。 */
+    public ParticipantRow findParticipant(Connection conn, String auctionId, String userId) throws SQLException {
+        return Db.queryOne(conn,
+                "SELECT auction_id, user_id, joined_at FROM auction_participants "
+                        + "WHERE auction_id = ? AND user_id = ?",
+                rs -> new ParticipantRow(rs.getString("auction_id"), rs.getString("user_id"),
+                        Db.instant(rs, "joined_at")),
+                auctionId, userId);
     }
 
     public void insertOutsideTx(String id, String title, String description, long startPrice, long minIncrement,
@@ -242,6 +302,27 @@ public class AuctionRepository {
         Db.tx(dataSource, conn -> {
             start(conn, auctionId, endsAt);
             return null;
+        });
+    }
+
+    /**
+     * 管理员开始拍卖：在同一事务内锁行、读时长、算截止时间。
+     *
+     * <p>时长必须在锁内读取：若先在事务外读出 {@code duration_seconds}，
+     * 再在事务里写截止时间，中间那一小段窗口里管理员改了时长也不会生效，
+     * 而调用方会以为生效了。截止时间同样必须用 {@link Db#now} 的数据库时间。
+     *
+     * @return 实际写入的截止时间
+     */
+    public Instant startNow(String auctionId) {
+        return Db.tx(dataSource, conn -> {
+            AuctionRow auction = lockAuction(conn, auctionId);
+            if (auction == null) {
+                throw new BizException(ErrorCode.NOT_FOUND, "拍卖不存在", Map.of("auctionId", auctionId));
+            }
+            Instant endsAt = Db.now(conn).plusSeconds(auction.durationSeconds());
+            start(conn, auctionId, endsAt);
+            return endsAt;
         });
     }
 

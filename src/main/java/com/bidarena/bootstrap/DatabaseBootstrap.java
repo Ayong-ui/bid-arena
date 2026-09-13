@@ -107,34 +107,15 @@ public final class DatabaseBootstrap {
   }
 
   private static String read(String key) {
-    String value = System.getProperty(key);
-    if (value == null || value.isBlank()) {
-      value = System.getenv(key);
-    }
-    return (value == null || value.isBlank()) ? null : value;
+    return Env.read(key);
   }
 
   private static String required(String key) {
-    String value = read(key);
-    if (value == null) {
-      throw new IllegalStateException(
-          "缺少必填配置 "
-              + key
-              + "。请从 .env.example 复制出 .env 并加载环境变量后重试（见 README 的快速启动）。");
-    }
-    return value;
+    return Env.required(key);
   }
 
   /** 读取整数配置，缺省时用 {@code fallback}。系统属性优先于环境变量，便于命令行临时覆盖。 */
   public static int intOr(String key, int fallback) {
-    String value = read(key);
-    if (value == null) {
-      return fallback;
-    }
-    try {
-      return Integer.parseInt(value.trim());
-    } catch (NumberFormatException e) {
-      throw new IllegalStateException("配置 " + key + " 不是合法整数：" + value, e);
-    }
+    return Env.intOr(key, fallback);
   }
 }

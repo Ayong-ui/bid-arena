@@ -242,15 +242,33 @@ public class WalletRepository {
                 userId));
     }
 
-    public List<LedgerRow> pageLedger(String userId, int limit, long beforeId) {
+    /**
+     * 流水分页，按 {@code id} 倒序（最新在前）。
+     *
+     * <p>用 offset 而不是游标分页，是为了与契约的 {@code page}/{@code size} 语义一致：
+     * 契约要求返回 {@code total}，而游标分页给不出总数。代价是深翻页会变慢（{@code OFFSET} 要扫过前面所有行），
+     * 对“个人流水”这种规模的数据量可以接受；数据量真的变大时再换成游标并改契约。
+     *
+     * <p>排序用 {@code id} 而不是 {@code created_at}：同一毫秒内的多条流水时间戳可能相同，
+     * 用时间排序会得到不稳定的顺序，翻页时出现重复或漏行。
+     */
+    public List<LedgerRow> pageLedger(String userId, int limit, int offset) {
         return Db.read(dataSource, conn -> Db.queryList(conn,
                 "SELECT id, entry_type, amount, auction_id, request_id, created_at FROM ledger_entries "
-                        + "WHERE user_id = ? AND (? = 0 OR id < ?) ORDER BY id DESC LIMIT ?",
+                        + "WHERE user_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
                 rs -> new LedgerRow(rs.getLong("id"), LedgerType.valueOf(rs.getString("entry_type")),
                         rs.getLong("amount"),
                         rs.getString("auction_id"), rs.getString("request_id"),
                         Db.instant(rs, "created_at")),
-                userId, beforeId, beforeId, limit));
+                userId, limit, offset));
+    }
+
+    public long countLedger(String userId) {
+        return Db.read(dataSource, conn -> {
+            Long total = Db.queryOne(conn, "SELECT COUNT(*) FROM ledger_entries WHERE user_id = ?",
+                    rs -> rs.getLong(1), userId);
+            return total == null ? 0L : total;
+        });
     }
 
     private static List<String> sortedDistinct(Collection<String> ids) {

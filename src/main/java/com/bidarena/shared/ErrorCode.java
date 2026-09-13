@@ -40,11 +40,23 @@ public enum ErrorCode {
     /**
      * 同一 requestId 的重复提交，返回的是**首次**结果而非本次重新计算的结果。
      * 这是一个可识别的成功语义（不是错误），但需要与首次提交区分，因此单列一个码。
+     *
+     * <p>HTTP 状态码是 200：出价确实生效了（在第一次），把它当成 409 会让客户端
+     * 把一次正常的重试当成失败。客户端可以只用
+     * {@link #isOk()} 判断成功，不必自己列举成功码。
      */
-    IDEMPOTENCY_REPLAY(409),
+    IDEMPOTENCY_REPLAY(200),
 
     /** 其他业务冲突（唯一约束、并发写冲突等）。 */
     CONFLICT(409),
+
+    /**
+     * 路径存在但方法不对（如对 {@code /api/v1/auth/login} 发 GET）。
+     *
+     * <p>由 Solon 路由在匹配到路径、方法不匹配时抛出，本项目的控制器永远不会主动返回它。
+     * 把它列进枚举是为了让这个场景也走统一封套，而不是给客户端一个空 body 的 405。
+     */
+    METHOD_NOT_ALLOWED(405),
 
     RATE_LIMITED(429),
 
@@ -60,7 +72,30 @@ public enum ErrorCode {
         return httpStatus;
     }
 
+    /**
+     * 是否代表"操作成功"。
+     *
+     * <p>存在两个成功码（{@link #OK} 与 {@link #IDEMPOTENCY_REPLAY}）是有意的，
+     * 代价是调用方不能再写 {@code code == OK}——那会把一次成功的重试判成失败。
+     * 因此把判断收敛到这一个方法里，两侧都只依赖它。
+     */
     public boolean isOk() {
-        return this == OK;
+        return httpStatus == 200;
+    }
+
+    /**
+     * 由 HTTP 状态码反查业务码。
+     *
+     * <p>用于把**不是我方代码**产生的状态码（Solon 路由的 404/405、容器停止时的 503）
+     * 也翻译成封套里的 {@code code}。找不到对应项时返回 {@link #INTERNAL_ERROR}：
+     * "不认识的状态"归为内部错误，比猜一个具体码更安全。
+     */
+    public static ErrorCode fromHttpStatus(int httpStatus) {
+        for (ErrorCode code : values()) {
+            if (code.httpStatus == httpStatus) {
+                return code;
+            }
+        }
+        return INTERNAL_ERROR;
     }
 }
