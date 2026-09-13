@@ -106,7 +106,6 @@ public final class DatabaseBootstrap {
     }
   }
 
-  /** 读取配置：系统属性优先于环境变量，便于 {@code mvn exec:java -DDB_URL=...} 临时覆盖。 */
   private static String read(String key) {
     String value = System.getProperty(key);
     if (value == null || value.isBlank()) {
@@ -126,7 +125,8 @@ public final class DatabaseBootstrap {
     return value;
   }
 
-  private static int intOr(String key, int fallback) {
+  /** 读取整数配置，缺省时用 {@code fallback}。系统属性优先于环境变量，便于命令行临时覆盖。 */
+  public static int intOr(String key, int fallback) {
     String value = read(key);
     if (value == null) {
       return fallback;

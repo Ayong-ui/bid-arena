@@ -8,6 +8,7 @@ import com.bidarena.shared.BizException;
 import com.bidarena.shared.Db;
 import com.bidarena.shared.ErrorCode;
 import com.bidarena.wallet.adapter.WalletRepository;
+import com.bidarena.wallet.domain.LedgerType;
 import com.bidarena.wallet.adapter.WalletRepository.WalletRow;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -174,7 +175,7 @@ public class BidService {
         if (delta > 0) {
             wallets.increaseFrozen(conn, userId, delta);
             wallets.setAuctionFrozen(conn, auctionId, userId, amount);
-            wallets.appendLedger(conn, userId, "FREEZE", delta, auctionId, requestId,
+            wallets.appendLedger(conn, userId, LedgerType.FREEZE, delta, auctionId, requestId,
                     me.totalBalance(), me.frozenAmount() + delta);
         }
 
@@ -225,7 +226,7 @@ public class BidService {
         }
         wallets.decreaseFrozen(conn, previousLeader, leaderFrozen);
         wallets.setAuctionFrozen(conn, auction.id(), previousLeader, 0L);
-        wallets.appendLedger(conn, previousLeader, "RELEASE", leaderFrozen, auction.id(), null,
+        wallets.appendLedger(conn, previousLeader, LedgerType.RELEASE, leaderFrozen, auction.id(), null,
                 leaderWallet.totalBalance(), leaderWallet.frozenAmount() - leaderFrozen);
     }
 

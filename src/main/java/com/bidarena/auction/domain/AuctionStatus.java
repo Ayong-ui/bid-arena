@@ -4,7 +4,7 @@ package com.bidarena.auction.domain;
  * 拍卖生命周期状态。取值与 {@code docs/openapi.yaml} 的 {@code AuctionStatus} 逐项一致。
  *
  * <pre>
- * DRAFT ──START──▶ RUNNING ──到期结算──▶ FINISHED
+ * DRAFT ──START──▶ RUNNING ──到期结算──▶ SETTLING ──▶ FINISHED
  *   │                 │
  *   └──CANCEL─────────┴──▶ CANCELLED
  * </pre>
@@ -16,7 +16,13 @@ package com.bidarena.auction.domain;
 public enum AuctionStatus {
     DRAFT,
     RUNNING,
-    /** 已到期、正在结算。结算前先转到这里，使重复触发在第一步就被挡住。 */
+    /**
+     * 已到期、正在结算。
+     *
+     * <p>它在**结算事务内部**被写入，不跨事务提交，因此外部永远观测不到。
+     * 这样做的理由见 {@code SettlementService} 类注释：把"已抢占但钱还没动"变成一个持久状态，
+     * 会让进程崩溃留下一个资金悬空、且扫描再也找不到的死状态。
+     */
     SETTLING,
     FINISHED,
     CANCELLED;

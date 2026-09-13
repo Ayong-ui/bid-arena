@@ -3,6 +3,7 @@ package com.bidarena.wallet.adapter;
 import com.bidarena.shared.Db;
 import com.bidarena.shared.ErrorCode;
 import com.bidarena.shared.BizException;
+import com.bidarena.wallet.domain.LedgerType;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Instant;
@@ -54,7 +55,7 @@ public class WalletRepository {
     }
 
     public record LedgerRow(
-            long id, String type, long amount, String auctionId, String requestId, Instant createdAt) {}
+            long id, LedgerType type, long amount, String auctionId, String requestId, Instant createdAt) {}
 
     // ------------------------------------------------------------------
     // 事务内：加锁读取
@@ -220,13 +221,13 @@ public class WalletRepository {
      * 同时记录变更后的两个余额快照，使任意一次余额变化都能被单行解释，
      * 不必回放整个历史。
      */
-    public void appendLedger(Connection conn, String userId, String type, long amount, String auctionId,
+    public void appendLedger(Connection conn, String userId, LedgerType type, long amount, String auctionId,
             String requestId, long totalAfter, long frozenAfter) throws SQLException {
         Db.update(conn,
                 "INSERT INTO ledger_entries "
                         + "(user_id, entry_type, amount, auction_id, request_id, total_after, frozen_after) "
                         + "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                userId, type, amount, auctionId, requestId, totalAfter, frozenAfter);
+                userId, type.name(), amount, auctionId, requestId, totalAfter, frozenAfter);
     }
 
     // ------------------------------------------------------------------
@@ -245,7 +246,8 @@ public class WalletRepository {
         return Db.read(dataSource, conn -> Db.queryList(conn,
                 "SELECT id, entry_type, amount, auction_id, request_id, created_at FROM ledger_entries "
                         + "WHERE user_id = ? AND (? = 0 OR id < ?) ORDER BY id DESC LIMIT ?",
-                rs -> new LedgerRow(rs.getLong("id"), rs.getString("entry_type"), rs.getLong("amount"),
+                rs -> new LedgerRow(rs.getLong("id"), LedgerType.valueOf(rs.getString("entry_type")),
+                        rs.getLong("amount"),
                         rs.getString("auction_id"), rs.getString("request_id"),
                         Db.instant(rs, "created_at")),
                 userId, beforeId, beforeId, limit));
