@@ -35,6 +35,12 @@ public class AuctionCommandService {
     /** 参与类型。HTTP 用户为 HUMAN；Agent 出价在 P5 用 AGENT，使运营能区分两类参与者。 */
     public static final String PARTICIPANT_HUMAN = "HUMAN";
 
+    /**
+     * Agent 参与类型。Agent 没有独立的加入接口：它在**出价事务内**以该类型补上参与记录
+     * （见 {@link BidService#placeBid(String, String, long, String, String)}，D-30）。
+     */
+    public static final String PARTICIPANT_AGENT = "AGENT";
+
     private static final int TITLE_MAX = 120;
     private static final int DESCRIPTION_MAX = 2000;
     private static final int DURATION_MIN_SECONDS = 10;

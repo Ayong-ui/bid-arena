@@ -84,6 +84,8 @@ public abstract class ApiTestHarness extends HttpTester {
     protected static DataSource ds;
     protected static int port;
     protected static int wsPort;
+    /** Agent API 的独立监听端口（P5）。与 {@code port} 分开是刻意的：它上面只存在 Agent 接口。 */
+    protected static int agentPort;
 
     static {
         // JDK 的 HttpURLConnection 默认把 Origin、Access-Control-Request-Method/Headers
@@ -109,6 +111,7 @@ public abstract class ApiTestHarness extends HttpTester {
         System.clearProperty("DB_USER");
         System.clearProperty("DB_PASSWORD");
         System.clearProperty("JWT_SECRET");
+        System.clearProperty("AGENT_SERVER_PORT");
     }
 
     /**
@@ -172,9 +175,15 @@ public abstract class ApiTestHarness extends HttpTester {
         // WebSocket 端口显式指定：默认是 HTTP 端口 + 10000，测试里要能确定地连上去。
         wsPort = freePort();
         System.setProperty("server.websocket.port", String.valueOf(wsPort));
+        // Agent 端口同样用随机空闲端口。注意这里读的是环境变量名 AGENT_SERVER_PORT
+        // （Application 里用 Env 读它），而 Env 的优先级是「系统属性 > 环境变量」，
+        // 所以用系统属性设进去同样生效，不必去改测试机的环境变量。
+        agentPort = freePort();
+        System.setProperty("AGENT_SERVER_PORT", String.valueOf(agentPort));
 
         Application.main(new String[0]);
         awaitHealthy();
+        awaitAgentHealthy();
     }
 
     /**
@@ -210,7 +219,23 @@ public abstract class ApiTestHarness extends HttpTester {
     }
 
     protected Resp call(String method, String url, String token, String jsonBody, String... headers) {
-        HttpUtils http = path(url);
+        return execute(path(url), url, method, token, jsonBody, headers);
+    }
+
+    /**
+     * 打到 <b>Agent 端口</b>（默认只提供 {@code /api/v1/agent/**}）的请求。
+     *
+     * <p>与 {@link #call} 分开而不是给它加一个端参：Agent 端口的边界本身就是被测对象
+     * （“同一个路径在 8080 上存在、在 8090 上不存在”），把两者写在同一个方法里
+     * 会让每一处调用都要问一遍“这次用的是哪个端口”。
+     */
+    protected Resp agentCall(String method, String url, String agentToken, String jsonBody, String... headers) {
+        return execute(HttpUtils.http("http://localhost:" + agentPort + url), url, method, agentToken, jsonBody,
+                headers);
+    }
+
+    private static Resp execute(HttpUtils http, String url, String method, String token, String jsonBody,
+            String... headers) {
         if (token != null) {
             http = http.header("Authorization", "Bearer " + token);
         }
@@ -375,13 +400,40 @@ public abstract class ApiTestHarness extends HttpTester {
             } catch (Exception ignored) {
                 // 端口还没起来是正常的，继续等。
             }
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("等待服务启动时被中断", e);
-            }
+            pause(100);
         }
         throw new IllegalStateException("服务在 10 秒内没有在端口 " + port + " 上就绪");
+    }
+
+    /**
+     * 等 Agent 端口就绪。
+     *
+     * <p>拿一个无凭证的 Agent 请求当探针：只要监听器起来了，就一定会得到一个 401 封套；
+     * 连接被拒则说明它根本没起来（Plugin 没注册、端口被占、或启动顺序变了），
+     * 而这时的报错信息必须是“Agent 端口没起来”，而不是某个用例里莫名其妙的
+     * {@code ConnectException}。
+     */
+    private static void awaitAgentHealthy() {
+        String probe = "http://localhost:" + agentPort + "/api/v1/agent/auctions/probe";
+        for (int attempt = 0; attempt < 100; attempt++) {
+            try (HttpResponse resp = HttpUtils.http(probe).exec("GET")) {
+                if (resp.code() == 401) {
+                    return;
+                }
+            } catch (Exception ignored) {
+                // 同上。
+            }
+            pause(100);
+        }
+        throw new IllegalStateException("Agent API 在 10 秒内没有在端口 " + agentPort + " 上就绪");
+    }
+
+    private static void pause(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("等待服务启动时被中断", e);
+        }
     }
 }

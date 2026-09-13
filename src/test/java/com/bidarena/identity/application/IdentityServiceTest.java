@@ -98,9 +98,16 @@ class IdentityServiceTest {
     void tamperedTokensAreRejected() {
         String token = services.identity.login("a@test.local", PASSWORD).accessToken();
 
-        // 只改签名段的最后一个字符：载荷与头部都完好，唯一的差别就是签名。
-        String tampered = token.substring(0, token.length() - 1)
-                + (token.endsWith("A") ? "B" : "A");
+        // 只改签名段的**第一个**字符：头部与载荷完好，唯一的差别就是签名。
+        //
+        // 不能改末位字符（DEBUG_LOG DBG-24）：签名字节数是 32，base64url 编出来是 43 个字符，
+        // 末位字符里有两个 bit 是填充位、解码时被丢掉。改成另一个只差填充位的字符，
+        // 解出来的签名字节完全一样，于是"篡改过的令牌"依然能验签通过——
+        // 这个用例每 16 次会红 1 次。改首位字符则 6 个 bit 全部参与，必然换掉签名字节。
+        int signatureStart = token.lastIndexOf('.') + 1;
+        String tampered = token.substring(0, signatureStart)
+                + (token.charAt(signatureStart) == 'A' ? 'B' : 'A')
+                + token.substring(signatureStart + 1);
         assertEquals(ErrorCode.UNAUTHENTICATED,
                 assertThrows(BizException.class, () -> services.tokens.verify(tampered)).code());
 

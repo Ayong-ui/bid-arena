@@ -13,8 +13,10 @@ import com.bidarena.shared.BizException;
 import com.bidarena.shared.Db;
 import com.bidarena.shared.ErrorCode;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import javax.sql.DataSource;
 
 /**
@@ -102,6 +104,16 @@ public class AuctionQueryService {
      */
     public boolean isParticipant(String auctionId, String userId) {
         return Db.read(dataSource, conn -> auctions.isParticipant(conn, auctionId, userId));
+    }
+
+    /**
+     * 从给定 ID 中筛出真实存在的拍卖（见 {@link AuctionRepository#existingIds}）。
+     *
+     * <p>提供给 Agent 凭据的签发流程校验授权范围：它需要的是"这几个拍卖在不在"
+     * 这个事实，而不是每个拍卖的快照——后者会多读十几次无关列。
+     */
+    public Set<String> existingIds(Collection<String> auctionIds) {
+        return auctions.existingIds(auctionIds);
     }
 
     private Instant serverTime() {

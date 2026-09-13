@@ -25,5 +25,13 @@ data/
 tmp/
 logs/
 
+# Local AI tooling state (not part of the project)
+.claude/
+.mellos/
+
+# Python tooling bytecode (tools/*.py 被 scripts 直接执行，会生成 __pycache__)
+__pycache__/
+*.pyc
+
 # Source requirement PDF is intentionally kept out of the public repository.
 *.pdf

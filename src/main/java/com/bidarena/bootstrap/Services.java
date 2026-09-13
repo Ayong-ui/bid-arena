@@ -1,5 +1,9 @@
 package com.bidarena.bootstrap;
 
+import com.bidarena.agentaccess.application.AgentAuctionService;
+import com.bidarena.agentaccess.application.AgentRateLimiter;
+import com.bidarena.agentaccess.application.AgentTokenService;
+import com.bidarena.agentaccess.persistence.AgentTokenRepository;
 import com.bidarena.auction.persistence.AuctionRepository;
 import com.bidarena.auction.adapter.AuctionSocketHandler;
 import com.bidarena.auction.persistence.SettlementRepository;
@@ -51,6 +55,12 @@ public final class Services {
     public final AuctionQueryService auctionQueries;
     public final AuctionCommandService auctionCommands;
 
+    // —— 竞拍 Agent（P5）——
+    // Agent 的认证与限流独立于用户 JWT；出价则完全复用上面那套业务服务与事务语义。
+    public final AgentTokenRepository agentTokenRepo;
+    public final AgentTokenService agentTokens;
+    public final AgentAuctionService agentAuctions;
+
     // —— 实时通道 ——
     public final WsEventBroadcaster broadcaster;
     public final WsTicketService wsTickets;
@@ -96,6 +106,14 @@ public final class Services {
 
         // 入站适配器放在最后：它依赖查询服务（握手要先读快照），而路由注册在 Application。
         this.auctionSocket = new AuctionSocketHandler(wsTickets, auctionQueries, broadcaster);
+
+        // —— 竞拍 Agent ——
+        // 限流器是有状态的（按 Token 记窗口），整个进程共用一个实例；
+        // 每个 AgentTokenService 都要用同一个，否则“每个实例各算一份”会先在同一进程里发生。
+        this.agentTokenRepo = new AgentTokenRepository(ds);
+        this.agentTokens = new AgentTokenService(agentTokenRepo, new AgentRateLimiter(),
+                auctionQueries::existingIds);
+        this.agentAuctions = new AgentAuctionService(agentTokens, auctionQueries, bids);
     }
 
     /** 生产接线：令牌配置从环境读取，缺失即启动失败（见 {@link Env#required}）。 */

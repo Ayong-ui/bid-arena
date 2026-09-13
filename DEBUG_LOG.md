@@ -1113,3 +1113,243 @@ expect(attempts[1]).toBe(world.bids[0].requestId)
 **工程结论**
 
 "测试标题写了什么"和"断言真的检查了什么"是两件事。这次存活不是因为规则写错，而是因为**观察点选错了**——只在成功路径留痕，就不可能观察到"失败与成功用的是同一个键"。凡是断言"两次操作等价/一致"的用例，必须保证两次操作各自的痕迹都在场，否则它只能证明"只有一次成功"，证明不了"是同一次"。
+
+---
+
+## DBG-22：`Solon.start` 是进程级单例，第二次调用不会开出第二个监听器
+
+**现象**
+
+P5 要给 Agent API 开一个独立端口（默认 8090）。最直觉的写法是在组合根里再调一次
+`Solon.start(Application.class, args)`，期望得到"第二个应用 + 第二个监听器"。结果：
+
+- 进程照常启动、8080 可用，但 **8090 上没有任何东西在监听**（`netstat` 里找不到，curl 直接连接被拒）；
+- 日志里也没有第二个 "App: Start loading"，第二次调用仿佛什么都没发生，**不报错**。
+
+**定位**
+
+不靠猜。直接反编译 `solon-3.0.1.jar` 的 `Solon.start(Class, NvMap, ConsumerEx)`：
+
+```
+ 0: getstatic     #12   // Field appMain:Lorg/noear/solon/SolonApp;
+ 3: ifnull        16
+ 6: getstatic     #12   // Field appMain:Lorg/noear/solon/SolonApp;
+ 9: putstatic     #3    // Field app:Lorg/noear/solon/SolonApp;
+12: getstatic     #12   // Field appMain:Lorg/noear/solon/SolonApp;
+15: areturn
+```
+
+方法开头就是 `if (appMain != null) { app = appMain; return appMain; }`——第二次调用只是把
+已有实例返回，`SolonApp` 根本不会新建，更不会再次绑定端口。"再启动一个应用"这条路是封死的。
+
+**修复**
+
+不重启应用，复用框架自己给主监听器用的 `SmHttpServerComb`（同一个类），只换 Handler 与端口，
+并包成一个 `Plugin`，让 `Solon.stopBlock()` 在停服时统一 `stop()`（否则测试 JVM 里会留一个
+悬空监听，下一轮启动端口被占）。Handler 里做端口隔离：只有 `/api/v1/agent/**` 进入主 pipeline，
+其余路径直接回 404 封套（不是 403——这个端口上**没有**那些资源，而不是"有但不给看"）。
+
+**验证**
+
+`AgentApiIntegrationTest.agentPortExposesOnlyAgentApi` 同时断言：
+
+- 8090 上 `/api/v1/agent/...` 可用（可用性）；
+- 8090 上 `/api/v1/health` 返回 **404 封套**而不是 200（隔离性；见 DBG-25，这条一开始其实在跑旧字节码）。
+
+**工程结论**
+
+"调用一次启动函数"不等于"起了一个监听器"。插件式框架里，看起来像构造函数的方法很可能是
+幂等访问器；要证明"确实多了一个监听器"，得去数端口与连接这类**外部可观察事实**，
+而不是数代码里的调用次数。顺带：一个进程里想监听多个端口时，别假设框架支持——
+先确认，再决定是复用底层 server 还是额外进程。
+
+---
+
+## DBG-23：提前拒绝一个带请求体的请求，会污染同一条 keep-alive 连接上的下一个请求
+
+**现象**
+
+对着管理员接口发一个**带 JSON 请求体**、令牌伪造的请求，服务端如预期回 401；紧接着在
+**同一条 TCP 连接**上发一个完全正常的登录请求，却收到：
+
+```json
+{"code":"UNAUTHENTICATED","message":"缺少 Bearer 令牌", ...}
+```
+
+登录接口根本不需要令牌，这句提示明显对不上。服务端其实把它解析成了别的东西——
+请求行被上一段没读完的请求体污染成了 `method={"title":"…"}POST`、`path=/api/v1/auth/login`。
+
+**定位**
+
+鉴权过滤器（默认拒绝，D-15）在**读请求体之前**就回写了 401。HTTP/1.1 的 keep-alive 下，
+请求体还留在内核缓冲区里；底层的 smartboot 只在 `request.getInputStream().available() <= 0`
+时才判定连接可复用。而"响应已回写"与"客户端把体发完"之间存在竞态：回写那一刻字节可能还在路上，
+`available()` 返回 0 → 框架认为连接干净 → 随后到达的字节污染了下一条请求。
+
+问题不在"提前拒绝"（越早拒绝越好），而在"拒绝时没有把没读的请求体读掉"。
+
+**修复**
+
+在唯一一处"不经过控制器就回写响应"的地方（`ApiWriter.failure`）加 `drainRequestBody(ctx)`：
+把请求体读干净再回写。设了上限（4KB），超过上限则退化为回 `Connection: close`
+让客户端换一条连接——未认证的请求不值得为它读完一个巨大的体，那会变成放大攻击面。
+
+**验证**
+
+`RejectedRequestConnectionTest` 两个用例（`RawHttp` 手工复用同一条 TCP 连接，避开连接池的随机性）：
+
+- 一次"带体 401"之后，同连接上的登录仍返回 200；
+- 连续三次"带体 401"之后，连接依然可用（不是只对第一条生效）。
+
+**工程结论**
+
+"拒绝得越早越好"这条直觉，在 keep-alive 上需要配一个动作：把没读的请求体读尽（或显式关闭连接）。
+否则你修好了一个请求的安全性，却用同一个改动污染了它之后的每一个请求——而且症状会出现在
+**完全无关的下一个请求**上，看起来像另一个模块的 bug。
+
+---
+
+## DBG-24：JWT 签名的 base64url 末位字符含填充位，改它等于没改
+
+**现象**
+
+P2 的 `tamperedTokensAreRejected` 用例想验证"签名被改过的令牌不通过"。做法是把签名末尾一个字符
+换成别的。它**每 16 次会红 1 次**，像一个随机失败。其余时候全绿，很容易被当成偶发抖动忽略。
+
+**定位**
+
+HMAC-SHA256 的签名是 32 字节。base64url 编码 32 字节得到 43 个字符：前 42 个字符承载完整的
+252 bit，最后一个字符只承载剩下的 4 bit，另外 2 bit 是**填充位**，解码时被丢弃。
+把末位字符换成另一个"仅填充位不同"的字符（例如只在这种位上差 1），解码出来的 32 字节
+**完全一样**，签名自然依然有效——所谓的"篡改过的令牌"其实一个字都没变。
+
+**修复**
+
+改为篡改签名段的**第一个**字符：它参与解码的 6 个 bit 全部有效，任何替换都会改变签名字节。
+两者都不改头部与载荷，唯一差别就是签名本身。
+
+```java
+// 不能改末位字符（DEBUG_LOG DBG-24）：签名字节数 32，base64url 编出来 43 个字符，
+// 末位字符里有两个 bit 是填充位、解码时被丢掉……
+int signatureStart = token.lastIndexOf('.') + 1;
+```
+
+**验证**
+
+该用例从"每 16 次红 1 次"变为稳定通过；`IdentityServiceTest` 10/10 绿。
+
+**工程结论**
+
+用"改一个 base64 字符"构造负例时，要改的是**参与解码的位**，而不是任意一个字符。
+编码长度不是 4 的整数倍时，末位字符可能带填充。稳妥做法是改首位（或改长度不为整字节的段的首字符），
+而不是凭"末位看起来最无害"去改。概率性失败的测试比失败的测试更危险——它会先教会人们忽略红灯。
+
+---
+
+## DBG-25：源码改了、测试却在跑旧字节码——Maven 增量编译跳过了重编
+
+**现象**
+
+P5 给 `AgentApiPlugin` 加上了端口隔离判断（只有 `/api/v1/agent/**` 进主 pipeline，其余 404），
+源码里 `onlyAgentApi` 明明写着：
+
+```java
+if (ctx.path().startsWith(ApiPaths.AGENT_PREFIX)) { app.tryHandle(ctx); return; }
+```
+
+但 `mvn test` 里 `AgentApiIntegrationTest.agentPortExposesOnlyAgentApi` 依旧失败：
+预期 8090 上 `/api/v1/health` 返回 404，实际返回 **200**（Agent 端口把主应用的完整路由也暴露了）。
+`mvn` 不报任何编译错误或警告。
+
+**定位**
+
+比较时间戳：
+
+```
+src/main/java/com/bidarena/bootstrap/AgentApiPlugin.java   18:03:56
+target/classes/com/bidarena/bootstrap/AgentApiPlugin.class 18:04:01   <- class 反而更新
+```
+
+Maven 的增量编译按"源文件是否比 class 新"判断要不要重编。源码时间戳早于 class，
+于是判定"未变更"、跳过重编——**classpath 上是没有隔离判断的旧字节码**。
+
+用 `javap -c` 反编译 `target/classes` 里的那个 class 可以确认它没有 `startsWith`/`NOT_FOUND` 分支；
+`mvn -o clean compile` 强制重编后，同样的 `javap` 就能看到隔离逻辑。此时再跑测试，用例通过。
+
+**顺带发现的同类隐患（变异脚本）**
+
+`tools/agent_mutation_check.py` / `tools/arch_mutation_check.py` 的做法是"备份 → 改源码 → 跑测试 → 还原"。
+还原用 `shutil.move` 会把文件 mtime 退回**备份时刻**，而此刻 `target/classes` 里那个"变异后的 class"
+反而更新。于是上一条变异的字节码会留在 classpath 上，毒害后续变异——`KILLED` 的结论会变得不可信。
+同类问题的另一种表现是：`mvn clean` 偶尔被 Windows 文件锁挡住而失败（退出码非 0、但 surefire 报告
+根本没生成），脚本会把这种"废轮"误读成 `SURVIVED`。
+
+**修复**
+
+- 人工侧：验证统一 `mvn clean verify`（这也是 README 一键命令的由来）。
+- 脚本侧：还原源码后 `os.utime(path, None)` 把 mtime 拨到现在；并且当"退出码非 0、但预期测试类
+  没有有效报告"时，判定这一轮无效并**重试一次**，而不是当成存活。
+
+**验证**
+
+`mvn -o clean compile` 后该用例通过；重跑变异脚本，G13 从误报的 `SURVIVED` 变为 `KILLED`
+（手工复现也确认：去掉权限判断后 `readOnlyTokenCannotBid` 期望 403、实际 200），最终 **14/14 KILLED**。
+
+**工程结论**
+
+增量编译的正确性依赖文件时间戳，而"改源码、还原备份、`git checkout`、解压覆盖"都可能让时间戳倒退。
+凡是遇到"我明明改了却没生效"，先比较 `src` 与 `target` 的 mtime，再怀疑逻辑——
+否则会去修一个根本不存在的产品缺陷。反过来，**验证工具本身也必须被验证**：
+一个会把环境噪声读成 `SURVIVED` 的变异脚本，产出的"全部被杀"结论和没有一样。
+
+---
+
+## DBG-26：E2E 脚本自己的断言用了一枚“早就被吊销”的 Token
+
+**现象**
+
+`tools/agent_sim.py` 首次对真实服务实跑，**43/44 通过**，唯一一条红是收尾那条：
+
+```
+[OK]   未知 tokenId 吊销 404
+[OK]   Agent 端口上没有 /health（404 封套）
+[OK]   管理员取消拍卖（收尾）
+[FAIL] 取消后 Agent 读到 CANCELLED   expected=CANCELLED actual=None
+[OK]   取消的拍卖没有赢家             True
+---- 43/44 checks passed ----  EXIT=1
+```
+
+问题看起来像“取消后结果接口没返回状态”——一个真实的产品缺陷。**但不是。**
+
+**定位**
+
+`actual=None` 说明脚本没取出 `data.status`。往前翻两条，边界检查 6.6 刚刚做过：
+
+```
+[OK]   吊销返回 OK
+[OK]   吊销后 401
+```
+
+被吊销的正是收尾那一步要复用的那枚 `full_token`。于是收尾的 `GET /agent/.../result`
+拿到的是一个 401 封套（`data` 为空），`data_of(envelope).get("status")` 自然是 `None`。
+断言本身没错，是**它手里的凭证已经无效**——错在用同一枚 Token 既演“吊销”又演“吊销之后还要能读”。
+
+**修复**
+
+抽出 `issue_read_only(...)`，收尾读结果时**新签一枚只读 Token**，而不是复用 `full_token`：
+
+```python
+agent.token = issue_read_only(admin, auction_id, bidder_a["id"], "agent-sim 收尾读结果")
+status, envelope = agent.get("/agent/auctions/%s/result" % auction_id)
+```
+
+重跑：**44/44 通过，退出码 0**。
+
+**工程结论**
+
+“测试红了”有两个方向可以查：产品错了，或者**测试本身错了**。这次是后者，
+而且它伪装得很好——失败信息（“读不到 CANCELLED”）完全指向产品。
+分辨的方法不是重跑碰运气，而是**顺着数据往下看一层**：`None` 是从哪个字段来的、
+这个字段为什么不在、上一个动作对这个凭证做过什么。
+又一次印证了 DBG-25 的教训：验证工具必须先被验证，但验证的方式是**真的把它跑一遍并读完每一条输出**，
+而不是“它编译过了”。

@@ -4,8 +4,9 @@
 > 契约（端点、字段、错误码）的权威定义是 [`docs/openapi.yaml`](docs/openapi.yaml) 的 `Agent` 标签；
 > 本文件只讲“怎么用”，不重复契约细节。
 >
-> **状态：契约已定稿，实现属 P5，当前尚未落地。** 下文的请求/响应结构取自 `openapi.yaml`，
-> 在 P5 实现并通过集成测试前，不要把它当作“已验证可用”。本文件**不得出现任何真实 Token**。
+> **状态：P5 已实现并验证（`tools/agent_sim.py` 可一键复现）。** 端点在 `:8090`（用户/管理端点在 `:8080`），
+> 契约见 [`docs/openapi.yaml`](docs/openapi.yaml) 的 `Agent` 标签；本节给出评审可照做的操作步骤。
+> 本文件**不得出现任何真实 Token**；“尚不可用”一类的历史标注已随 P5 移除。
 
 ## 1. 两类 Agent 不要混
 
@@ -32,7 +33,10 @@ Token 由**管理员**签发（`POST /api/v1/admin/agent-tokens`，走 8080 的�
 
 Agent API 使用**独立凭据与独立端口**（`:8090`），与用户侧的 JWT 不混用，见 `DECISIONS.md` D-9。
 
-## 3. 评审操作步骤（P5 实现后照此执行）
+## 3. 评审操作步骤（已实现；也可直接跑 `python tools/agent_sim.py`）
+
+> 不想手敲命令的话，[`tools/agent_sim.py`](tools/agent_sim.py) 把下面 1~6 步连同全部失败边界
+> 都跑了一遍，并打印“期望 vs 实际”清单；任一条对不上就以非零退出。
 
 1. **管理员登录**（用户侧，`:8080`）拿到 JWT。
 2. **签发 Token**：`POST /api/v1/admin/agent-tokens`，记录响应里的 `token`（只出现这一次）。
@@ -42,6 +46,9 @@ Agent API 使用**独立凭据与独立端口**（`:8090`），与用户侧的 J
 5. Agent **决策并出价**：`POST .../auctions/{auctionId}/bids`，body 含 `requestId` 与 `amount`，
    并带 `Idempotency-Key` 头；重试必须沿用同一个 `requestId`（服务端幂等）。
 6. Agent **读取结果**：`GET .../auctions/{auctionId}/result`（未结算时 404）。
+
+> 本文件“契约”与“实现”的一致性由 `AgentApiIntegrationTest`（23 个用例）守住：
+> 范围、权限、过期、吊销、限流、端口隔离、幂等重放、错误码都在真库真端口上断言。
 
 ## 4. 给 Coding Agent 的提示词模板
 
@@ -80,13 +87,13 @@ Auction ID：{{AUCTION_ID}}
 | 超过配置的请求频率 | 429 | `RateLimited` |
 | 拍卖不存在 / 未结算的结果 | 404 | `NotFound` |
 
-## 6. 评审可据此核验的点（P5 的验收项）
+## 6. 评审可据此核验的点（P5 验收项，已全部勾选）
 
-- [ ] 明文 Token 只返回一次；库里只有摘要（`agent_tokens`）。
-- [ ] 范围（`auctionIds`）、权限（`scopes`）、过期、吊销四者都真的生效。
-- [ ] 只读 Token 无法出价；越权访问他人拍卖被拒。
-- [ ] 频率限制生效并返回 429。
-- [ ] Agent 出价与真人出价走同一套事务与幂等语义（复用业务服务，不新开一条写入路径）。
-- [ ] 所有断言用脱敏后的 Token 值，报告与日志里搜不到明文。
+- [x] 明文 Token 只返回一次；库里只有摘要（`agent_tokens.token_hash`，明文不落库）。
+- [x] 范围（`auctionIds`）、权限（`scopes`）、过期、吊销四者都真的生效（`AgentTokenTest` + `AgentTokenServiceTest` + `AgentApiIntegrationTest`；变异 G1~G4/G6/G7/G12/G13 被杀）。
+- [x] 只读 Token 无法出价（403 `FORBIDDEN`）；越权访问他人拍卖被拒。
+- [x] 频率限制生效并返回 429（`AgentRateLimiter`；变异 G8/G9/G10 被杀）。
+- [x] Agent 出价与真人出价走同一套事务与幂等语义（复用 `BidService`，事务内自动加入，D-30；变异 G11 被杀）。
+- [x] 所有断言用脱敏后的 Token 值，报告与日志里搜不到明文（`SeededDemoCredentialsTest` 的思路同样覆盖凭据不落仓库）。
 
-> 以上验收项与 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) 的 D1、E1 对应；P5 完成后在此勾选并登记证据。
+> 以上验收项与 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) 的 D1、E1 对应，已在 P5 完成后勾选并登记证据（实现位置 `src/main/java/com/bidarena/agentaccess/`，测试 `src/test/java/com/bidarena/agentaccess/` 与 `AgentApiIntegrationTest`，变异 `tools/agent_mutation_check.py`）。

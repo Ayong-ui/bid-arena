@@ -9,8 +9,9 @@ info:
     为准；Idempotency-Key 头是等价的可选写法，两者都提供时必须一致。
 
     两个约定，写在前端接入前：
-    1) 服务端序列化器会**省略值为 null 的字段**，所以“字段缺失”与“值为 null”是同一件事，
-       客户端不要用 in/keys 判断字段是否存在（例：取消的拍卖结果里没有 winner）。
+    1) 【字段缺失】与【值为 null】是同一件事：客户端不得用 in/keys 判断字段是否存在。
+       服务端**可能**输出 `"winner": null`，也**可能**直接省略它（例：取消的拍卖结果里没有 winner），
+       两者的语义都是“这一场没有中标人”。不要依赖其中之一，只判断“取不到或为 null”。
     2) 成功码有两种：OK 与 IDEMPOTENCY_REPLAY（都是 HTTP 200）。重放不是错误，
        但客户端应当用它提示“本次提交已按首次结果处理”，而不是当成新成交。
 
@@ -213,6 +214,11 @@ paths:
       tags: [Admin]
       security: [{bearerAuth: []}]
       operationId: revokeAgentToken
+      description: |
+        吊销一枚 Agent Token。**幂等**：重复吊销同一枚仍然返回 200（首次吊销的时间戳不变），
+        因为“让它变成已吊销”是一个可以安全重试的指令；未知 tokenId 才是 404。
+
+        响应里的 `token` 恒为 null（吊销后自然拿不回明文），保留该字段只为与签发响应同形。
       parameters:
         - in: path
           name: tokenId
@@ -229,11 +235,18 @@ paths:
       tags: [Agent]
       security: [{agentToken: []}]
       operationId: agentAuction
+      description: |
+        读取竞拍快照。**这把接口同时也在 8080 上可用**；8090 只是额外的一个最小暴露面，
+        它上面除了 /agent/** 之外的一切路径都返回 404 封套（连 /health 也没有）。
+
+        Agent 凭证的三个失败码分工：401 = 不认识/已过期/已吊销（不区分原因，避免试探）；
+        403 = 凭证有效但越权（缺权限，或这场拍卖不在 auctionIds 里）；429 = 超出该 Token 的频率上限。
       parameters: [{$ref: '#/components/parameters/AuctionId'}]
       responses:
         '200': {$ref: '#/components/responses/EnvelopeAuction'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/RateLimited'}
   /agent/auctions/{auctionId}/bids:
     servers:
       - url: http://localhost:8090/api/v1
@@ -251,6 +264,8 @@ paths:
             schema: {$ref: '#/components/schemas/BidRequest'}
       responses:
         '200': {$ref: '#/components/responses/EnvelopeBidResult'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/RateLimited'}
   /agent/auctions/{auctionId}/result:
@@ -421,9 +436,14 @@ components:
       properties:
         name: {type: string, maxLength: 80}
         agentUserId: {type: string}
+        # 省略 = 默认拒绝（D-29）：这枚 Token 对任何一场拍卖都无权访问，而不是“全部允许”。
+        # 签发时允许为空，是为了不在契约层制造另一种“必填”错误：漏填范围的后果
+        # 由 403 明确暴露，比“签发失败”更容易被发现是被授权范围写窄了。
         auctionIds: {type: array, items: {type: string}}
         scopes: {type: array, items: {type: string, enum: [auction:read, auction:bid]}}
         expiresAt: {type: string, format: date-time}
+        # 省略则用服务端默认值（60/分钟）。上限是 6000：再高就不是限流而是摆设了。
+        rateLimitPerMinute: {type: integer, minimum: 1, maximum: 6000, default: 60}
     Wallet:
       type: object
       required: [totalBalance, frozenAmount, availableBalance]

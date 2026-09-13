@@ -2,7 +2,7 @@
 
 仓库地址：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开启分支保护）
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V3）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**，**WebSocket 实时事件与 `seq` 缺口恢复**，以及**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）。全量 **125 个测试**（116 个真实 MySQL 集成测试覆盖 INV-1~4 与 A/C 组相关验收项 + 9 条架构规则）。尚未完成：前端接真实 HTTP/WS、Agent API、模拟脚本与 Compose/E2E。
+这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V4）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及**竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流）与**端到端模拟脚本**。全量 **187 个测试**（178 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
@@ -62,6 +62,18 @@ npm run dev
 - 前端开发地址：`http://localhost:5173`
 - 健康检查：`GET http://localhost:8080/api/v1/health`（公开，无需令牌）
 
+也可以用容器起后端（本机只需要 Docker，不需要装 JDK/Maven）：
+
+```bash
+cp .env.example .env      # 填好 JWT_SECRET（必须）
+docker compose up -d mysql backend
+```
+
+`backend` 服务会等 MySQL 健康后启动，并自己跑 Flyway 迁移与种子（与本地直连共用同一套迁移）。
+它映射三个端口：`8080`（用户/管理）、`8090`（Agent）、`18080`（WebSocket）。
+只想建镜像：`docker build -t bid-arena-backend .`。
+（注：本仓库的验证流程没有实际 `docker compose up` 过——评测机的容器按约定不重建，见 [docs/STATUS.md](docs/STATUS.md) 的 C-6。）
+
 ### 已实现的 HTTP 接口
 
 所有响应都是同一个封套 `{ code, message, data, requestId }`，完整契约（含每个字段与错误码）见 [docs/openapi.yaml](docs/openapi.yaml)。除下表标注「公开」的两个接口外，其余一律需要 `Authorization: Bearer <token>`（默认拒绝，见 `DECISIONS.md` D-15）。
@@ -83,6 +95,11 @@ npm run dev
 | POST | `/api/v1/admin/auctions/{id}/start` | 管理员：开始拍卖 |
 | POST | `/api/v1/admin/auctions/{id}/cancel` | 管理员：取消并释放全部冻结 |
 | POST | `/api/v1/auth/ws-tickets` | 领一张一次性 WebSocket 入场券（60 秒有效，见下节） |
+| POST | `/api/v1/admin/agent-tokens` | 管理员：为某个用户签发 Agent Token（明文**只在本次响应**出现） |
+| POST | `/api/v1/admin/agent-tokens/{tokenId}/revoke` | 管理员：吊销 Token（幂等；不存在则 404） |
+| GET | `/api/v1/agent/auctions/{id}` | Agent（`:8090`）：拍卖快照（需 `auction:read` 且在该 Token 的拍卖范围内） |
+| POST | `/api/v1/agent/auctions/{id}/bids` | Agent（`:8090`）：出价（需 `auction:bid`；body 含 `requestId` 与 `amount`） |
+| GET | `/api/v1/agent/auctions/{id}/result` | Agent（`:8090`）：成交结果（未结算时 404） |
 
 演示账号（种子数据，与原文一致）：`admin@example.com / Admin123456!`、`bidder_a@example.com / Test123456!`、`bidder_b@example.com / Test123456!`。
 
@@ -109,6 +126,55 @@ curl -s -X POST http://localhost:8080/api/v1/auth/ws-tickets \
 - `seq` 是“已提交状态变更的版本号”：一次命令 +1，被拒的出价不推，一次提交的多个事件共用一个 `seq`。发现缺口就重取 `GET /api/v1/auctions/{id}`，不要猜测。
 - **发往服务端的消息会被忽略**：命令入口只有 HTTP（D-22）。
 
+## 竞拍 Agent API（`:8090`，P5）
+
+竞拍 Agent（脚本、外部程序）用一个**独立于用户 JWT 的凭据**、在**独立端口**上读状态与出价。
+为什么分开：Agent 需要长时间无人看管地运行，把用户 JWT 交给它等于把整张用户权限表交出去（D-9）。
+评审可直接看 [AGENT_TOOL_SPEC.md](AGENT_TOOL_SPEC.md)（操作步骤、提示词模板、失败边界）。
+
+三步上手（管理员签发 → Agent 使用 → 随时吊销）：
+
+```bash
+# 1. 管理员签发：把明文交出去一次（仅本次响应有；库里只存 sha256 摘要）
+curl -s -X POST http://localhost:8080/api/v1/admin/agent-tokens \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"sniping-bot","agentUserId":2,"scopes":["auction:read","auction:bid"],\
+       "auctionIds":["1"],"expiresAt":"2030-01-01T00:00:00Z","rateLimitPerMinute":60}'
+# → data.token 即 Agent Token（前缀类似 agt_...；只在这里出现一次）
+
+# 2. Agent 读快照与出价（注意端口是 8090，不是 8080）
+curl -s http://localhost:8090/api/v1/agent/auctions/1 \
+  -H "Authorization: Bearer $AGENT_TOKEN"
+curl -s -X POST http://localhost:8090/api/v1/agent/auctions/1/bids \
+  -H "Authorization: Bearer $AGENT_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"requestId":"bot-0001","amount":1200}'
+
+# 3. 吊销（幂等；不存在返回 404）
+curl -s -X POST http://localhost:8080/api/v1/admin/agent-tokens/1/revoke \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+几个容易踩的点（都有测试与决策记录）：
+
+- **范围缺省即拒绝**：不写 `auctionIds` 不是“允许全部”，而是空集合、什么都访问不了（D-29）。
+  越权访问返回 **403**（说明“换张 Token”，而不是 401“你的 Token 不行”）。
+- **只读 Token 不能出价**：`scopes` 里没有 `auction:bid` 就 403（变异 G4/G13 守住）。
+- **同一个出价事务**：Agent 出价不是第二条写入路径，它调的就是用户出价用的 `BidService.placeBid`，
+  与真人共享 `bid_requests` 幂等表；首次出价会在**同一个事务**里自动补参与记录（D-30）。
+- **端口是真隔离**：`:8090` 上只有 `/api/v1/agent/**`，其它路径（包括 `/api/v1/health`）一律 404 封套（DBG-22）。
+- **吊销/过期立即失效**；超频返回 **429 `RATE_LIMITED`**。
+
+一键实跑（扮演管理员与两个竞拍 Agent，逐条对比“期望 vs 实际”，任一条不符立即非零退出）：
+
+```bash
+# 需要后端已在 8080/8090 上运行（可用开发库）
+python tools/agent_sim.py            # 完整流程 + 全部失败边界
+python tools/agent_sim.py --skip-boundary   # 只看主链路
+python tools/agent_sim.py --duration 60     # 拍卖持续秒数（默认 300）
+```
+
+脚本只用 Python 标准库（不需要 `pip install`）；每次运行自己创建拍卖与 Token，结束后默认清理（`--keep` 可保留供手工核对）。
+
 ## 设计与决策
 
 - 业务全景（角色、主链路、四条不变式）、分层与一致性方案见 [DESIGN.md](DESIGN.md)。
@@ -127,16 +193,18 @@ curl -s -X POST http://localhost:8080/api/v1/auth/ws-tickets \
 
 目前**还不能**做到的事，以及对应的原因：
 
-- **竞拍 Agent API（`:8090`）尚未实现**。`docs/openapi.yaml` 与 [AGENT_TOOL_SPEC.md](AGENT_TOOL_SPEC.md) 已定义
-  Token 形态与三个 Agent 端点，但实现属 P5，现在把 Token 交出去调不出结果。
-- **模拟脚本与一键 E2E 还没做**。20 人并发、相同 `requestId` 重试、最后 5 秒狙击与结算核对，目前由
-  后端集成测试等价覆盖（真实 MySQL），但还没有可直接执行的 `npm run simulate:auction`。
-- **Compose 目前只起 MySQL**，不含前后端一键拉起。
+- **模拟脚本只覆盖了 Agent 一侧**。`tools/agent_sim.py` 已能在真实双端口上跑通「签发 → 读 → 出价 →
+  幂等重放 → 越权/过期/吊销/限流边界 → 结果」，但原要求里的「20 用户并发 + 最后五秒狙击 +
+  断线快照」还不是独立脚本，目前由后端集成测试等价覆盖（`BidConcurrencyTest` 20 并发、
+  `BidServiceTest` 延时边界、`WsIntegrationTest` 重连快照）。
+- **Compose 的 `backend` 服务尚未在本机构建过镜像**。`Dockerfile` 与 `docker-compose.yml` 已就位，
+  `docker compose config` 已校验；但按仓库约定（不重建评测机上的容器），没有实际 `docker compose up` 过。
 - **[AI_USAGE.md](AI_USAGE.md) 仍是骨架**：结构与素材索引就位，但分工比例、本人设计决定等
   `【本人填写】` 段落需由作者本人补齐，不代填。
 - **没有线上地址、没有演示录屏**（两段式现场核验的素材）。
 
-已实现的边界：用户侧 HTTP 15 个端点 + WebSocket 实时通道（P2/P3）、前端真实接入（P4）、架构守卫 9 条。
+已实现的边界：用户侧 HTTP 15 个端点 + Agent 侧 3 个业务端点与 2 个签发/吊销端点 + WebSocket 实时通道（P2/P3）、
+前端真实接入（P4）、Agent API 与端到端模拟（P5）、架构守卫 9 条。
 完整的逐项状态与证据见 [docs/STATUS.md](docs/STATUS.md) 与 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
 
 ## 公开仓库约定

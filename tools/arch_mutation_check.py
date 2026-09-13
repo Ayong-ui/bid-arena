@@ -45,7 +45,9 @@ MUTATIONS = [
 ]
 
 REPORT = "target/surefire-reports/com.bidarena.architecture.ArchitectureTest.txt"
-CMD = "mvn -o test -Dtest=ArchitectureTest -DfailIfNoSpecifiedTests=false"
+# 同 agent_mutation_check：还原源码后 class 会比源码新，增量编译不会重编，
+# 上一条变异会残留在 classpath 上。clean 保证每条变异从干净基线出发。
+CMD = "mvn -o clean test -Dtest=ArchitectureTest -DfailIfNoSpecifiedTests=false"
 
 
 def inject(path, snippet):
@@ -76,6 +78,9 @@ def main():
                                                      ",".join(fired) or "NONE"))
         finally:
             shutil.move(path + ".bak", path)
+            # 还原后把 mtime 拨到现在：否则“变异后的 class”比“还原后的源码”新，
+            # Maven 增量编译会跳过重编，上一条变异的 class 会留在 classpath 上毒害后续结论。
+            os.utime(path, None)
     print("---- total: %d/%d KILLED" % (sum(1 for _, k in verdicts if k), len(verdicts)))
     return 0 if all(k for _, k in verdicts) else 1
 

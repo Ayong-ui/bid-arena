@@ -3,6 +3,7 @@ package com.bidarena.auction.adapter;
 import com.bidarena.shared.ApiTime;
 import com.bidarena.api.ApiTrace;
 import com.bidarena.api.CurrentUser;
+import com.bidarena.api.IdempotencyKeys;
 import com.bidarena.api.PageParams;
 import com.bidarena.shared.PageQuery;
 import com.bidarena.auction.application.AuctionCommandService;
@@ -33,7 +34,8 @@ import org.noear.solon.core.handle.MethodType;
  *
  * <h2>幂等键的来源</h2>
  * 原文只要求出价请求体带 {@code requestId}。契约里额外声明了 {@code Idempotency-Key} 头，
- * 两者都接受：只给了头时以头为准，都给了就必须一致。见 {@link #resolveRequestId}。
+ * 两者都接受：只给了头时以头为准，都给了就必须一致。规则只有一份，见
+ * {@link com.bidarena.api.IdempotencyKeys}（Agent 出价用的是同一个）。
  */
 @Controller
 @Mapping("/api/v1")
@@ -92,7 +94,7 @@ public class HttpAuctionController {
             throw new BizException(ErrorCode.VALIDATION_FAILED, "请求体不能为空");
         }
 
-        String requestId = resolveRequestId(ctx, body.requestId());
+        String requestId = IdempotencyKeys.resolve(ctx, body.requestId());
         BidService.BidResult result = bids.placeBid(auctionId, me.userId(), body.amount(), requestId);
 
         BidOutcome data = new BidOutcome(
@@ -107,25 +109,6 @@ public class HttpAuctionController {
     @Mapping(value = "/auctions/{auctionId}/result", method = MethodType.GET)
     public ApiResponse auctionResult(@Path("auctionId") String auctionId) {
         return ApiResponse.ok(query.result(auctionId), ApiTrace.current());
-    }
-
-    private static String resolveRequestId(Context ctx, String fromBody) {
-        String header = ctx.header("Idempotency-Key");
-        boolean bodyBlank = fromBody == null || fromBody.isBlank();
-        boolean headerBlank = header == null || header.isBlank();
-
-        if (bodyBlank && headerBlank) {
-            throw new BizException(ErrorCode.VALIDATION_FAILED,
-                    "缺少幂等键：请在请求体提供 requestId，或用 Idempotency-Key 头");
-        }
-        if (!bodyBlank && !headerBlank && !fromBody.equals(header.trim())) {
-            // 两个都给了却不一致，无法判断哪一个才是调用方的真实意图。
-            // 猜一个的后果是：重试时幂等键变了，同一笔出价被当成两笔（重复冻结）。
-            throw new BizException(ErrorCode.VALIDATION_FAILED,
-                    "body.requestId 与 Idempotency-Key 不一致",
-                    Map.of("requestId", fromBody, "idempotencyKey", header));
-        }
-        return bodyBlank ? header.trim() : fromBody;
     }
 
     private static AuctionStatus statusParam(Context ctx) {

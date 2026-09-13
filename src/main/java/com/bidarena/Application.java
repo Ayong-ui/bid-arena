@@ -1,5 +1,8 @@
 package com.bidarena;
 
+import com.bidarena.agentaccess.adapter.AgentAuthFilter;
+import com.bidarena.agentaccess.application.AgentAuctionService;
+import com.bidarena.agentaccess.application.AgentTokenService;
 import com.bidarena.api.ApiExceptionFilter;
 import com.bidarena.api.AuthFilter;
 import com.bidarena.api.CorsFilter;
@@ -8,6 +11,7 @@ import com.bidarena.auction.application.AuctionCommandService;
 import com.bidarena.auction.application.AuctionQueryService;
 import com.bidarena.auction.application.BidService;
 import com.bidarena.auction.application.SettlementScheduler;
+import com.bidarena.bootstrap.AgentApiPlugin;
 import com.bidarena.bootstrap.DatabaseBootstrap;
 import com.bidarena.bootstrap.Env;
 import com.bidarena.bootstrap.Services;
@@ -44,6 +48,9 @@ public class Application {
           app.context().wrapAndPut(AuctionQueryService.class, services.auctionQueries);
           app.context().wrapAndPut(AuctionCommandService.class, services.auctionCommands);
           app.context().wrapAndPut(WsTicketService.class, services.wsTickets);
+          // Agent 的两个服务也要进容器：控制器用 @Inject 引用它们。
+          app.context().wrapAndPut(AgentTokenService.class, services.agentTokens);
+          app.context().wrapAndPut(AgentAuctionService.class, services.agentAuctions);
 
           // —— 过滤器 ——
           // 数值越小越靠外层。顺序是刻意的：
@@ -53,6 +60,9 @@ public class Application {
           app.filter(0, new ApiExceptionFilter());
           app.filter(1, new CorsFilter(parseOrigins()));
           app.filter(2, new AuthFilter(services.tokens));
+          // 4) AgentAuthFilter 只作用于 /api/v1/agent/**，用独立凭证认证（见类注释）。
+          //    它必须在 AuthFilter 之后、业务之前：前面的 AuthFilter 已跳过 Agent 前缀。
+          app.filter(3, new AgentAuthFilter(services.agentTokens));
 
           // 到期结算必须由服务端自己完成，不依赖任何客户端调用。
           // 这里只启动驱动器；它每轮都回数据库查"到期未结算"，因此重启/多实例都安全。
@@ -65,6 +75,13 @@ public class Application {
           Runtime.getRuntime().addShutdownHook(new Thread(scheduler::stop, "settlement-shutdown"));
 
           app.enableWebSocket(true);
+
+          // —— 竞拍 Agent 的独立端口 ——
+          // 用 Plugin 注册而不是在这里直接 start：启停时机交给框架，
+          // 这样 Solon.stopBlock() 会一并关掉它（否则测试 JVM 会留下悬空监听）。
+          // 端口默认 8090，与 .env.example、openapi 的 servers 一致；<=0 表示不开启。
+          app.pluginAdd(0, new AgentApiPlugin(
+              Env.intOr("AGENT_SERVER_PORT", 8090), Env.read("AGENT_SERVER_HOST")));
 
           // —— 实时通道 ——
           // 路由用 {auctionId} 路径变量；鉴权不走 AuthFilter（浏览器的 WebSocket

@@ -37,6 +37,7 @@ public final class TestDatabase {
             "settlements",
             "auction_participants",
             "auctions",
+            "agent_token_auctions",
             "agent_tokens",
             "wallets",
             "users");

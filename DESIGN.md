@@ -59,15 +59,22 @@
 
 **已实现并已在真实 MySQL 8.4 上验证：**
 
-- 迁移与连接：Flyway `V1`~`V3`（含两级冻结、`CHECK` 约束、种子数据），HikariCP，`Services` 组合根（测试与生产共用同一套接线）。
+- 迁移与连接：Flyway `V1`~`V4`（含两级冻结、`CHECK` 约束、种子数据、Agent Token 表），HikariCP，`Services` 组合根（测试与生产共用同一套接线）。
 - 出价事务 `BidService`：差额冻结、换庄释放、幂等重放、最后 5 秒延时（上限 3 次）、按 `user_id` 升序的固定锁序。
 - 结算 `SettlementService` + 扫描器 `SettlementScheduler`：到期结算、无人出价、取消三条路径共用一个终局逻辑，成交记录唯一、可重放。
 - HTTP API（`docs/openapi.yaml` 为契约）：统一响应封套与错误码、JWT 鉴权与 RBAC、幂等键、限流、分页。
 - 实时通道：一次性 WS 票、提交后广播（广播失败不回滚）、`seq` 缺口恢复，事件负载只带确定性匿名标识。
+- 实时通道：一次性 WS 票、提交后广播（广播失败不回滚）、`seq` 缺口恢复，事件负载只带确定性匿名标识。
+- Agent 接入（P5）：独立端口 `:8090` 只暴露 `/api/v1/agent/**`（其余路径 404）、独立凭据（明文只回一次、库里只存 sha256）、
+  范围/权限/过期/吊销/限流五项在鉴权阶段生效；Agent 出价**复用同一出价事务**（`BidService.placeBid`，`AGENT` 参与记录同事务插入），不新开写入路径（D-30）。
 - 架构守卫：`ArchUnit` 九条分层/跨上下文/无环规则（§2.4）。
-- 证据：`mvn clean verify` 共 125 个测试全绿（domain 集成 32 + HTTP/WS 与身份钱包用例 + 架构守卫 9）；关键路径另做变异测试反向确认确实会红（P0–P3 六条 + 架构规则九条）。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
+- 前端：Vue 3 + Pinia 接入真实 HTTP/WS，类型从契约生成，金额/倒计时以服务端为准（P4）。
+- 证据：`mvn clean verify` 共 187 个测试全绿（真库集成 58 + 其余领域/身份/结算/事件/WS/Agent 单元 120 + 架构守卫 9）；
+  关键路径另做变异测试反向确认确实会红（架构 9/9、Agent 14/14、前端 16/16）。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
 
-**尚未实现：**Agent API（`:8090`）、Vue 前端、模拟竞拍脚本、Dockerfile/Compose 与端到端脚本、录屏与交付证据。本文其余部分描述的是这些模块的**目标架构**，不把尚未存在的模块当成已完成。
+**尚未实现（如实声明）：** 20 人并发/狙击/断线快照的独立模拟脚本（目前由后端集成测试等价覆盖；`tools/agent_sim.py` 已覆盖 Agent 侧）、
+`docker compose up` 的实测（`Dockerfile` 与 `backend` 服务已配置并经 `docker compose config` 校验，但未在本机构建镜像）、
+演示录屏与现场核验素材。
 
 ## 2. 组件与职责
 
@@ -226,8 +233,10 @@ Docker Compose 启动 MySQL、后端和前端，Flyway 在应用启动时自动�
 2. 接入登录、RBAC、统一响应和拍卖 HTTP API，使用集成测试锁定接口契约。
 3. 实现事务提交后的领域事件与 WebSocket，补 seq 缺口/快照恢复测试。
 4. 建立 Vue 3 + TypeScript + Pinia 前端，先接 HTTP 快照，再接实时事件。
-5. 加入 Agent Token、模拟脚本、Compose 和端到端验收。
+5. ✅ 加入 Agent Token、模拟脚本、Compose 和端到端验收（P5；独立端口与独立凭据、复用同一出价事务，`tools/agent_sim.py` 可一键复跑）。
 
 ## 8. 验证重点
 
-单测覆盖规则；真实 MySQL 8（由环境变量指向独立测试库 `bid_arena_test`，每次用例前清表）覆盖并发出价、幂等、结算和重启恢复；架构守卫覆盖分层与循环依赖；Vue 测试覆盖 Pinia 快照、seq 缺口和重连；模拟脚本覆盖 20 人、狙击延时、余额不足和重复 requestId。验收以数据库余额、流水、成交记录与公开 API 快照一致为准。
+单测覆盖规则；真实 MySQL 8（由环境变量指向独立测试库 `bid_arena_test`，每次用例前清表）覆盖并发出价、幂等、结算和重启恢复；架构守卫覆盖分层与循环依赖；Vue 测试覆盖 Pinia 快照、seq 缺口和重连；**Agent 侧边界（端口隔离、凭证互不通用、范围/权限/过期/吊销/限流）由 `AgentApiIntegrationTest` 在真实双端口上断言**；模拟脚本 `tools/agent_sim.py` 覆盖 Agent 的读/出价/幂等与全部失败边界（20 人并发、狙击延时、断线快照目前由 `BidConcurrencyTest`/`BidServiceTest`/`WsIntegrationTest` 等价覆盖）。验收以数据库余额、流水、成交记录与公开 API 快照一致为准。
+
+反向确认：架构规则 `tools/arch_mutation_check.py` 9/9 KILLED；Agent 凭据与端口隔离 `tools/agent_mutation_check.py` 14/14 KILLED；前端 `tools/mutation_check.py` 16/16 KILLED。“全部测试通过”本身不构成证据，只有“把缺陷注入后确实变红”才算。

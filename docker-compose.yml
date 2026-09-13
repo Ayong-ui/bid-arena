@@ -22,5 +22,30 @@ services:
       timeout: 5s
       retries: 20
 
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bid-arena-backend:local
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      # 容器内互连用服务名与容器内端口（3306），而不是宿主机的 MYSQL_PORT。
+      # 连接串的时区/认证插件参数必须与本机一致，否则 TIMESTAMP 读写会漂移（见 .env.example）。
+      DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-bid_arena}?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&allowPublicKeyRetrieval=true&useSSL=false&characterEncoding=UTF-8&rewriteBatchedStatements=true
+      DB_USER: ${MYSQL_USER:-bid_arena}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-bid_arena_dev}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 必须在 .env 里显式配置（至少 32 字节）}
+      SERVER_PORT: "8080"
+      AGENT_SERVER_PORT: "8090"
+      WS_PORT: "18080"
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    ports:
+      - "8080:8080"   # 用户/管理员 HTTP
+      - "8090:8090"   # 竞拍 Agent HTTP（独立端口，独立凭据）
+      - "18080:18080" # WebSocket（独立监听器，见 .env.example）
+
 volumes:
   mysql_data:

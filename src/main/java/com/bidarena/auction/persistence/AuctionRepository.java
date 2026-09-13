@@ -8,8 +8,12 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import javax.sql.DataSource;
 
 /**
@@ -326,6 +330,27 @@ public class AuctionRepository {
             insert(conn, id, title, description, startPrice, minIncrement, durationSeconds);
             return null;
         });
+    }
+
+    /**
+     * 从给定 ID 中筛出真实存在的那些。
+     *
+     * <p>用于校验 Agent Token 的授权范围：调用方把某场拍卖的 ID 写错时，应当得到
+     * "这些 ID 不存在"的明确拒绝（400），而不是一个签发成功、却永远只能 403 的 Token，
+     * 也不是一条外键报错最后变成 500。
+     *
+     * <p>占位符个数由入参决定，值全部走参数绑定——拼接 SQL 会把范围校验变成一个注入点，
+     * 而这里恰好是"调用方可以自由填写"的字段。
+     */
+    public Set<String> existingIds(Collection<String> auctionIds) {
+        if (auctionIds == null || auctionIds.isEmpty()) {
+            return Set.of();
+        }
+        List<String> ids = List.copyOf(auctionIds);
+        String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
+        return Db.read(dataSource, conn -> new HashSet<>(Db.queryList(conn,
+                "SELECT id FROM auctions WHERE id IN (" + placeholders + ")",
+                rs -> rs.getString(1), ids.toArray())));
     }
 
     public void startOutsideTx(String auctionId, Instant endsAt) {

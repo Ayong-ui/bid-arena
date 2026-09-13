@@ -18,6 +18,11 @@ import org.noear.solon.core.handle.FilterChain;
  * <p>非 {@code /api/v1/} 的请求（静态资源、WebSocket 握手）直接放行：
  * 本过滤器只负责 API 的认证，把别的流量也拦下来会让前端页面都打不开。
  *
+ * <p><b>{@code /api/v1/agent/**} 也整体跳过</b>：那一组接口的凭证是 Agent Token
+ * 而不是 JWT（见 {@link ApiPaths#AGENT_PREFIX}）。若不跳过，Agent 会先被 JWT 校验拦下
+ * 并收到“缺少 Bearer 令牌”，而它明明带了令牌——一个只会误导排查方向的 401。
+ * 它们由 {@code agentaccess.adapter.AgentAuthFilter} 独立认证。
+ *
  * <p>鉴权通过后把 {@link Principal} 放进 {@link Context} 属性，控制器用
  * {@link CurrentUser} 读取。**不在这里解析业务角色**——"谁能做什么"由
  * {@link CurrentUser#requireAdmin} 或应用服务判断，过滤器只管"你是谁"。
@@ -45,6 +50,11 @@ public class AuthFilter implements Filter {
             return;
         }
         if (PUBLIC.contains(ctx.method().toUpperCase() + " " + path)) {
+            chain.doFilter(ctx);
+            return;
+        }
+        // Agent API 用独立凭证，不归本过滤器管（见类注释与 ApiPaths.AGENT_PREFIX）。
+        if (path.startsWith(ApiPaths.AGENT_PREFIX)) {
             chain.doFilter(ctx);
             return;
         }

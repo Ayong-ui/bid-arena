@@ -2,6 +2,7 @@ package com.bidarena.auction.application;
 
 import com.bidarena.auction.persistence.AuctionRepository;
 import com.bidarena.auction.persistence.AuctionRepository.AuctionRow;
+import com.bidarena.auction.persistence.AuctionRepository.ParticipantRow;
 import com.bidarena.auction.persistence.AuctionRepository.RequestRow;
 import com.bidarena.auction.domain.AuctionEvent;
 import com.bidarena.auction.domain.AuctionEventPublisher;
@@ -96,17 +97,46 @@ public class BidService {
             Instant serverTime, Instant endsAt, boolean extended) {}
 
     public BidResult placeBid(String auctionId, String userId, long amount, String requestId) {
-        BidResult result;
+        // 真人路径：不是参与者就拒绝（加入是一个显式动作，见 AuctionCommandService.join）。
+        return placeBid(auctionId, userId, amount, requestId, null);
+    }
+
+    /**
+     * 出价，可选"出价时自动成为参与者"。
+     *
+     * <p>存在的理由是 Agent：契约里只有"读状态"与"出价"两个动作，没有加入接口。
+     * 于是有两种实现：给 Agent 加一个契约外的加入接口（多一次往返、多一个可失败的中间态），
+     * 或在出价事务里顺手补上参与记录。选后者，并且<b>必须在同一个事务里</b>：
+     * 若先加入再出价，出价因余额不足被拒时会留下一个"加入了但没出价"的 Agent；
+     * 更精糕的是，两次写操作之间存在窗口，可能被结算抢先。
+     *
+     * @param autoJoinAs 非 null 时，出价者还不是参与者就在本事务内以该类型补一条参与记录；
+     *                   {@code null} 表示"不是参与者就拒绝"（真人路径，行为与 P4 一致）。
+     */
+    public BidResult placeBid(String auctionId, String userId, long amount, String requestId, String autoJoinAs) {
+        TxOutcome outcome;
         try {
-            result = Db.tx(dataSource, conn -> doPlaceBid(conn, auctionId, userId, amount, requestId));
+            outcome = Db.tx(dataSource, conn -> doPlaceBid(conn, auctionId, userId, amount, requestId, autoJoinAs));
         } catch (BizException e) {
             recordRejection(auctionId, userId, requestId, e);
             publishRejected(auctionId, userId, e);
             throw e;
         }
-        publishAccepted(auctionId, result);
-        return result;
+        if (outcome.autoJoined() != null) {
+            publishQuietly(AuctionEvents.participantJoined(auctionId, outcome.bid().seq(), userId,
+                    outcome.participantCount(), outcome.autoJoined().joinedAt()));
+        }
+        publishAccepted(auctionId, outcome.bid());
+        return outcome.bid();
     }
+
+    /**
+     * 事务的完整回报：出价结果，以及（若发生了）自动加入的参与记录。
+     *
+     * <p>不把这些字段塞进 {@link BidResult}：那是对外契约的一部分，
+     * 而"本次顺带加入了"是内部事实，不应该出现在 HTTP 响应与事件载荷里。
+     */
+    private record TxOutcome(BidResult bid, ParticipantRow autoJoined, int participantCount) {}
 
     /**
      * 发布“出价被接受”（以及可能的延时）。
@@ -171,8 +201,8 @@ public class BidService {
         }
     }
 
-    private BidResult doPlaceBid(Connection conn, String auctionId, String userId, long amount, String requestId)
-            throws SQLException {
+    private TxOutcome doPlaceBid(Connection conn, String auctionId, String userId, long amount, String requestId,
+            String autoJoinAs) throws SQLException {
         if (amount <= 0) {
             throw new BizException(ErrorCode.VALIDATION_FAILED, "出价金额必须为正整数", Map.of("amount", amount));
         }
@@ -191,8 +221,8 @@ public class BidService {
         RequestRow prior = auctions.lockRequest(conn, auctionId, userId, requestId);
         if (prior != null && prior.done()) {
             if (prior.succeeded()) {
-                return new BidResult(true, true, prior.resultPrice(), auction.leaderId(),
-                        auction.extensionCount(), prior.resultSeq(), now, auction.endsAt(), false);
+                return new TxOutcome(new BidResult(true, true, prior.resultPrice(), auction.leaderId(),
+                        auction.extensionCount(), prior.resultSeq(), now, auction.endsAt(), false), null, 0);
             }
             throw new BizException(replayCode(prior.resultCode()), "重复提交：返回首次的处理结果");
         }
@@ -208,8 +238,20 @@ public class BidService {
             throw new BizException(ErrorCode.BID_LATE, "拍卖已截止",
                     Map.of("endsAt", String.valueOf(auction.endsAt()), "serverTime", now.toString()));
         }
-        if (!auctions.isParticipant(conn, auctionId, userId)) {
+        if (autoJoinAs == null && !auctions.isParticipant(conn, auctionId, userId)) {
             throw new BizException(ErrorCode.NOT_JOINED, "尚未加入该拍卖间", Map.of("auctionId", auctionId));
+        }
+
+        // 自动加入与出价在同一个事务、同一把拍卖行锁内：要么两者都成立，要么都不成立。
+        ParticipantRow autoJoined = null;
+        if (autoJoinAs != null && !auctions.isParticipant(conn, auctionId, userId)) {
+            auctions.join(conn, auctionId, userId, autoJoinAs);
+            autoJoined = auctions.findParticipant(conn, auctionId, userId);
+            if (autoJoined == null) {
+                // 刚写入却读不到：与 AuctionCommandService.join 同样的判断，不能带着不确定继续。
+                throw new BizException(ErrorCode.INTERNAL_ERROR, "自动加入后无法读取参与记录",
+                        Map.of("auctionId", auctionId, "userId", userId));
+            }
         }
 
         long minimum = auction.currentPrice() + auction.minIncrement();
@@ -268,10 +310,11 @@ public class BidService {
         auctions.insertBid(conn, auctionId, userId, amount, requestId, newSeq, now);
         auctions.markRequestDone(conn, auctionId, userId, requestId, ErrorCode.OK.name(), amount, newSeq);
 
-        log.info("出价成功 auction={} user={} amount={} seq={} extensions={} endsAt={}",
-                auctionId, userId, amount, newSeq, newExtensionCount, newEndsAt);
-        return new BidResult(true, false, amount, userId, newExtensionCount, newSeq, now, newEndsAt,
-                newExtensionCount != auction.extensionCount());
+        log.info("出价成功 auction={} user={} amount={} seq={} extensions={} endsAt={} autoJoined={}",
+                auctionId, userId, amount, newSeq, newExtensionCount, newEndsAt, autoJoined != null);
+        return new TxOutcome(new BidResult(true, false, amount, userId, newExtensionCount, newSeq, now, newEndsAt,
+                newExtensionCount != auction.extensionCount()), autoJoined,
+                autoJoined == null ? 0 : auctions.countParticipants(conn, auctionId));
     }
 
     /**
