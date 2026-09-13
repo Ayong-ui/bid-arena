@@ -24,7 +24,23 @@ import javax.sql.DataSource;
  */
 public final class Fixtures {
 
+    /**
+     * 测试专用令牌密钥。
+     *
+     * <p>它是**测试常量**，不是任何部署在用的秘密：长度满足 HS256 的 32 字节下限
+     * （{@code JwtTokens} 构造时会校验）。真实密钥只存在于 {@code .env}，不入库、不进日志。
+     */
+    private static final String TEST_JWT_SECRET = "bidarena-test-secret-do-not-use-in-production";
+
+    /** 测试里的令牌有效期：远大于任何单个测试的时长，避免测试随机变红。 */
+    private static final long TEST_JWT_TTL_SECONDS = 3600L;
+
     private Fixtures() {}
+
+    /** 按生产接线方式装配被测服务（仅令牌密钥显式给出，不读环境变量）。 */
+    public static Services services(DataSource ds) {
+        return Services.wire(ds, TEST_JWT_SECRET, TEST_JWT_TTL_SECONDS);
+    }
 
     /**
      * 按生产接线方式装配被测服务。
@@ -33,12 +49,12 @@ public final class Fixtures {
      * 测试里的依赖关系与线上完全一致，才不会出现"线上忘了接线而测试全绿"。
      */
     public static BidService bidService(DataSource ds) {
-        return Services.wire(ds).bids;
+        return services(ds).bids;
     }
 
     /** 同上，结算服务。 */
     public static SettlementService settlementService(DataSource ds) {
-        return Services.wire(ds).settlement;
+        return services(ds).settlement;
     }
 
     /**
@@ -54,6 +70,25 @@ public final class Fixtures {
         exec(ds, "INSERT INTO users (id, email, display_name, password_hash, role, status) "
                 + "VALUES (?, ?, ?, ?, 'BIDDER', 'ACTIVE')", id, id + "@test.local", id, "x");
         exec(ds, "INSERT INTO wallets (user_id, total_balance, frozen_amount) VALUES (?, ?, 0)", id, balance);
+    }
+
+    /**
+     * 建一个**可登录**的用户：口令哈希用与生产相同的 BCrypt（cost 10）现算。
+     *
+     * <p>不能像 {@link #user} 那样填个占位符，因为登录测试会真的跑一次 BCrypt 校验；
+     * 也不能写一个固定的哈希常量：那会让“口令 → 哈希”这一步在测试里也变成猜测。
+     */
+    public static void userWithPassword(DataSource ds, String id, String email, String password,
+            String role, long balance) {
+        String hash = org.mindrot.jbcrypt.BCrypt.hashpw(password, org.mindrot.jbcrypt.BCrypt.gensalt(10));
+        exec(ds, "INSERT INTO users (id, email, display_name, password_hash, role, status) "
+                + "VALUES (?, ?, ?, ?, ?, 'ACTIVE')", id, email, id, hash, role);
+        exec(ds, "INSERT INTO wallets (user_id, total_balance, frozen_amount) VALUES (?, ?, 0)", id, balance);
+    }
+
+    /** 改用户状态，用来验证“被禁用的账号不能登录”。 */
+    public static void setUserStatus(DataSource ds, String id, String status) {
+        exec(ds, "UPDATE users SET status = ? WHERE id = ?", status, id);
     }
 
     /** 建一个草稿拍品（{@code ends_at} 为 NULL，不倒计时）。 */
