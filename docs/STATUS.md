@@ -12,6 +12,7 @@
 | P1 | 持久化：迁移 + Repository + 事务型领域服务 | ✅ | V1~V3 迁移与种子、按场冻结、Repository、事务型出价服务、结算服务 + 到期扫描器；32 个真实 MySQL 集成测试（INV-1~4 ✅） |
 | P2 | HTTP API + 鉴权 + RBAC + 统一响应 | ✅ | 14 个接口 + JWT/BCrypt + 默认拒绝鉴权 + RBAC + 统一封套与错误码 + CORS 白名单；31 个 P2 用例（HTTP 19 / 身份 10 / 种子口令 2），全量 63/63 绿（`mvn clean verify`） |
 | P3 | WebSocket + seq/快照恢复 | ✅ | 事件契约见 [`docs/REALTIME_AND_COMMAND_FLOW.md`](REALTIME_AND_COMMAND_FLOW.md)；`POST /auth/ws-tickets` 一次性票（60s、单次、有容量上限）+ `/ws/auctions/{auctionId}` + 7 类事件（含可见范围）+ 提交后发布（A8）；P3 新增 53 个用例，全量 **116/116** 绿（`mvn clean verify`） |
+| P3.5 | 架构守卫：出站适配器独立成 `persistence` 包 + ArchUnit 九条规则（D-6 验证） | ✅ | 出站 JDBC 仓储独立成 `<ctx>.persistence`、视图归 `<ctx>.application`、`ApiTime`/`PageQuery` 归 `shared`（D-24、D-25）；`ArchitectureTest` 九条规则全绿，`tools/arch_mutation_check.py` 注入九种违规 **9/9 KILLED**；全量 **125/125** 绿 |
 | P4 | 前端接入真实 HTTP/WS，替换 Mock | ⬜ | 需先生成前端类型 |
 | P5 | Agent API（:8090）+ 模拟脚本 + Compose/E2E | ⬜ | — |
 | P6 | 交付收尾：README 边界、录屏、测试证据 | ⬜ | — |
@@ -21,10 +22,10 @@
 | 文档 | 要求 | 状态 |
 |---|---|---|
 | `README.md` | 快速启动完整路径、演示账号、未完成边界 | 🟨 待更新 |
-| `DESIGN.md` | 架构边界、出价事务、结算、恢复 | 🟨 存在，待按原文补齐 |
-| `DECISIONS.md` | ≥3 项决策（背景/候选/选择/代价/验证） | 🟨 已写 D-1~D-23；D-9 的验证结果待 P5 补全 |
+| `DESIGN.md` | 架构边界、出价事务、结算、恢复 | 🟨 存在；§1.6（实现边界）、§2.2~§2.4（分层与依赖规则）、§8（验证重点）已按实现同步，其余章节待随 P4/P5 补齐 |
+| `DECISIONS.md` | ≥3 项决策（背景/候选/选择/代价/验证） | 🟨 已写 D-1~D-25；D-9 的验证结果待 P5 补全 |
 | `AI_USAGE.md` | AI 分工、本人决定、未采用方案、真实错误 | ⬜ 未创建 |
-| `DEBUG_LOG.md` | ≥2 个真实问题（现象/日志/定位/修复/验证） | ✅ 已写 16 条真实问题（DBG-8~12 来自 P2：test/fork、CORS 受限头、配置覆盖、序列化器夺权、口令进测试报告；DBG-13~16 来自 P3：同 JVM 二次启动绑到旧端口、`Map.copyOf` 拒 `null` 把“字段缺席”变成崩溃、`Future` 接口没有 `whenComplete`、JUnit 不给 `@BeforeAll` 注入 `ExtensionContext`） |
+| `DEBUG_LOG.md` | ≥2 个真实问题（现象/日志/定位/修复/验证） | ✅ 已写 20 条真实问题（DBG-8~12 来自 P2：test/fork、CORS 受限头、配置覆盖、序列化器夺权、口令进测试报告；DBG-13~17 来自 P3；DBG-18~20 来自架构守卫：文档规则与包结构对不上、`noClasses().should(自定义条件)` 被反转导致规则永不失败、共享服务下偶发握手超时） |
 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 查询与出价 | ⬜ 未创建 |
 | `docs/openapi.yaml` | 覆盖原文要求的能力 | ✅ 已修正；P2 已按实现回填 `ErrorCode`、分页、`Bid`、`LedgerEntry.requestId`；P3 补上 `WsTicket.wsPath/wsPort` 与 `/auth/ws-tickets` 的 429 |
 
@@ -35,20 +36,21 @@
 | `docs/openapi.yaml` | ✅ | 已补齐 Agent result、Token 吊销、Agent server、`agentUserId`、`AuctionResult`；P3 补上 `WsTicket.wsPath/wsPort` 与 429（共 20 个操作，其中 15 个已实现）；前端类型待 P4 生成 |
 | `docs/REALTIME_AND_COMMAND_FLOW.md` | ✅ | 无缺口。内容：命令行路径与一致性、事件信封（含 `seq` 归属）、事件类型与可见范围、匿名标识、WS 接入与握手、序号恢复、广播失败边界、可观测性（共 8 节） |
 | `db/migration/` | ✅ | V1~V3 已在空库上完整执行并验证；含 `users` / `wallets` / `ledger_entries` 与 `auctions` 新列、`auction_participants.frozen_amount` |
-| `pom.xml` | ✅ | 服务器/WebSocket/序列化/连接池/MySQL/Flyway/鉴权/测试依赖齐备，已验证可启动；`db/migration` 经 `<resources>` 映射为 `classpath:db/migration`；已排除 `solon-web` 传递进来的 snack3，保证序列化器唯一（DBG-11） |
+| `pom.xml` | ✅ | 服务器/WebSocket/序列化/连接池/MySQL/Flyway/鉴权/ArchUnit/测试依赖齐备，已验证可启动；`db/migration` 经 `<resources>` 映射为 `classpath:db/migration`；已排除 `solon-web` 传递进来的 snack3，保证序列化器唯一（DBG-11） |
 | `src/main/resources/` | ✅ | `app.yml` 只留 `server.port: ${SERVER_PORT:8080}` 与 `server.websocket.port: ${WS_PORT:18080}`；数据源/迁移/JWT/CORS/结算参数/WS 票参数统一经 `bootstrap/Env` 读环境变量，端口覆盖方式与陷阱见 DECISIONS D-17、DEBUG_LOG DBG-10 |
 | `.env.example` | ✅ | 已补 `DB_URL` / `DB_USER` / `DB_PASSWORD` / `JWT_SECRET` / `CORS_ORIGINS` / 端口（含 `WS_PORT`）/ `SETTLE_SCAN_INTERVAL_MS` / `SETTLE_BATCH_SIZE` / `WS_TICKET_TTL_SECONDS` / `WS_TICKET_CAPACITY`，并对时区、认证插件、为何票要短加注释 |
 | `docker-compose.yml` | 🟨 | 已修正 MySQL 端口与迁移方式；无后端/前端服务 |
 | Dockerfile | ⬜ | 后端、前端均无 |
 | 种子数据 | ✅ | 3 个演示账号（BCrypt 实测可登录）+ 各 1000 积分钱包 + 1 件 `DRAFT` 演示拍品（`ends_at` 为 NULL，不自动倒计时） |
 | 开发库容器 | ✅ | VM 上 `bid-arena-mysql-1`（MySQL 8.4.9，`0.0.0.0:3307->3306`），未动其他 18 个容器 |
+| 架构守卫 | ✅ | `src/test/java/com/bidarena/architecture/ArchitectureTest.java`：九条分层/跨上下文/无环规则（`DoNotIncludeTests`，不连库、秒级）；`tools/arch_mutation_check.py` 逐条注入真实违规反向确认，**9/9 KILLED**（`mvn` 需能离线跑） |
 | 模拟脚本 | ⬜ | 无 |
-| 一键测试命令 | ✅ | `README.md` 一键验证节：指定 `BID_ARENA_TEST_DB_*` 后 `mvn clean verify`（实测 116/116 绿；HTTP 与 WS 集成测试共用同一个自启动服务实例） |
+| 一键测试命令 | ✅ | `README.md` 一键验证节：指定 `BID_ARENA_TEST_DB_*` 后 `mvn clean verify`（实测 125/125 绿；HTTP 与 WS 集成测试共用同一个自启动服务实例，架构守卫不连库） |
 | 远程仓库 | ✅ | <https://github.com/Ayong-ui/bid-arena>（公开；`main` 已开分支保护：禁强推、禁删除） |
 
 ## 4. 决策状态
 
-全部决策已定稿并写入 [`DECISIONS.md`](../DECISIONS.md)（D-1~D-23 含背景/候选/选择/代价/验证结果，附「未采用方案汇总」）。D-14~D-17 是 P2 期间新增的：错误码与 HTTP 状态码的分工、鉴权默认拒绝、CORS 白名单、测试期配置覆盖；D-18~D-23 是 P3 期间新增的：实时通道的鉴权方式、`seq` 的归属与语义、广播失败边界、匿名标识、客户端消息一律忽略、测试基座的“一 JVM 一实例”。
+全部决策已定稿并写入 [`DECISIONS.md`](../DECISIONS.md)（D-1~D-25 含背景/候选/选择/代价/验证结果，附「未采用方案汇总」）。D-14~D-17 是 P2 期间新增的：错误码与 HTTP 状态码的分工、鉴权默认拒绝、CORS 白名单、测试期配置覆盖；D-18~D-23 是 P3 期间新增的：实时通道的鉴权方式、`seq` 的归属与语义、广播失败边界、匿名标识、客户端消息一律忽略、测试基座的“一 JVM 一实例”；D-24~D-25 是架构守卫期间新增的：出站适配器独立成 `persistence` 包、分页参数与 HTTP 解析分离。
 
 | # | 决策 | 结论 | 验证 |
 |---|---|---|---|
@@ -57,7 +59,7 @@
 | D-3 | 鉴权与密码哈希 | jjwt + BCrypt；Agent Token 独立 | ✅ 用户侧已实测（P2）；⏳ Agent 侧待 P5 |
 | D-4 | 并发正确性归属 | MySQL 唯一约束 + 行锁 + 条件更新 | ✅ 已用变异测试反向确认 |
 | D-5 | 时间基准 | 事务内取数据库时间 | ✅ `Db.now()`，测试夹具亦用数据库时间 |
-| D-6 | 架构形态与进程模型 | 单模块 + 4 上下文 + 四层包 + ArchUnit | ✅ 依赖 / ⏳ 规则 |
+| D-6 | 架构形态与进程模型 | 单模块 + 4 上下文 + 四层包（含出站 `persistence`）+ ArchUnit | ✅ 九条规则全绿且 9/9 变异被杀（D-24） |
 | D-7 | 开发环境拓扑 | 代码 Windows / 容器 VM / Docker over SSH | ✅ 已实测 |
 | D-8 | 端口规划 | 8080 / 8090 / 3307 / 5173 | ✅ 已同步 |
 | D-9 | Agent 凭据 | 独立 Token + 独立端口 + 限流 | ⏳ P5 |
@@ -75,6 +77,8 @@
 | D-21 | 事件里的用户标识 | 一律用确定性匿名标识（`anon-` + SHA-256 前 8 位），HTTP 快照仍返回原始 ID | ✅ 固定向量断言 + 全流程事件扫描不含原始 `user_id`；变异“改成随机值”被杀 |
 | D-22 | 客户端→WS 的消息 | 一律忽略：命令入口只有 HTTP/Agent，WS 是单向通知通道 | ✅ 发送伪造命令后无业务帧、连接不断、库内无变化 |
 | D-23 | 测试基座的服务生命周期 | 一个测试 JVM 只起一个服务实例，由 JUnit 根上下文存储持有并在整轮结束时停服 | ✅ 全量 116 绿且 fork 正常退出；反证见 DBG-13 |
+| D-24 | 出站适配器归属 | JDBC 仓储独立成 `<ctx>.persistence`，`adapter` 只表示入站；视图 DTO 归 `<ctx>.application`，`ApiTime` 归 `shared` | ✅ 搬运后 116 绿（行为不变）+ 九条规则全绿 + 9/9 变异被杀 |
+| D-25 | 分页参数归属 | `shared.PageQuery`（含上限与 `Page<T>`）+ `api.PageParams`（解析查询串） | ✅ `application` 不得依赖 `com.bidarena.api` 的规则通过；分页 HTTP 用例未改仍绿 |
 
 ## 5. 已确认决定
 
@@ -97,7 +101,10 @@
 | 内存引擎硬编码 1000 积分 | 与真实钱包脱节 | ✅ 已解决：`AuctionEngine` 已删除，逻辑全部吸收到 `BidService` |
 | 迁移脚本副本可能不是最新的（增量拷贝） | 改了迁移却跑旧脚本，会出现不可复现的假失败 | 一键测试命令统一用 `mvn clean verify`（`DEBUG_LOG.md` DBG-2） |
 | 验证可能命中残留旧进程 | “健康检查通过”变成假证据，后续结论建立在旧代码上 | 验证脚本加“监听端口 PID == 本次启动 PID”断言，并加非空前置条件；收尾用 `taskkill`（`DEBUG_LOG.md` DBG-4、DBG-5） |
-| 单模块下依赖方向只靠自觉 | 架构随时间腐化 | ArchUnit 架构测试守卫（D-6） |
+| 单模块下依赖方向只靠自觉 | 架构随时间腐化 | ✅ 已由 ArchUnit 九条规则守卫（D-6/D-24），并用变异脚本确认规则真的会红 |
+| 一个包名承担两种含义（`adapter` 同时装控制器与仓储） | 依赖方向看起来成立、实际成环；文档里的“无循环”变成空话 | 出站仓储独立成 `persistence`，`adapter` 只表示入站（DBG-18、D-24） |
+| 架构规则写成永远不会失败的断言 | “规则全绿”被当成架构干净的证据 | 每条规则都用变异体验证会红，脚本 `tools/arch_mutation_check.py`（DBG-19） |
+| 共享服务基座下按空闲负载给时间预算 | 高负载全量跑时偶发假失败，容易被误判成产品缺陷 | 连接类动作按截止时间重试而非单次预算（DBG-20） |
 | 包结构先于业务建立，可能过度设计 | 抽象与需求不匹配 | 先落最小必要结构，随 P1 实际用例调整 |
 | “测试全绿但构建失败”被当成环境问题 | 去改无关配置（如 surefire 的 classpath 开关），真因留在测试里继续咬人 | 测试清理不得调用会 `System.exit` 的 API；始终用一条命令跑全量（DBG-8） |
 | 用 JDK 自带客户端“模拟浏览器” | 测试工具的限制被误判成服务端缺陷（差点去改 `CorsFilter`） | 显式打开受限头，并让断言直指契约行为（DBG-9） |
@@ -120,7 +127,11 @@
    - ✅ `seq` 与事务边界：`auctions.seq` 每次成功命令 +1（被拒的出价不推、重放不推、重复加入不推），一次提交的多条事件共享同一 `seq`；事件在**提交之后**发布，发布失败不回滚（A8）。
    - ✅ 隐私：事件里只出现确定性匿名标识 `anon-<sha256 前 8 位>`（HTTP 快照仍返回原始 ID，差异已在契约中写明）。
    - ✅ 测试：P3 新增 53 个用例（WS 端到端 14、事件语义 11、广播器 14、票 10、匿名标识 4），全量 **116/116** 绿；6 个变异（`null` 放行、重复 join 推 `seq`、去掉 A8 边界、票可重用、拒绝事件可扇出、匿名标识随机化）全部被杀死。
-3. ArchUnit 规则测试（D-6 的未完成验证项）。
+3. **架构守卫 — 已完成**（D-6 的验证项）：
+   - ✅ 包搬运（行为不变）：出站 JDBC 仓储 → `<ctx>.persistence`；查询视图 → `<ctx>.application`；`ApiTime`/`PageQuery` → `shared`；HTTP 查询串解析 → `api.PageParams`（D-24、D-25）。
+   - ✅ `ArchitectureTest` 九条规则：`domain` 纯净、`application` 不依赖入站适配器/装配/`api`/框架、`persistence` 不反向依赖、入站适配器不依赖 `bootstrap`、共享内核不依赖上下文、跨上下文 `domain`/`adapter` 不互引、上下文与层均无环。
+   - ✅ 反向确认：`tools/arch_mutation_check.py` 注入九种真实违规（跨层 import、反向依赖、跨上下文引用、两种环路），对应规则全部变红，**9/9 KILLED**。
+   - ✅ 全量 **125/125** 绿（116 + 架构 9）。
 4. 建 `AI_USAGE.md` / `AGENT_TOOL_SPEC.md` 骨架（内容是边开发边填，不得预填）。
 
 ## 8. 更新规则

@@ -486,6 +486,40 @@
 
 **验证结果**：全量 116 个用例绿且 fork 正常退出（日志中 `App: Start loading` 只出现一次，结尾有 `App: End stop`）；测试报告里不再出现 `DB_PASSWORD`。
 
+## D-24　出站适配器独立成 `persistence` 包：让“无循环依赖”成为可验证的规则
+
+**背景**：`DESIGN.md` §2.2/§2.4 写着“`application` 不得依赖 `adapter`”“任意两个包之间不得存在循环依赖”。准备写 `ArchUnit` 守卫时先照实检查了一遍代码，发现**这两条当时都不成立**：四个 JDBC 仓储（`AuctionRepository`、`SettlementRepository`、`WalletRepository`、`UserRepository`）与控制器同在 `<ctx>.adapter` 包里，于是每个上下文都有 `adapter`（控制器）→ `application`（用例）→ `adapter`（仓储）的**包级循环**；同时 `application` 直接依赖 `adapter`。另外 `auction/domain/AuctionEvent` 还 import 了 HTTP 侧的时间工具 `api.ApiTime`，违反“`domain` 仅 JDK”。
+
+| 方案 | 说明 | 代价 |
+|---|---|---|
+| A. 放宽规则去迎合现状（只留“`domain` 不依赖框架”） | 零改动，规则立刻全绿 | 文档里的两条约束变成空话；“无循环”这条最容易被破坏的约束失去守护 |
+| B. 把仓储抽成 `domain` 端口接口，实现放 `adapter` | 纸面上最“端口适配器” | 事务边界会被打散：每条 SQL 与应用层必须共用同一个 `Connection`，接口化后 `Connection` 要穿过端口，得引入工作单元/会话对象，改动面远大于收益（见 §2.2 折中说明） |
+| C. **把出站 JDBC 适配器移进 `<ctx>.persistence`，视图 DTO 归 `<ctx>.application`，时间与分页等基础类型归 `shared`**（当前实现） | 依赖方向固定为 入站 → 应用 → 出站，循环消失；规则可以照原文写 | 一次跨 20 个文件的包改名（纯搬运，行为不变）；`application` 仍依赖具体仓储类，不是端口接口 |
+
+**最终选择**：**C**。`persistence` 是“出站适配器”的独立包，而不是与控制器混住的 `adapter`；`adapter` 从此只指入站。`ApiTime`、`PageQuery` 移入 `shared`（`domain` 得以回归纯 JDK）；HTTP 查询串解析拆到 `api.PageParams`，应用层只见到整数（D-25）。
+
+**代价**：`application` → `persistence` 这条依赖留在明面上（`DESIGN.md` §2.2 表格里写着“允许”），读者必须理解它是刻意的：事务边界在应用层，SQL 在仓储层，两者共用同一个 `Connection`。跨上下文的 `application` 依赖仍然照旧（auction 用 wallet 的仓储/用例）。
+
+**验证结果**：搬运后全量 116 个用例仍绿（行为不变）；新增 `ArchitectureTest` 九条规则全绿；`tools/arch_mutation_check.py` 注入九种真实违规，**9/9 KILLED**——包括“`domain` import slf4j”“`application` 引用控制器”“仓储反向引用用例”“跨上下文引用”与两种环路。
+
+---
+
+## D-25　分页参数与 HTTP 解析分离：`shared.PageQuery` + `api.PageParams`
+
+**背景**：D-24 之后 `application` 已经不依赖 `adapter`，但查询用例仍接收 `api.PageQuery`，而它内部有 `parse(Context)`——于是应用层间接依赖了 HTTP 框架类型，“`application` 不得使用框架 web 类型”这条规则只能写成半条。
+
+| 方案 | 说明 | 代价 |
+|---|---|---|
+| A. 保留 `api.PageQuery`，规则放宽成“不直接 import `org.noear`” | 改动最小 | 规则看不出“用例签名里带着 HTTP 上下文对象”这种真实耦合；换掉 HTTP 层会牵动用例 |
+| B. 用例改为接收 `(int page, int size)` | 彻底解耦 | 两个服务与三个控制器各拆一次参数，`Page<T>` 还要另找地方放 |
+| C. **`PageQuery`（含上限校验常量与 `Page<T>`）移入 `shared`，HTTP 解析逻辑留在 `api.PageParams`**（当前实现） | 应用层签名不变，控制器只把 `PageQuery.parse(ctx)` 换成 `PageParams.parse(ctx)` | 多一个类；分页上限的“契约数字”与它的 HTTP 解析分处两个包，需要靠注释互相指引 |
+
+**最终选择**：**C**。契约里的 `size <= 100`、非法值一律拒绝（不静默截断）等语义留在 `PageQuery`，看用例的人不需要跳到 HTTP 层才知道上限。
+
+**代价**：理解分页要同时看两个类；`api` 包现在同时有封套、过滤器、当前用户与查询串解析四种横切职责，靠包注释与 `DESIGN.md` §2.3 说明边界。
+
+**验证结果**：`ArchitectureTest.applicationLayerDoesNotDependOnInboundAdaptersOrBootstrap` 把 `com.bidarena.api..` 也列入禁止项并通过；全量 125 个用例绿；分页相关 HTTP 用例（`HttpApiIntegrationTest`）未改一行仍通过。
+
 ---
 
 ## 未采用方案汇总
@@ -517,6 +551,9 @@
 | 事件里直接广播 `user_id` | 把用户标识体系广播给全场，并会进前端缓存、日志与回放 | 确定性匿名标识（D-21） |
 | 用 WebSocket 做第二条命令入口 | 需要第二套鉴权、RBAC、幂等与审计，两个入口还可能有不同结论 | WS 只做通知，客户端消息一律忽略（D-22） |
 | 每个测试类各起停一个服务实例 | Solon 是进程级单例，第二次启动仍绑旧端口，症状是“服务起不来”却不是代码问题 | 一个 JVM 一个实例，停服挂在根上下文存储上（D-23） |
+| 为迁就现状放宽 ArchUnit 规则 | `application` → `adapter` 与包级循环会永远留在代码里，文档里的约束变成空话 | 先搬运出 `persistence` 包，再照文档写规则（D-24） |
+| 把仓储全部抽成 `domain` 端口接口 | 事务里每条 SQL 都要共用同一个 `Connection`，接口化会把事务边界拆散 | 只对真正可替换的能力抽端口（事件发布），仓储保留具体类（D-24） |
+| 让查询用例自己接收 HTTP 的 `Context` / `PageQuery.parse` | 用例签名里带着 HTTP 上下文对象，换掉 HTTP 层会牵动用例 | 分页参数进 `shared`，解析留在 `api`（D-25） |
 
 ---
 

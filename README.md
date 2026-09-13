@@ -2,7 +2,7 @@
 
 仓库地址：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开启分支保护）
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V3）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**，以及 **WebSocket 实时事件与 `seq` 缺口恢复**（含 116 个真实 MySQL 集成测试，覆盖 INV-1~4 与 A/C 组相关验收项）。尚未完成：前端接真实 HTTP/WS、Agent API、模拟脚本与 Compose/E2E。
+这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V3）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**，**WebSocket 实时事件与 `seq` 缺口恢复**，以及**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）。全量 **125 个测试**（116 个真实 MySQL 集成测试覆盖 INV-1~4 与 A/C 组相关验收项 + 9 条架构规则）。尚未完成：前端接真实 HTTP/WS、Agent API、模拟脚本与 Compose/E2E。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
@@ -40,6 +40,7 @@ mvn clean verify
 - 测试会自动建表、执行 Flyway 迁移，并在每个用例前清空业务表；库名不得与开发库相同，否则拒绝启动。
 - HTTP 与 WebSocket 集成测试**共用同一个自启动的服务实例**（随机空闲端口，不会是 8080），整轮测试结束时停掉；因此跑测试不需要先手动起后端。
 - 断言消息含中文；Windows 控制台若乱码，执行 `chcp 65001`，或直接看 `target/surefire-reports/` 下的报告。
+- 架构规则不连库（`ArchitectureTest`，秒级）；想反向确认这些规则真的会失败，跑 `python tools/arch_mutation_check.py`（逐条注入真实违规再还原，期望输出 `9/9 KILLED`）。
 
 当前断言内容与未验证部分见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
 

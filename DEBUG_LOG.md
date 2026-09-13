@@ -933,3 +933,123 @@ for (int i = 1; i < observed.size(); i++) { ... }
 **工程结论**
 
 "看起来对的数据被判违规"几乎总是断言自己有问题，而不是被测代码。给循环写哨兵初值时，要么用真实数据的第一项，要么显式区分"首元素"这一次迭代——否则边界约束会悄悄作用在一个不存在的元素上。
+
+---
+
+## DBG-18：设计文档写的依赖规则，与代码里的包结构对不上
+
+**现象**
+
+准备把 `DESIGN.md` §2.4 的四条依赖规则写成 `ArchUnit` 测试时，先按规则本身跑了一遍现状，结果不是"全部通过"，而是**两条根本不成立**：
+
+- `application` 直接 import 了 `auction.adapter.AuctionRepository` / `wallet.adapter.WalletRepository` 等具体仓储，而 §2.2 的表格写着"`application` 不得依赖 `adapter`"。
+- 每个上下文内部都有包级循环：`adapter`（控制器）→ `application`（用例）→ `adapter`（仓储）→ …，而 §2.4 写着"任意两个包之间不得存在循环依赖"。
+- 另外 `auction/domain/AuctionEvent` import 了 HTTP 侧的 `api.ApiTime`，违反"`domain` 仅 JDK"。
+
+**定位**
+
+四条规则并没有写错，错的是**分类**：`adapter` 这一个包同时装了两类东西——入站适配器（HTTP 控制器、WS 监听器）与出站适配器（JDBC 仓储）。只要它们在同一个包里，"入站 → 应用 → 出站"就会被看成"adapter → application → adapter"，循环是**命名带来的假象**，但也是真实存在的包级环（`ArchUnit` 只看包，不看你的意图）。
+
+`api.ApiTime` 的情况相反：一个纯 `Instant.toString()` 的工具被放在了 HTTP 包，于是领域事件为了格式化时间就"必须"依赖 HTTP。
+
+**修复**
+
+- 出站 JDBC 仓储搬到 `<ctx>.persistence`；`adapter` 从此只表示入站。
+- 查询视图 DTO（`AuctionViews` / `WalletViews` / `UserView`）搬到 `<ctx>.application`——它们是用例的返回形状，不是 HTTP 契约。
+- `ApiTime`、`PageQuery` 搬到 `shared`，HTTP 查询串解析单独留在 `api.PageParams`（D-24、D-25）。
+- 规则照文档原文写成 `ArchitectureTest` 九条，全部通过。
+
+**验证**
+
+搬运后全量 116 个用例绿（行为不变，改的只是包与 import）；九条规则全绿；`tools/arch_mutation_check.py` 注入九种真实违规 → **9/9 KILLED**。
+
+**工程结论**
+
+"文档里的架构规则"与"能跑的架构规则"之间隔着一句"先照实检查一遍"。把规则写成测试之前，先用它检查现状：不成立的地方往往不是规则太严，而是**包名承担了两种含义**。这次如果没有先跑，就会得到两个都不想要的结果——要么删掉规则，要么把规则改写成迁就现状的样子，而文档仍写着原来的话。
+
+---
+
+## DBG-19：`noClasses().should(自定义条件)` 被 ArchUnit 反转，规则永远不会变红
+
+**现象**
+
+九条架构规则全绿，但"全绿"有两种可能：架构真的干净，或者**规则写错了**。于是给每条规则做一个注入真实违规的变异体。其中两条规则（跨上下文 `domain` 引用、跨上下文 `adapter` 引用）注入了违规之后**依然全绿**：
+
+```
+KILLED   A1 ... A5
+SURVIVED A6      rc=0  跨上下文 domain 引用
+```
+
+**定位**
+
+先把依赖本身打印出来，确认 `ArchUnit` 确实看到了那条边：
+
+```
+DEP com.bidarena.identity.domain.Principal || Method <...AuctionEvent.archLeak()> references class object <...Principal>
+```
+
+依赖在，规则却没红——问题在规则写法。两条有问题的规则写成了：
+
+```java
+noClasses().that().resideInAPackage("..domain..").should(new ArchCondition<JavaClass>(...) { ... });
+```
+
+`noClasses().should(X)` 的语义是 `classes().should(never(X))`：`never` 反转的是"条件是否被满足"，而"条件是否被满足"由条件产生的**非违规事件**（allowed events）判定。自定义条件里只在发现违规时 `events.add(violated(...))`，从不产生 allowed 事件，于是 `never(...)` 永远认为"没有东西被满足"——**规则永远不可能失败**。
+
+**修复**
+
+换成肯定式断言（`classes().should(condition)`），条件的语义就是"发现跨上下文依赖即报违规"：
+
+```java
+classes().that().resideInAPackage("..domain..").should(new ArchCondition<JavaClass>("只依赖本上下文的领域模型") { ... });
+```
+
+改后 A6/A7 都被杀掉，规则也仍然全绿。
+
+**验证**
+
+- 修好写法后重跑变异：A6、A7 KILLED；最终 9/9 KILLED（A8 用于"上下文成环"、A9 用于"层与层成环"）。
+- 全量 125 个用例绿。
+
+**工程结论**
+
+`noClasses()` 这种否定式 DSL 配内置 `dependOnClassesThat()` 很好用，但**配自定义条件时要先确认反转到的是哪一层语义**。更一般地：一条测试断言"没有任何违规"时，必须先用一个人造违规证明它会红——否则你不知道它是守卫，还是一行永远为真的注释。这次的顺序恰好说明了这一点：先怀疑规则，而不是先怀疑代码。
+
+---
+
+## DBG-20：全量跑时偶发一次 WS 握手超时——共享服务下的时间预算
+
+**现象**
+
+某一次 `mvn -o clean test` 全量跑（125 个用例）报出一个失败，且失败点在**建立连接**这一步，而不是在断言业务行为：
+
+```
+WebSocket 连接没有在 5000ms 内建立：ws://localhost:46924/ws/auctions/auc_9328c7272df7
+  at WsIntegrationTest.connect(WsIntegrationTest.java:143)
+```
+
+**定位**
+
+- 单独跑该用例两次都通过（`Tests run: 1, Failures: 0`），紧接着的全量跑也全绿——服务端行为没有变化。
+- 同一个测试类里另外 13 个用例在同一轮里全部通过，说明 WS 服务本身是活的、端口是对的。
+- 全量跑时机器负载明显更高（125 个用例 + 共享一个 JVM 里的服务实例），而 `connect()` 只给**一次** 5 秒预算：单次握手慢一点就直接判失败，与"服务是否有问题"无关。
+
+**修复（只改测试基座）**
+
+`connect()` 改成**按截止时间重试**，每次尝试仍用 5 秒，总预算 20 秒；失败过一次的客户端不复用（Java-WebSocket 底层套接字已废），重试用新连接：
+
+```java
+private static final long CONNECT_DEADLINE_MILLIS = 20_000;
+while (!client.connectBlocking(AWAIT_MILLIS, TimeUnit.MILLISECONDS)) {
+    if (System.currentTimeMillis() >= deadline) { throw new AssertionError(...); }
+    client = new Client(url);
+}
+```
+
+**验证**
+
+`WsIntegrationTest` 14/14 绿；修完后连续两次全量 `clean test` 均 125/125 绿。
+
+**工程结论**
+
+共享服务实例的测试基座里，"连接/启动"这类环境动作的预算要按**最坏负载**给，而不是按空闲时的实测值给；但也不能只用"把 5 秒改成 60 秒"这种粗暴做法——那会让真正的连接故障也拖到 60 秒才报错。按截止时间重试同时保住了"快速失败"和"抗抖动"。注意这次修的是**测试基座的时间预算**，不是产品的连接行为（生产端没有任何改动）。

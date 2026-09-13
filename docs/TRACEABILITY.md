@@ -10,7 +10,7 @@
 
 | 不变式 | 覆盖的验收项 | 校验手段（压测后 SQL） | 实现类 | 状态 |
 |---|---|---|---|---|
-| INV-1 资金非负且守恒 | A2, A5, A7, B2, B3 | 可用额非负；钱包冻结 = 各按场冻结之和；流水净额可解释冻结额；本场冻结总额 = 当前最高价 | `wallet.adapter.WalletRepository` | ✅ |
+| INV-1 资金非负且守恒 | A2, A5, A7, B2, B3 | 可用额非负；钱包冻结 = 各按场冻结之和；流水净额可解释冻结额；本场冻结总额 = 当前最高价 | `wallet.persistence.WalletRepository` | ✅ |
 | INV-2 领先者唯一 | A4, A5, A6 | 本场冻结中非领先者为 0；出价链 `server_seq` 严格递增、每步至少一个最小加价；末条出价与拍卖行领先者一致 | `auction.application.BidService` | ✅ |
 | INV-3 请求幂等 | A4, B6 | 同 `requestId` 重放后 `bids` 计数 = 1 且 `ledger_entries` 计数 = 1；重复提交返回首次结果 | `bid_requests` 主键 + `bids.uk_bid_request` | ✅ |
 | INV-4 成交唯一 | A7, B7 | 重复 / 并发触发结算后 `settlements` 计数 ≤ 1；余额与流水一致 | `auction.application.SettlementService` + `settlements` 主键 | ✅ |
@@ -21,7 +21,7 @@
 由真实 MySQL 集成测试调用（`BidConcurrencyTest` 5 个、`BidServiceTest` 11 个、
 `SettlementConcurrencyTest` 5 个、`SettlementServiceTest` 11 个）。
 
-P2 追加 31 个用例；P3 再追加 53 个，全量共 **116 个**，运行方式见 [`README.md` 一键验证](../README.md)：
+P2 追加 31 个用例；P3 再追加 53 个；架构守卫再追加 9 个，全量共 **125 个**，运行方式见 [`README.md` 一键验证](../README.md)：
 
 | 测试类 | 数量 | 覆盖 |
 |---|---:|---|
@@ -33,6 +33,9 @@ P2 追加 31 个用例；P3 再追加 53 个，全量共 **116 个**，运行方
 | `AnonymousIdTest` | 4 | 确定性、跨用户唯一且不含原值、`null` 安全、固定向量（`anon-2952873c`，跨端契约） |
 | `IdentityServiceTest` | 10 | 登录签发/校验令牌、角色与过期、篡改/错密钥/空令牌拒绝、三种失败返回同一响应、弱密钥快速失败、`toString` 不泄露哈希 |
 | `SeededDemoCredentialsTest` | 2 | 从迁移脚本里按行解析种子账号，用 BCrypt 实测三个演示口令可登录、错口令不可登录，且明文口令不出现在仓库文件中 |
+| `ArchitectureTest` | 9 | 架构守卫（不连库、秒级）：`domain` 只依赖 JDK + 共享内核（含禁 `java.sql`/`org.noear`/Jackson/slf4j 与 JDBC 助手）、`application` 不依赖入站适配器/装配/HTTP 封套、出站 `persistence` 不反向依赖、入站适配器不依赖 `bootstrap`、共享内核不依赖上下文、跨上下文 `domain` 与 `adapter` 不互引、上下文与层均无环 |
+
+`ArchitectureTest` 用 `ImportOption.DoNotIncludeTests` 只看生产代码；它断言的是“依赖不存在”，因此必须反向确认规则本身会红——见下表最后 9 行与 `tools/arch_mutation_check.py`。
 
 HTTP 集成测试与 WS 集成测试**共用同一个自启动的服务实例**（随机空闲端口、独立于 8080），因此它们同时验证了“组合根接线是否可用”与“实时通道真的接上了同一个对象图”，而不只是控制器逻辑。
 
@@ -52,21 +55,32 @@ HTTP 集成测试与 WS 集成测试**共用同一个自启动的服务实例**�
 | 票可重复核销（`remove` 改 `get`） | 一次性票 | `WsTicketServiceTest.singleUse`、`WsIntegrationTest.ticketIsSingleUse` 失败 |
 | `BID_REJECTED` 声明为可扇出 | 失败原因是隐私 | `WsEventBroadcasterTest.refusesToBroadcastUnicastEvents`、`WsIntegrationTest.rejectionIsUnicastOnly` 失败 |
 | 匿名标识改成随机值 | 确定性（前端要能认出自己） | 10 个用例失败（匿名标识与事件内容断言） |
+| A1：`domain` 里调用 slf4j | 领域层零外部依赖 | `domainDependsOnlyOnItselfAndTheSharedKernel` 失败 |
+| A2：`application` 引用控制器 | 用例层不得认识入站适配器 | `applicationLayerDoesNotDependOnInboundAdaptersOrBootstrap`（+ `layersAreFreeOfCycles`）失败 |
+| A3：仓储引用查询用例 | 出站适配器不得反向依赖用例 | `persistenceLayerDoesNotDependOnApplicationOrAdapters`（+ 环）失败 |
+| A4：控制器引用 `bootstrap` | 装配只发生在组合根 | `inboundAdaptersDoNotDependOnBootstrap` 失败 |
+| A5：共享内核引用 `identity.domain` | 共享内核是被依赖方 | `sharedKernelDoesNotDependOnContexts` 失败 |
+| A6：`auction.domain` 引用 `identity.domain` | 跨上下文领域模型不互引 | `domainModelsOfDifferentContextsDoNotDependOnEachOther` 失败（**这条最初写错了规则，见 DBG-19**） |
+| A7：`wallet.adapter` 引用 `auction.adapter` | 跨上下文适配器不互引 | `adaptersOfDifferentContextsDoNotDependOnEachOther`（+ `contextsAreFreeOfCycles`）失败 |
+| A8：`wallet.persistence` 反向引用 `auction.persistence`（auction→wallet 已存在） | 上下文之间不得成环 | `contextsAreFreeOfCycles` 失败 |
+| A9：`wallet.persistence` 引用 `auction.application` | 层与层不得成环 | `layersAreFreeOfCycles` 失败（同时命中“出站适配器不得依赖用例层”） |
 
 还原后复跑全绿。**绿而不会红，等于没测**——此规则已写入 [`CONTRIBUTING.md` §4 完成定义](../CONTRIBUTING.md)。
+
+架构那 9 条的变异注入与还原由脚本完成（`python tools/arch_mutation_check.py`，输出 `KILLED`/`SURVIVED`；当前 9/9 KILLED）：每次只改一处、跑 `ArchitectureTest`、断言命中了**预期的那条规则**，再还原。
 
 ### 尚未验证的部分
 
 以下内容**当前没有任何测试**，属于已知缺口而非已完成：
 Agent 凭据（D1）、前端与模拟脚本（E1/E4/F1）、前端 store 的缺口恢复实现（C5 的客户端一半，服务端一半已在 P3 完成）、
-ArchUnit 包边界规则（D-6 的未验证项）、录屏与现场核验（H 组）。
+录屏与现场核验（H 组）。架构包边界规则（D-6）已不再是缺口：`ArchitectureTest` 九条 + 9/9 变异验证。
 
 ## A. 拍卖与资金规则（原文 第 2 页）
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
 | A1 | 规则 1 数值规则 | 常量与起拍/加价/时长/初始余额（数值以原文为准） | 迁移种子 + 拍卖表字段 | 集成测试 | 🟨 |
-| A2 | 规则 2 余额口径 | 可用余额口径；按“本场新增冻结”校验 | `wallet.adapter.WalletRepository`、`auction.application.BidService` | `BidServiceTest.rebidBySameUserFreezesOnlyTheDelta`、`insufficientAvailableBalanceIsRejectedOnDeltaBasis` | ✅ |
+| A2 | 规则 2 余额口径 | 可用余额口径；按“本场新增冻结”校验 | `wallet.persistence.WalletRepository`、`auction.application.BidService` | `BidServiceTest.rebidBySameUserFreezesOnlyTheDelta`、`insufficientAvailableBalanceIsRejectedOnDeltaBasis` | ✅ |
 | A3 | 规则 3 截止边界 | 服务端接收时间严格早于截止 | `auction.application.BidService` | `BidServiceTest.bidAfterDeadlineIsRejected` | ✅ |
 | A4 | 规则 4 幂等与并发 | 同 `requestId` 只生效一次；并发出价唯一赢家 | 唯一约束 + 行锁 + 死锁重试 | `BidConcurrencyTest.sameAmountOnlyOneBecomesLeader`、`sameRequestIdIsAppliedOnce`、`repeatedConcurrentRounds` | ✅ |
 | A5 | 规则 5 冻结余额 | 释放旧领先者、同用户只加差额、失败不改资金、非负、流水可解释、无半完成 | `BidService` + `WalletRepository` + `ledger_entries` | `previousLeaderIsReleasedOnTransfer`、`bidBelowMinimumIsRejected`，均由 `Invariants` 逐条校验 | ✅ |
@@ -84,7 +98,7 @@ ArchUnit 包边界规则（D-6 的未验证项）、录屏与现场核验（H �
 | B4 | 数据模型 拍卖 | 状态、起拍价、当前价、领先者、截止、延长次数 | `db/migration` V1 + V2 | `BidServiceTest`（截止、延时、状态流转列均被读写） | ✅ |
 | B5 | 数据模型 参与者 | 拍卖用户关系、加入时间、Agent/真人标识 | `db/migration` V1 + V3（按场冻结） | `Invariants.auctionFrozenEqualsPrice` | ✅ |
 | B6 | 数据模型 出价 | 拍卖、用户、金额、`requestId`、服务端序号、时间 | `db/migration` + `bids.uk_bid_request` | `Invariants.oneBidPerRequest`、`bidChainStrictlyIncreasing` | ✅ |
-| B7 | 数据模型 成交结果 | 赢家、成交价、原因；每场最多一条 | `db/migration` + `settlements` 唯一键 + `auction.adapter.SettlementRepository` | `Invariants.settlementIsConsistent`、`oneSettlementPerAuction`；`SettlementConcurrencyTest.twoSchedulersRunningAtTheSameTimeSettleEachAuctionOnce` | ✅ |
+| B7 | 数据模型 成交结果 | 赢家、成交价、原因；每场最多一条 | `db/migration` + `settlements` 唯一键 + `auction.persistence.SettlementRepository` | `Invariants.settlementIsConsistent`、`oneSettlementPerAuction`；`SettlementConcurrencyTest.twoSchedulersRunningAtTheSameTimeSettleEachAuctionOnce` | ✅ |
 | B8 | 数据模型 Agent Token | 摘要、所属用户、拍卖范围、权限、过期、吊销 | `db/migration` + `agent_tokens` | 表已就位，Agent 认证未实现 | 🟨 |
 
 ## C. 接口与事件（原文 第 3 页）
@@ -108,8 +122,8 @@ ArchUnit 包边界规则（D-6 的未验证项）、录屏与现场核验（H �
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
 | E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `scripts/` 模拟脚本 | 脚本输出断言与摘要 | ⬜ |
-| E2 | 自动化测试 | 覆盖原文列出的全部测试点 | `src/test` | `mvn test` 报告 | ⬜ |
-| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：116 个用例全部跑在真实 MySQL 8.4 上（HTTP/WS 集成测试共用同一个自启动服务实例） | ✅ |
+| E2 | 自动化测试 | 覆盖原文列出的全部测试点 | `src/test` | 后端 **125/125** 绿（`mvn clean verify`）；前端与 Agent 侧测试待 P4/P5 | 🟨 |
+| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：116 个用例跑在真实 MySQL 8.4 上（HTTP/WS 集成测试共用同一个自启动服务实例），另 9 个为纯静态架构守卫 | ✅ |
 | E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend` 测试 | 测试报告 | ⬜ |
 
 ## F. 快速启动与初始数据（原文 第 4 页）

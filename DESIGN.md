@@ -62,9 +62,12 @@
 - 迁移与连接：Flyway `V1`~`V3`（含两级冻结、`CHECK` 约束、种子数据），HikariCP，`Services` 组合根（测试与生产共用同一套接线）。
 - 出价事务 `BidService`：差额冻结、换庄释放、幂等重放、最后 5 秒延时（上限 3 次）、按 `user_id` 升序的固定锁序。
 - 结算 `SettlementService` + 扫描器 `SettlementScheduler`：到期结算、无人出价、取消三条路径共用一个终局逻辑，成交记录唯一、可重放。
-- 证据：`mvn clean verify` 共 32 个集成测试全绿（出价并发 5 + 出价功能 11 + 结算并发 5 + 结算功能 11），并做过变异测试反向确认这些测试确实会红。
+- HTTP API（`docs/openapi.yaml` 为契约）：统一响应封套与错误码、JWT 鉴权与 RBAC、幂等键、限流、分页。
+- 实时通道：一次性 WS 票、提交后广播（广播失败不回滚）、`seq` 缺口恢复，事件负载只带确定性匿名标识。
+- 架构守卫：`ArchUnit` 九条分层/跨上下文/无环规则（§2.4）。
+- 证据：`mvn clean verify` 共 125 个测试全绿（domain 集成 32 + HTTP/WS 与身份钱包用例 + 架构守卫 9）；关键路径另做变异测试反向确认确实会红（P0–P3 六条 + 架构规则九条）。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
 
-**尚未实现：**HTTP API 与鉴权/RBAC、WebSocket 广播、Agent API（`:8090`）、Vue 前端、模拟脚本、Dockerfile、ArchUnit 规则测试。本文其余部分描述的是这些模块的**目标架构**，不把尚未存在的模块当成已完成。
+**尚未实现：**Agent API（`:8090`）、Vue 前端、模拟竞拍脚本、Dockerfile/Compose 与端到端脚本、录屏与交付证据。本文其余部分描述的是这些模块的**目标架构**，不把尚未存在的模块当成已完成。
 
 ## 2. 组件与职责
 
@@ -106,19 +109,21 @@ Vue 3 + Pinia  ──HTTP/JSON──>  Solon API  ──事务/行锁──> MyS
 
 ```text
 bootstrap/          装配与启动（唯一允许知道所有上下文的地方）
-  adapter/          入站：HTTP / WebSocket / Agent；出站：JDBC / 时钟
+  adapter/          入站：HTTP / WebSocket / Agent
+  persistence/      出站：JDBC 仓储（只做 SQL 与行映射）
     application/    用例编排、事务边界、端口调用
       domain/       聚合、值对象、不变量、领域端口（接口）——零外部依赖
 ```
 
 | 层 | 允许依赖 | 明确禁止 |
 |---|---|---|
-| `domain` | 仅 JDK | 框架注解、`java.sql`、JSON、任何其它层 |
-| `application` | 本层、`domain` | `adapter`、`bootstrap`、框架 web/JDBC 类型 |
-| `adapter` | 本层、`application`、`domain` | `bootstrap` |
+| `domain` | 仅 JDK 与 `shared` | 框架注解、`java.sql`、JSON、任何其它层 |
+| `application` | 本层、`domain`、`shared`、本上下文的 `persistence` | 入站 `adapter`、`bootstrap`、框架 web/JSON 类型 |
+| `persistence` | 本层、`domain`、`shared` | `application`、`adapter`、`bootstrap` |
+| `adapter`（入站） | 本层、`application`、`domain`、`shared` | `bootstrap` |
 | `bootstrap` | 全部 | —— |
 
-**端口与适配器**：需要外部能力时，**由使用方在 `domain` 定义接口**（如钱包记账端口、时钟），实现放在基础设施侧，在 `bootstrap` 注入。因此 `domain` 永远不 import JDBC、HTTP 或 Solon。
+**端口与适配器**：`domain` 永远不 import JDBC、HTTP 或 Solon。**当前实现的折中是**：只有真正需要替换的基础设施才在 `domain` 定义端口（如事件发布 `AuctionEventPublisher`，测试里用录制/爆炸实现替换），其余出站能力是 `persistence` 里的具体仓储类——「一次出价 = 一个事务」要求每条 SQL 与应用层共用同一个 `Connection`，此时再套一层端口接口只会把事务边界打散（取舍见 DECISIONS D-24）。
 
 **充血模型**：状态流转与规则应当写在聚合内部，而不是散落在 Service 的 `if-else` 里。**当前实现的折中是**：规则判定集中在两个事务型应用服务内（一个事务边界对应一个服务），而不是散落到控制器或仓储里；`domain` 包只放不依赖基础设施的枚举与判定。把规则再下沉到“聚合对象自己持有连接”，在当前规模下得不偿失——那会把事务边界拆散到多个对象，而“一次出价 = 一个事务”正是本项目的核心约束。
 
@@ -128,24 +133,45 @@ bootstrap/          装配与启动（唯一允许知道所有上下文的地方
 
 ```text
 com.bidarena
-├── shared/                   共享内核：Money、Id、Clock 接口、领域异常
-├── identity/{domain,application,adapter}
-├── wallet/{domain,application,adapter}
-├── auction/{domain,application,adapter}
-├── agentaccess/{domain,application,adapter}
+├── shared/                   共享内核：异常与错误码、时间序列化、分页参数、确定性匿名标识
+├── identity/{domain,application,persistence,adapter}
+├── wallet/{domain,application,persistence,adapter}
+├── auction/{domain,application,persistence,adapter}
+├── agentaccess/{domain,application,persistence,adapter}
+├── api/                      横切的 HTTP 入站基础设施：封套、过滤器、当前用户、查询串解析
 └── bootstrap/                装配、配置、Application
 ```
+
+各包职责的边界（写下来是因为它们最容易被“顺手放一下”弄乱）：
+
+- `adapter`：只放入站适配器（控制器、WebSocket 监听器、广播器）与入站相关的基础设施实现（JWT 签发、BCrypt 哈希）。
+- `persistence`：出站 JDBC 适配器，只做 SQL 与行映射，不判断业务规则。
+- `application`：用例编排与事务边界；查询视图（`AuctionViews` / `WalletViews` / `UserView`）也在这里——它们是**用例的返回形状**，不是 HTTP 契约（HTTP 契约只由 `docs/openapi.yaml` 定义）。
+- `domain`：枚举、判定、领域事件与领域端口；**不得**出现 JDBC / HTTP / JSON / 框架类型。
+- `api`：不属于任何上下文，是横切的入站基础设施。它依赖 `identity`（过滤器验票需要 `TokenService` / `Principal`）又被各控制器依赖，这是设计使然，不算上下文循环。
 
 跨上下文只允许 `application` 依赖另一个上下文的**端口接口或应用服务**；`adapter` 之间禁止互相引用；跨上下文的具体实现在 `bootstrap` 装配。
 
 ### 2.4 依赖规则可测试化
 
-上述约束不靠约定，靠 `ArchUnit` 写成单元测试，`mvn test` 即守卫：
+上述约束不靠约定，靠 `ArchUnit` 写成单元测试，`mvn test` 即守卫（规则源码：`src/test/java/com/bidarena/architecture/ArchitectureTest.java`）：
 
-- `domain` 不得依赖 `application` / `adapter` / `bootstrap`，也不得依赖 `org.noear`、`java.sql`、`com.fasterxml.jackson`。
-- `application` 不得依赖 `adapter` / `bootstrap`。
-- 不同上下文的 `domain` 之间不得直接引用。
-- 任意两个包之间不得存在循环依赖。
+| 规则 | 对应约束 |
+|---|---|
+| `domainDependsOnlyOnItselfAndTheSharedKernel` | `domain` 不得依赖 `application` / `adapter` / `persistence` / `bootstrap` / `api`，也不得依赖 `org.noear`、`java.sql`、`javax.sql`、`com.fasterxml.jackson`、`org.slf4j` 与 JDBC 助手 `shared.Db` |
+| `applicationLayerDoesNotDependOnInboundAdaptersOrBootstrap` | `application` 不得依赖入站 `adapter` / `bootstrap` / `api`，也不得直接用框架 web/JSON 类型 |
+| `persistenceLayerDoesNotDependOnApplicationOrAdapters` | 出站适配器不得反向依赖用例层与入站适配器 |
+| `inboundAdaptersDoNotDependOnBootstrap` | 入站适配器不得介入装配 |
+| `sharedKernelDoesNotDependOnContexts` | 共享内核是被依赖方，不得依赖任何上下文 |
+| `domainModelsOfDifferentContextsDoNotDependOnEachOther` | 不同上下文的 `domain` 之间不得直接引用 |
+| `adaptersOfDifferentContextsDoNotDependOnEachOther` | 不同上下文的 `adapter` 之间不得互相引用 |
+| `contextsAreFreeOfCycles` | 上下文之间不得相互依赖成环 |
+| `layersAreFreeOfCycles` | 任意两个包之间不得存在循环依赖 |
+
+**两条维护约定**：
+
+1. 规则本身也要被验证。`tools/arch_mutation_check.py` 逐条注入一次真实违规（跨层 import、反向依赖、跨上下文引用、环路），确认对应规则真的会变红——当前 **9/9 KILLED**。没有这一步，“规则全绿”既可能代表架构干净，也可能代表规则写错了（真的写错过一次，见 DEBUG_LOG DBG-19）。
+2. 先改设计文档，再改规则。**不允许为了让它变绿而放宽规则**：某条规则不成立就是一个待修的架构问题，应登记在 `docs/STATUS.md`，而不是删掉断言。
 
 **仍然是一个可部署单元**：不引入微服务、消息中间件或事件溯源；上下文是代码边界，不是网络边界。
 
@@ -204,4 +230,4 @@ Docker Compose 启动 MySQL、后端和前端，Flyway 在应用启动时自动�
 
 ## 8. 验证重点
 
-单测覆盖规则；Testcontainers MySQL 覆盖并发出价、幂等、结算和重启恢复；Vue 测试覆盖 Pinia 快照、seq 缺口和重连；模拟脚本覆盖 20 人、狙击延时、余额不足和重复 requestId。验收以数据库余额、流水、成交记录与公开 API 快照一致为准。
+单测覆盖规则；真实 MySQL 8（由环境变量指向独立测试库 `bid_arena_test`，每次用例前清表）覆盖并发出价、幂等、结算和重启恢复；架构守卫覆盖分层与循环依赖；Vue 测试覆盖 Pinia 快照、seq 缺口和重连；模拟脚本覆盖 20 人、狙击延时、余额不足和重复 requestId。验收以数据库余额、流水、成交记录与公开 API 快照一致为准。

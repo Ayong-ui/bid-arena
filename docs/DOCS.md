@@ -33,8 +33,8 @@
 
 | 文件 | 权威范围 | 状态 |
 |---|---|---|
-| `DESIGN.md` | 架构边界、出价事务与结算方案、并发与失败恢复（原文必交） | ✅ 保留 |
-| `DECISIONS.md` | 技术选型与取舍：背景、候选、选择、代价、验证（原文必交） | ✅ 已写 D-1~D-23（未验证项标 ⏳，不预填结论） |
+| `DESIGN.md` | 架构边界、出价事务与结算方案、并发与失败恢复（原文必交） | ✅ 保留；§1.6 / §2.2~§2.4 / §8 已按实现同步（分层含出站 `persistence`、九条可执行依赖规则） |
+| `DECISIONS.md` | 技术选型与取舍：背景、候选、选择、代价、验证（原文必交） | ✅ 已写 D-1~D-25（未验证项标 ⏳，不预填结论） |
 | `docs/DOMAIN_DESIGN.md` | 领域边界、聚合、不变量、两个一致性边界 | ✅ 已重写 |
 | `docs/FUNDING_AND_CONCURRENCY.md` | 差额冻结、锁顺序、幂等、结算/取消的失败分支 | ✅ 已重写 |
 | `docs/PRODUCT_PROTOTYPE.md` | 页面地图、组件、交互原型 | ✅ 已创建 |
@@ -45,7 +45,7 @@
 |---|---|---|
 | `README.md` | 快速启动完整路径、演示账号、**未完成边界** | ✅ 已更新（含 HTTP 接口表、WS 接入两步、一键验证与未完成范围） |
 | `AI_USAGE.md` | AI 分工比例、本人设计决定、未采用方案、真实错误（原文必交） | ➕ 待创建 |
-| `DEBUG_LOG.md` | 开发期间真实问题的现象/日志/定位/修复/验证（原文必交） | ✅ 已写 DBG-1~DBG-17 |
+| `DEBUG_LOG.md` | 开发期间真实问题的现象/日志/定位/修复/验证（原文必交） | ✅ 已写 DBG-1~DBG-20 |
 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 让 Coding Agent 查询与出价（原文必交） | ➕ 待创建 |
 
 ### 第 4 层｜工程控制（防偏差机制）
@@ -103,6 +103,7 @@
 | 资金冻结/释放/结算语义 | `FUNDING_AND_CONCURRENCY.md` → 不变量测试 → `DECISIONS.md` |
 | 领域边界/状态机 | `DOMAIN_DESIGN.md` → `openapi.yaml` enum → 前端类型 → 测试 |
 | 架构或技术选型 | `DESIGN.md` 与 `DECISIONS.md` |
+| 包结构 / 分层依赖规则 | `DESIGN.md` §2.2~§2.4 → `ArchitectureTest` 规则 → `tools/arch_mutation_check.py` 变异验证 → `docs/STATUS.md` |
 | 修复真实 bug | `DEBUG_LOG.md` |
 | 引入/放弃方案 | `DECISIONS.md` 与 `AI_USAGE.md` |
 | 交付范围、完成度、未完成项 | `README.md` 未完成边界 → `docs/STATUS.md` |
@@ -127,6 +128,7 @@
 - ✅ Agent 路径补充独立 server（`:8090`）；`CreateAgentTokenRequest` 补 `agentUserId`；新增 `AuctionResult` schema。
 - ⏳ `SETTLING` 在前端类型中的体现：待 P4 由 openapi 生成前端类型时解决。
 - ✅ P3：`WsTicket` 补 `wsPath` / `wsPort`（让客户端不必猜 WS 端口与路径），`POST /auth/ws-tickets` 补 `429`（票容量上限）。事件结构仍只在 `REALTIME_AND_COMMAND_FLOW.md` 定义，本文件只固定入口。
+- ✅ 架构守卫（P3.5）：契约未变，只改了 Java 包结构（出站仓储 → `<ctx>.persistence`、视图 → `<ctx>.application`、`ApiTime`/`PageQuery` → `shared`、查询串解析 → `api.PageParams`），对 HTTP/WS wire format 零影响（`HttpApiIntegrationTest` / `WsIntegrationTest` 未改一行仍绿）。
 
 ## 7. 文档更新时机
 

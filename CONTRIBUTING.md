@@ -59,7 +59,7 @@ fix bug
 
 - [ ] 代码可编译，服务可启动
 - [ ] 相关测试已新增或更新，并且通过
-- [ ] **新增/修改的关键测试已做变异验证**：故意拆掉一项它声称保护的保障，确认它会红（见 `DEBUG_LOG.md` DBG-5）
+- [ ] **新增/修改的关键测试已做变异验证**：故意拆掉一项它声称保护的保障，确认它会红（见 `DEBUG_LOG.md` DBG-5）。凡"断言某种东西不存在"的测试（如架构规则）尤其必须做——否则你分不清它是守卫还是一行永远为真的注释（见 `DEBUG_LOG.md` DBG-19）
 - [ ] 涉及接口改动 → `docs/openapi.yaml` 已同步
 - [ ] 按 [`docs/DOCS.md` §5 改动联动表](docs/DOCS.md) 同步了所有受影响文档
 - [ ] 修复了真实 bug → 已记入 `DEBUG_LOG.md`（现象、日志、定位、修复、验证）
@@ -76,6 +76,7 @@ fix bug
 git status --short          # 确认无误提交文件
 mvn -q test-compile         # 后端可编译
 # 集成测试与前端检查命令随实现补充，见 docs/STATUS.md
+python tools/arch_mutation_check.py   # 架构规则的反向确认（期望 9/9 KILLED）
 ```
 
 逐项确认：
