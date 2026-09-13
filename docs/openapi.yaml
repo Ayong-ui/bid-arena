@@ -253,10 +253,32 @@ components:
       type: object
       required: [code, message, data, requestId]
       properties:
-        code: {type: string, example: OK}
+        code: {$ref: '#/components/schemas/ApiCode'}
         message: {type: string, example: ok}
         data: {}
         requestId: {type: string}
+    ApiCode:
+      description: |
+        业务结果码，所有响应的 code 字段取值。HTTP 状态码与之一一对应：
+        OK=200；VALIDATION_FAILED=400；UNAUTHENTICATED=401；FORBIDDEN=403；
+        NOT_FOUND=404；其余冲突类=409；RATE_LIMITED=429；INTERNAL_ERROR=500。
+        客户端应以 code 判定业务结果，不要只依赖 HTTP 状态码。
+      type: string
+      enum:
+        - OK
+        - VALIDATION_FAILED
+        - UNAUTHENTICATED
+        - FORBIDDEN
+        - NOT_FOUND
+        - INVALID_STATE
+        - BID_TOO_LOW
+        - BID_LATE
+        - NOT_JOINED
+        - INSUFFICIENT_BALANCE
+        - IDEMPOTENCY_REPLAY
+        - CONFLICT
+        - RATE_LIMITED
+        - INTERNAL_ERROR
     LoginRequest:
       type: object
       required: [email, password]
