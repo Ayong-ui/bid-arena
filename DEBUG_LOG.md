@@ -1353,3 +1353,145 @@ status, envelope = agent.get("/agent/auctions/%s/result" % auction_id)
 这个字段为什么不在、上一个动作对这个凭证做过什么。
 又一次印证了 DBG-25 的教训：验证工具必须先被验证，但验证的方式是**真的把它跑一遍并读完每一条输出**，
 而不是“它编译过了”。
+
+---
+
+## DBG-27：E2E 断言把不变量想得比契约更强——邻价并发可以成交两笔、狙击到上限后不再延时
+
+**现象**
+
+`tools/auction_sim.py` 第一次跑真实服务，34 条里红了 3 条，其中两条都在“邻价并发”这一段：
+
+```
+== 3. 20 条邻价（120/130）并发出价：最高价胜出 ==
+  [FAIL] 恰好 1 条被接受                                    expected=1 actual=2
+         {"OK": 2, "BID_TOO_LOW": 18}
+  [FAIL] 被接受的是最高价 130                                 expected=130 actual=120
+         {"OK": 2, "BID_TOO_LOW": 18}
+  [OK]   最终价 = 130                                    130
+```
+
+“被接受的是 120”这条尤其像缺陷：最高报价明明是 130。另一条在狙击段：
+
+```
+  [OK]   第 4 次狙击被接受                                   OK
+  [OK]   延时次数 = 3                                     3
+  [FAIL] 截止时间被推后                                      expected=True actual=False
+         {"before": "2026-09-13T10:41:25.889589Z", "after": "2026-09-13T10:41:25.889589Z"}
+```
+
+**定位**
+
+两条都是**断言错了，不是被测对象错了**。
+
+- 邻价并发：`BidService` 的规则是“出价必须 ≥ 当前价 + 最小加价”。120 先成交时价 120，随后
+  130 是完全合法的抬价（130 ≥ 120+10），所以**允许成交两笔**。契约保证的是
+  “同一价位至多成交一笔”与“最终价 = 最高报价”，从不保证“全局只接受一笔”。
+  `[OK] 最终价 = 130` 正说明系统是对的：那笔 120 只是历史中标，领先者已被 130 取代。
+- 狙击上限：`MAX_EXTENSIONS = 3`。第 4 次仍在最后五秒窗口内，但 `extensionCount` 已达上限，
+  `BidService` 保持 `newEndsAt = auction.endsAt()` 不动——出价照常接受，截止时间**不该**再推后。
+  我的断言把“被接受”和“被延时”画了等号。
+
+**修复**
+
+把断言改成契约真正承诺的那几条：
+
+```python
+report.check("被接受笔数在 1~2 之间", 1 <= len(accepted) <= 2, True, codes)
+report.check("恰好 1 条 130 被接受（同价位不重复成交）", accepted.count(130), 1, codes)
+...
+if attempt <= MAX_EXTENSIONS:
+    report.check("截止时间被推后 +10 秒", delta, 10, ...)
+else:
+    report.check("达到上限后截止时间不再推后", delta == 0, True, ...)
+```
+
+**验证**
+
+```
+  [OK]   被接受笔数在 1~2 之间                                True
+  [OK]   被接受的最高价 = 130                                130
+  [OK]   恰好 1 条 130 被接受（同价位不重复成交）                     1
+  [OK]   达到上限后截止时间不再推后                                True
+---- 52/52 checks passed ----
+```
+
+**工程结论**
+
+E2E 脚本里的每一条断言都是一句“我理解的契约”。断言写强了，红的是脚本，但看起来像产品缺陷——
+这会浪费时间去修一个不存在的问题，比断言写松了更危险（写松了只是漏检，写强了会指向错误的修复方向）。
+写并发断言前先问一句：**这条不变量的事务边界在哪、锁住了什么？** “只接受一笔”只对**同一出价**成立
+（同价、同用户、同 `requestId`），跨价位没有这个性质。
+
+---
+
+## DBG-28：幂等键含 `user_id`——换个用户复用同一 `requestId` 不是重放
+
+**现象**
+
+`tools/auction_sim.py` 的“同一 `requestId` 并发重试 20 次”一段，预期 1 次写入 + 19 次重放：
+
+```
+== 4. 同一 requestId 并发重试 20 次：只写入一次、只冻结一次 ==
+  [OK]   恰好 1 条首次接受                                   1
+  [FAIL] 其余 19 条为幂等重放                                 expected=19 actual=9
+         {"BID_TOO_LOW": 10, "OK": 1, "IDEMPOTENCY_REPLAY": 9}
+```
+
+恰好一半重放、一半 `BID_TOO_LOW`，“一半”这个比例很可疑。
+
+**定位**
+
+脚本把 20 条请求按 `i % 2` **轮流**发给两个账号：
+
+```python
+results = run_concurrent([bid_job(a if i % 2 == 0 else b, auction_id, 140, duplicate) for i in range(20)])
+```
+
+而幂等键不是 `requestId` 本身。看 schema（`db/migration/V1__auction_schema.sql`）：
+
+```sql
+CREATE TABLE bid_requests (... PRIMARY KEY (auction_id,user_id,request_id));
+```
+
+即键是 **(auction_id, user_id, request_id)**。所以这 20 条其实是两个互不相关的幂等域：
+竞拍者 A 的 10 条 → 1 次真实写入 + 9 次重放；竞拍者 B 的 10 条 → 此时价已被 A 抬到 140，
+B 的 140 低于“140 + 最小加价 10”，全部 `BID_TOO_LOW`。
+`9 + 10 = 19`，数字完全对得上——不是漏了重放，是我把两个用户混成了一个幂等域。
+
+**修复**
+
+并发重试必须固定同一个用户，另外补一条**顺序**重放（无并发，结论必须确定），
+并把“跨用户不复用”作为一条显式断言写下来：
+
+```python
+results = run_concurrent([bid_job(a, auction_id, 140, duplicate) for _ in range(20)])
+...
+_, envelope = a.post("/auctions/%s/bids" % auction_id, {"requestId": duplicate, "amount": 140})
+report.check("顺序重试 -> 幂等重放", code_of(envelope), "IDEMPOTENCY_REPLAY", envelope)
+# 幂等键含 user_id：换个用户复用同一串不算重放
+_, envelope = b.post("/auctions/%s/bids" % auction_id, {"requestId": duplicate, "amount": 150})
+report.check("另一用户复用同一 requestId 视为新出价（键含 user_id）", code_of(envelope), "OK", envelope)
+```
+
+**验证**
+
+```
+  [OK]   恰好 1 条首次接受                                   1
+  [OK]   其余 19 条为幂等重放（不再产生写入）                         19
+  [OK]   顺序重试 -> 幂等重放                                 IDEMPOTENCY_REPLAY
+  [OK]   重放返回首次成交价 140                                140
+  [OK]   赢家冻结增量 = 成交价（未被重复冻结）                         140
+  [OK]   另一用户复用同一 requestId 视为新出价（键含 user_id）         OK
+```
+
+“赢家冻结增量 = 140”同时证明 20 条重复请求只冻结了一次。
+`wallet_a0` 在**整段并发之前**取样、`wallet_a1` 在之后取样，用增量而非绝对值，
+因此不受库里既有冻结额影响。
+
+**工程结论**
+
+`requestId` 是**调用方**生成的，两个客户端完全可能撞串（同一个模板、同一个 UUID 生成器状态）。
+撞串时“各算各的”比“互相吞掉”正确得多：幂等是为了**同一调用方的重试**去重，
+而不是全局去重。这条语义必须写进文档和断言，否则前端会以为“重试安全”等于“全站唯一”。
+另：断言里的“恰好一半”这种比例异常，往往就是“把两个域当成了一个域”的信号。

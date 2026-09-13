@@ -134,11 +134,31 @@ Agent 侧没有“全绿就算”的豁免：`tools/agent_mutation_check.py` 把
 | G13：授权不检查权限项 | 只读 Token 出价得 403 | `AgentApiIntegrationTest` 失败（`readOnlyTokenCannotBid`；曾因脚本把废轮误读为存活，见 DBG-25） |
 | G14：8090 不再隔离 | 端口边界不得失效 | `AgentApiIntegrationTest` 失败 |
 
+### 全链路模拟（E1）
+
+`tools/auction_sim.py` 只用标准库（含最小 RFC 6455 客户端），在真实 `:8080`/`:8090`/`:18080` 与真实 MySQL 上跑完八个阶段，
+每条断言打印“期望 vs 实际”，任一条不符即非零退出。实测 **52/52，退出码 0**：
+
+| 阶段 | 断言的不变量 | 实测结果 |
+|---|---|---|
+| 1 准备 | 未加入即出价 → 409 `NOT_JOINED` | `409` / `NOT_JOINED` |
+| 2 同价并发 | 20 条同价：**恰好 1 条被接受**，其余 19 条 `BID_TOO_LOW` | `OK=1` / `BID_TOO_LOW=19`；当前价 = 110 |
+| 3 邻价并发 | 20 条 120/130：最终价 = 最高报价；同价位至多成交一笔（邻价**允许**两笔） | `接受笔数 ∈ 1~2`、`max=130`、`count(130)=1`、最终价 130 |
+| 4 幂等重试 | 同一用户同一 `requestId` 并发 20 次 + 顺序重试 1 次：1 写 + 19 重放，冻结只加一次；另一用户复用同串 = 新出价（D-31） | `OK=1`/`REPLAY=19`；`idempotent=true`、`price=140`；赢家冻结增量 = 140、输家 0 |
+| 5 拒绝场景 | 低于“当前价 + 最小加价”→ `BID_TOO_LOW`；金额 0 / 缺 `requestId` → `VALIDATION_FAILED` | `409`、`400`、`400` |
+| 6 狙击 | 最后五秒出价 → `extensions` +1、截止时间 +10 秒；达 `MAX_EXTENSIONS=3` 后**不再延时但出价照常接受** | 4 次狙击：`1/2/3/3`，前三次 +10 秒，第四次截止时间不变 |
+| 7 实时通道 | 连上第一帧是权威快照；提交后收到 `BID_ACCEPTED` 且 `seq` 前进、领先者为匿名值；换新票重连后的快照含最新价 | 首帧 `AUCTION_SNAPSHOT`；`seq` 前进；`leader` 以 `anon-` 开头；重连快照价 = 110 |
+| 8 结束核对 | 到期结算：`FINISHED`/`TIMEOUT`/赢家/成交价；钱包总余额减少 = 冻结释放 = 成交价 | 5 条断言全绿（总余额 −110、冻结 −110） |
+
+**局限（已写入脚本头部）**：公开 API **没有注册端点**，种子只有 3 个演示账号，因此“20 个**不同用户**并发”
+无法只靠 HTTP 复现；脚本以“20 条并发出价请求（跨可用账号 + 唯一 `requestId`）”等价模拟并发压力。
+真正“20 个不同 `user_id` 的并发”由 `BidConcurrencyTest` 在真实库上覆盖（详见 A4）。
+
 ### 尚未验证的部分
 
-以下内容**当前没有任何测试**，属于已知缺口而非已完成：
-完整的 20 人并发端到端模拟脚本（E1 的“20 用户 + 最后五秒狙击 + 断线快照”三个场景目前由后端集成测试等价覆盖：`BidConcurrencyTest` 20 并发、`BidServiceTest` 延时边界、`WsIntegrationTest` 重连快照；`tools/agent_sim.py` 覆盖 Agent 侧的读/出价/幂等与全部凭据失败边界）、录屏与现场核验（G7/H 组）。
-Agent 凭据（D1）、模拟脚本与 E2E（E1）的 Agent 部分已完成；前端（E4）与架构包边界（D-6）已不再是缺口。
+以下内容**当前没有任何测试**，属于已知缺口而非已完成：录屏与现场核验（G7/H 组）；
+以及需要作者本人完成的 `AI_USAGE.md` 填写段（G1）。
+Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包边界（D-6）均已完成，不再是缺口。
 
 ## A. 拍卖与资金规则（原文 第 2 页）
 
@@ -186,7 +206,7 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）的 Agent 部分已完成；�
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `tools/agent_sim.py`（Agent 侧端到端，已实现并实跑）；`tools/auction_sim.py`（20 人并发/狙击/结算核对）待补 | `tools/agent_sim.py` 输出“期望 vs 实际”清单（真实双端口，已在开发库实跑）；其余场景目前由 `BidConcurrencyTest`/`BidServiceTest`/`WsIntegrationTest` 等价覆盖 | 🟨 |
+| E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `tools/agent_sim.py`（Agent 侧端到端）、`tools/auction_sim.py`（全链路） | `tools/agent_sim.py` **44/44**（真实双端口，开发库）；`tools/auction_sim.py` **52/52**（八个阶段，见上文“全链路模拟（E1）”）；真正“20 个不同 `user_id`”的并发由 `BidConcurrencyTest` 覆盖 | ✅ |
 | E2 | 自动化测试 | 覆盖原文列出的全部测试点 | 后端 `src/test`；前端 `frontend/src` | 后端 **187/187** 绿（`mvn clean verify`）；前端 **56 单测** + **3 真后端联调** + **16 变异 KILLED**；Agent 侧 62 个用例 + 14/14 变异 KILLED（P5） | ✅ |
 | E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：178 个用例跑在真实 MySQL 8.4 上（HTTP/WS/Agent 集成测试共用同一个自启动服务实例），另 9 个为纯静态架构守卫 | ✅ |
 | E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend/src/store/arena.test.ts`（Pinia store，18 个用例）+ `frontend/src/realtime/feed.test.ts`（14）+ `frontend/src/api/client.test.ts`（12）等 | 见上文「前端（P4）」：56 单测 + 3 真后端联调 + 16/16 变异；`npm run typecheck` 与 `vite build` 通过 | ✅ |
@@ -195,7 +215,7 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）的 Agent 部分已完成；�
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| F1 | 根目录交付 | `.env.example`、Compose、迁移、种子、一键测试、模拟脚本 | 仓库根目录 | `.env.example`/`db/migration`/`tools/agent_sim.py`/`Dockerfile`/`docker-compose.yml`（`docker compose config` 已校验）；模拟脚本已在开发库实跑 | 🟨 Compose `backend` 服务已配好但未在本机构建镜像（C-6） |
+| F1 | 根目录交付 | `.env.example`、Compose、迁移、种子、一键测试、模拟脚本 | 仓库根目录 | `.env.example`/`db/migration`/`tools/agent_sim.py`/`tools/auction_sim.py`/`Dockerfile`/`docker-compose.yml`（`docker compose config` 已校验）；两个模拟脚本已在开发库实跑（44/44、52/52） | 🟨 Compose `backend` 服务已配好但未在本机构建镜像（C-6） |
 | F2 | 演示账号 | 原文建议的三类账号 | `db/migration/V2` 种子（ADMIN + 两个 BIDDER） | `SeededDemoCredentialsTest`（三个口令登录成功、错口令失败）；`HttpApiIntegrationTest` 用同一批账号走完整 HTTP 登录 | ✅ |
 | F3 | README 路径 | 可复制的完整演示路径 | `README.md` | 照做一遍 | ⬜ |
 | F4 | 演示拍品 | 至少一件可立即开始，服务启动不自动倒计时 | 种子数据 | 实测 | ⬜ |

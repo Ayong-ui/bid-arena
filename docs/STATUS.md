@@ -15,17 +15,17 @@
 | P3.5 | 架构守卫：出站适配器独立成 `persistence` 包 + ArchUnit 九条规则（D-6 验证） | ✅ | 出站 JDBC 仓储独立成 `<ctx>.persistence`、视图归 `<ctx>.application`、`ApiTime`/`PageQuery` 归 `shared`（D-24、D-25）；`ArchitectureTest` 九条规则全绿，`tools/arch_mutation_check.py` 注入九种违规 **9/9 KILLED**；全量 **125/125** 绿 |
 | P4 | 前端接入真实 HTTP/WS，替换 Mock | ✅ | 类型由契约生成（D-26）；类型化 HTTP 客户端 + 实时订阅状态机 + Pinia store 接上真实服务，界面不再本地算钱/倒计时（D-27/D-28）。**56 个单测** + **3 个真后端联调**（HTTP/WS）+ **16 个变异 16/16 KILLED**；`npm run typecheck` 与 `vite build` 通过 |
 | P5 | Agent API（:8090）+ 模拟脚本 + Compose/E2E | ✅ | 独立端口（`AgentApiPlugin`，只暴露 `/api/v1/agent/**`）+ 独立 Token（签发/范围/权限/过期/吊销/限流）+ 复用同一出价事务并事务内自动加入（D-30）；P5 新增 **62 个用例**，全量 **187/187** 绿；`tools/agent_mutation_check.py` **14/14 KILLED**；端到端模拟 `tools/agent_sim.py`；后端 Dockerfile + Compose `backend` 服务（配置已校验，镜像未在本机构建，见 §3） |
-| P6 | 交付收尾：README 边界、录屏、测试证据 | 🟨 | README 已补 Agent/E2E 路径与更新后的未完成边界；录屏（G7）与 `AI_USAGE.md` 本人填写段（G1）仍待完成 |
+| P6 | 交付收尾：README 边界、录屏、测试证据 | 🟨 | E1 全链路模拟 `tools/auction_sim.py` 已交付并实跑 **52/52**（并发同/邻价、幂等重试、拒绝场景、最后五秒狙击、断线快照、结束核对）；README 已补 Agent/E2E 路径与更新后的未完成边界；录屏（G7）与 `AI_USAGE.md` 本人填写段（G1）仍待作者完成 |
 
 ## 2. 必交文档状态
 
 | 文档 | 要求 | 状态 |
 |---|---|---|
 | `README.md` | 快速启动完整路径、演示账号、未完成边界 | 🟨 已补「竞拍 Agent API（:8090）」与 E2E 模拟脚本路径、Compose 后端服务；未完成边界已按 P5 更新 |
-| `DESIGN.md` | 架构边界、出价事务、结算、恢复 | 🟨 存在；§1.6（实现边界）、§2.2~§2.4（分层与依赖规则）、§8（验证重点）已同步；P5 的 Agent 边界（独立端口/独立凭据/复用出价事务）待补入 |
-| `DECISIONS.md` | ≥3 项决策（背景/候选/选择/代价/验证） | ✅ 已写 D-1~D-30（含背景/候选/选择/代价/验证结果）；D-9 的验证结果已随 P5 补全，P5 新增 D-29（范围缺省即拒绝）、D-30（复用同一出价事务） |
+| `DESIGN.md` | 架构边界、出价事务、结算、恢复 | ✅ 已同步 §1.6（V1~V4、Agent 边界、187 证据与“尚未实现”）、§2.2~§2.4（分层与依赖规则）、§8（验证重点）；P5 的 Agent 边界（独立端口/独立凭据/复用出价事务）已补入 |
+| `DECISIONS.md` | ≥3 项决策（背景/候选/选择/代价/验证） | ✅ 已写 D-1~D-31（含背景/候选/选择/代价/验证结果）；D-9 的验证结果已随 P5 补全；P5 新增 D-29（范围缺省即拒绝）、D-30（复用同一出价事务）；E1 阶段新增 D-31（幂等键颗粒度含 `user_id`） |
 | `AI_USAGE.md` | AI 分工、本人决定、未采用方案、真实错误 | 🟨 骨架已建（`AI_USAGE.md`）：结构、素材索引与“不得预填”约定就位，`【本人填写】` 段落待作者本人补齐 |
-| `DEBUG_LOG.md` | ≥2 个真实问题（现象/日志/定位/修复/验证） | ✅ 已写 26 条真实问题（DBG-8~12 来自 P2；DBG-13~17 来自 P3；DBG-18~20 来自架构守卫；DBG-21 来自 P4 前端变异 F14 存活；DBG-22~26 来自 P5：Solon 单例启动、提前拒绝后的连接错位、base64url 填充位、增量编译旧字节码、E2E 脚本自己的断言用错凭证） |
+| `DEBUG_LOG.md` | ≥2 个真实问题（现象/日志/定位/修复/验证） | ✅ 已写 28 条真实问题（DBG-8~12 来自 P2；DBG-13~17 来自 P3；DBG-18~20 来自架构守卫；DBG-21 来自 P4 前端变异 F14 存活；DBG-22~26 来自 P5：Solon 单例启动、提前拒绝后的连接错位、base64url 填充位、增量编译旧字节码、E2E 脚本自己的断言用错凭证；DBG-27~28 来自 E1 全链路模拟：断言比契约强、幂等键含 `user_id`） |
 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 查询与出价 | ✅ 已从“骨架/尚不可用”更新为 P5 已实现并验证：操作步骤、提示词模板、失败边界、验收清单已勾选并登记证据（对应 `tools/agent_sim.py`） |
 | `docs/openapi.yaml` | 覆盖原文要求的能力 | ✅ 已修正；P2 已按实现回填 `ErrorCode`、分页、`Bid`、`LedgerEntry.requestId`；P3 补上 `WsTicket.wsPath/wsPort` 与 `/auth/ws-tickets` 的 429；P4 前端类型已由 `npm run gen:api` 从本文件生成（`frontend/src/api/schema.d.ts`，D-26） |
 
@@ -45,20 +45,20 @@
 | 开发库容器 | ✅ | VM 上 `bid-arena-mysql-1`（MySQL 8.4.9，`0.0.0.0:3307->3306`），未动其他 18 个容器 |
 | 架构守卫 | ✅ | `src/test/java/com/bidarena/architecture/ArchitectureTest.java`：九条分层/跨上下文/无环规则（`DoNotIncludeTests`，不连库、秒级）；`tools/arch_mutation_check.py` 逐条注入真实违规反向确认，**9/9 KILLED**（`mvn` 需能离线跑） |
 | Agent 接入 | ✅ | `agentaccess` 上下文：`AgentToken`/`AgentScopes`（domain）、`AgentTokenService`/`AgentAuctionService`/`AgentRateLimiter`（application）、`AgentAuthFilter`/`HttpAgentController`/`HttpAgentTokenController`（adapter）、`AgentTokenRepository`（persistence）；`bootstrap/AgentApiPlugin` 在 `:8090` 只暴露 `/api/v1/agent/**`；迁移 `V4__agent_access.sql` |
-| 模拟脚本 | ✅ | `tools/agent_sim.py`：只用标准库，扮演管理员与竞拍 Agent，走真实 `:8080`/`:8090`：登录→创建并开拍→签发读+出价/只读/短命/限流四种 Token→Agent 读状态→Agent 出价→幂等重放→真人加价→Agent 夺回→读结果→逐条验证 403/401/429/404/端口隔离，最后打印“期望 vs 实际”清单（任一条不符则非零退出） |
+| 模拟脚本 | ✅ | `tools/agent_sim.py`：只用标准库，扮演管理员与竞拍 Agent，走真实 `:8080`/`:8090`：登录→创建并开拍→签发读+出价/只读/短命/限流四种 Token→Agent 读状态→Agent 出价→幂等重放→真人加价→Agent 夺回→读结果→逐条验证 403/401/429/404/端口隔离，最后打印“期望 vs 实际”清单（任一条不符则非零退出）。`tools/auction_sim.py`：全链路模拟（20 条并发同/邻价、幂等重试、拒绝场景、最后五秒狙击、WebSocket 断线快照、结束核对），**52/52 实跑通过**；内含最小 RFC 6455 客户端，不引第三方依赖 |
 | 前端接入 | ✅ | `frontend/`：契约生成类型（D-26）+ 类型化 HTTP 客户端（统一封套/错误码/幂等头/超时）+ 实时订阅状态机（去重、缺口拉快照、退避重连；D-28）+ Pinia store（服务端为唯一事实来源；D-27）；**56 单测**（api/realtime/store/anonymous）+ **16 变异 16/16 KILLED**；`npm run typecheck` 与 `vite build` 通过；真后端联调 **3/3**（`npm run test:live`） |
-| 一键测试命令 | ✅ | 后端：指定 `BID_ARENA_TEST_DB_*` 后 `mvn clean verify`（实测 **187/187** 绿：真库集成 58〔HTTP 19 + WS 14 + Agent 23 + 拒绝后连接复用 2，共用同一个自启动服务实例〕+ 架构守卫 9 + 其余领域/身份/结算/事件/WS 广播/票/匿名/Agent 单元 120）；Agent 凭据变异 `python tools/agent_mutation_check.py`（**14/14 KILLED**）；架构变异 `python tools/arch_mutation_check.py`（9/9 KILLED）。前端：`cd frontend && npm test`（56 绿）与 `npm run typecheck`；变异 `python tools/mutation_check.py`（16/16 KILLED）；真后端联调 `npm run test:live`（3 绿） |
+| 一键测试命令 | ✅ | 后端：指定 `BID_ARENA_TEST_DB_*` 后 `mvn clean verify`（实测 **187/187** 绿：真库集成 58〔HTTP 19 + WS 14 + Agent 23 + 拒绝后连接复用 2，共用同一个自启动服务实例〕+ 架构守卫 9 + 其余领域/身份/结算/事件/WS 广播/票/匿名/Agent 单元 120）；Agent 凭据变异 `python tools/agent_mutation_check.py`（**14/14 KILLED**）；架构变异 `python tools/arch_mutation_check.py`（9/9 KILLED）。端到端：后端在 8080/8090/18080 跑起来后 `python tools/agent_sim.py`（**44/44**）与 `python tools/auction_sim.py`（**52/52**），均非零退出即失败。前端：`cd frontend && npm test`（56 绿）与 `npm run typecheck`；变异 `python tools/mutation_check.py`（16/16 KILLED）；真后端联调 `npm run test:live`（3 绿） |
 | 远程仓库 | ✅ | <https://github.com/Ayong-ui/bid-arena>（公开；`main` 已开分支保护：禁强推、禁删除） |
 
 ## 4. 决策状态
 
-全部决策已定稿并写入 [`DECISIONS.md`](../DECISIONS.md)（D-1~D-30 含背景/候选/选择/代价/验证结果，附「未采用方案汇总」）。D-14~D-17 是 P2 期间新增的：错误码与 HTTP 状态码的分工、鉴权默认拒绝、CORS 白名单、测试期配置覆盖；D-18~D-23 是 P3 期间新增的：实时通道的鉴权方式、`seq` 的归属与语义、广播失败边界、匿名标识、客户端消息一律忽略、测试基座的“一 JVM 一实例”；D-24~D-25 是架构守卫期间新增的：出站适配器独立成 `persistence` 包、分页参数与 HTTP 解析分离；D-26~D-28 是 P4 期间新增的：前端类型从契约生成、前端不得自己算钱与倒计时、客户端 `seq` 缺口恢复；D-29~D-30 是 P5 期间新增的：Token 范围缺省即拒绝、Agent 出价复用同一事务并自动加入。
+全部决策已定稿并写入 [`DECISIONS.md`](../DECISIONS.md)（D-1~D-31 含背景/候选/选择/代价/验证结果，附「未采用方案汇总」）。D-14~D-17 是 P2 期间新增的：错误码与 HTTP 状态码的分工、鉴权默认拒绝、CORS 白名单、测试期配置覆盖；D-18~D-23 是 P3 期间新增的：实时通道的鉴权方式、`seq` 的归属与语义、广播失败边界、匿名标识、客户端消息一律忽略、测试基座的“一 JVM 一实例”；D-24~D-25 是架构守卫期间新增的：出站适配器独立成 `persistence` 包、分页参数与 HTTP 解析分离；D-26~D-28 是 P4 期间新增的：前端类型从契约生成、前端不得自己算钱与倒计时、客户端 `seq` 缺口恢复；D-29~D-30 是 P5 期间新增的：Token 范围缺省即拒绝、Agent 出价复用同一事务并自动加入；D-31 是全链路模拟期间补登的：幂等键颗粒度是 `(auctionId, userId, requestId)`。
 
 | # | 决策 | 结论 | 验证 |
 |---|---|---|---|
 | D-1 | 数据访问方式 | HikariCP + 手写 JDBC（solon-data 无可用 SQL 工具） | ✅ 已在出价事务与仓储中使用 |
 | D-2 | 迁移工具与执行位置 | 应用内 Flyway，删除 initdb 挂载 | ✅ 空库执行 + 失败路径均已实测 |
-| D-3 | 鉴权与密码哈希 | jjwt + BCrypt；Agent Token 独立 | ✅ 用户侧已实测（P2）；⏳ Agent 侧待 P5 |
+| D-3 | 鉴权与密码哈希 | jjwt + BCrypt；Agent Token 独立 | ✅ 用户侧已实测（P2）；Agent 侧已实测（P5，`AgentApiIntegrationTest` + `tools/agent_sim.py`） |
 | D-4 | 并发正确性归属 | MySQL 唯一约束 + 行锁 + 条件更新 | ✅ 已用变异测试反向确认 |
 | D-5 | 时间基准 | 事务内取数据库时间 | ✅ `Db.now()`，测试夹具亦用数据库时间 |
 | D-6 | 架构形态与进程模型 | 单模块 + 4 上下文 + 四层包（含出站 `persistence`）+ ArchUnit | ✅ 九条规则全绿且 9/9 变异被杀（D-24） |
@@ -86,6 +86,7 @@
 | D-28 | 客户端 `seq` 缺口恢复 | 按 `(auctionId, seq, type)` 去重；缺口拉权威快照、旧事件作废、新事件补放；重连换票重置基线 | ✅ `feed.test.ts` 14 用例；变异 F11/F12/F13 被杀 |
 | D-29 | Agent Token 的 `auctionIds` 缺省语义 | 缺省 = 空集合 = 默认拒绝（不是“全部允许”） | ✅ `AgentTokenTest`/`AgentTokenServiceTest` + `AgentApiIntegrationTest` 空范围 403；变异 G3/G12 被杀 |
 | D-30 | Agent 出价路径 | 复用同一出价事务，事务内自动补参与记录（`AGENT`），不新开写入路径 | ✅ `AgentApiIntegrationTest`（自动加入 + 与真人共用幂等）；变异 G11 被杀 |
+| D-31 | 幂等键颗粒度 | `(auctionId, userId, requestId)`：重试去重只在本调用方内生效，跨用户不互吞 | ✅ `tools/auction_sim.py`：同一用户 20 并发重试 + 顺序重试 = 1 写 + 19 重放，冻结增量 = 成交价；另一用户复用同串 = 新出价 |
 
 ## 5. 已确认决定
 
@@ -156,7 +157,11 @@
    - ✅ 测试：P5 新增 **62 个用例**（Agent 集成 23、Token 服务 21、Token 领域 6、Scope 4、限流器 6、拒绝后连接复用 2），全量 **187/187** 绿；`tools/agent_mutation_check.py` 注入 14 种真实缺陷，**14/14 KILLED**（过程中修好了脚本自身的两个假阴性来源，见 DBG-25）。
    - ✅ 模拟脚本：`tools/agent_sim.py` 走真实双端口完成「签发→读→出价→幂等重放→越权/过期/吊销/限流边界→结果」，打印可核验清单；真实环境实跑全绿（见 `docs/TRACEABILITY.md` E1）。
    - ✅ 交付：后端 `Dockerfile` + Compose `backend` 服务（`docker compose config` 已校验；按 C-6 未在本机构建镜像）。
-7. **P6 — 待开始**：录屏（G7）、`AI_USAGE.md` 本人填写段（G1）、README/DESIGN 的最后一致性校对、H 组现场核验演练。
+7. **P6 — 进行中**：
+   - ✅ `tools/auction_sim.py`（E1 全链路模拟）：20 条并发同/邻价、幂等重试、拒绝场景、最后五秒狙击（+10 秒、最多 3 次）、WebSocket 断线快照、结束核对（结果与钱包/冻结一致），实跑 **52/52**（退出码 0）；局限已在脚本头部如实声明（公开 API 无注册端点，“20 用户”以 20 条并发请求等价模拟，真正 20 个不同用户的并发由 `BidConcurrencyTest` 覆盖）。
+   - 🟨 录屏（G7）：待作者录制。
+   - 🟨 `AI_USAGE.md` 本人填写段（G1）：待作者本人补齐（不得预填）。
+   - ⬜ README/DESIGN 最后一致性校对；H 组现场核验演练。
 
 ## 8. 更新规则
 

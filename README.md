@@ -2,7 +2,7 @@
 
 仓库地址：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开启分支保护）
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V4）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及**竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流）与**端到端模拟脚本**。全量 **187 个测试**（178 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
+这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V4）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及**竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流）与**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）。全量 **187 个测试**（178 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
@@ -175,6 +175,34 @@ python tools/agent_sim.py --duration 60     # 拍卖持续秒数（默认 300）
 
 脚本只用 Python 标准库（不需要 `pip install`）；每次运行自己创建拍卖与 Token，结束后默认清理（`--keep` 可保留供手工核对）。
 
+## 全链路模拟脚本（并发 / 狙击 / 断线快照 / 结算核对）
+
+`tools/agent_sim.py` 覆盖 Agent 一侧；面向**用户侧**全链路的是 `tools/auction_sim.py`，
+它把“只有并发才成立”的那批事实变成一条可复现命令——20 条并发同/邻价、`requestId` 重试、
+拒绝场景、最后五秒狙击、WebSocket 断线快照、到期结算与钱包对账，共八个阶段。
+
+```bash
+# 需要后端已在 8080/8090/18080 上运行（可用开发库）
+python tools/auction_sim.py            # 八个阶段全跑（含狙击等待，约 1 分钟）
+python tools/auction_sim.py --quick    # 跳过最慢的狙击阶段（约省 35 秒）
+python tools/auction_sim.py --keep     # 结束时不取消拍卖，便于在前端观察
+```
+
+同样只用标准库，**含一个最小 RFC 6455 WebSocket 客户端**（约 100 行），因此不需要 `websocket-client`。
+实测 **52/52，退出码 0**（逐条对比“期望 vs 实际”）；它断言的不变量：
+
+- **同价并发恰好一笔成交**（20 条同价 → `OK=1`，其余 `BID_TOO_LOW`）；
+- **邻价并发以最高价收尾**（邻价**允许**成交两笔：先 120 后 130；同价位至多一笔）；
+- **幂等键含 `user_id`**（D-31）：同一用户同 `requestId` 并发 20 次 = 1 写 + 19 重放且只冻结一次；
+  另一用户复用同一串**不算重放**；
+- **最后五秒狙击**：出价触发 +10 秒延时，`MAX_EXTENSIONS=3` 达上限后**不再延时但出价照常接受**；
+- **断线快照**：连上第一帧是权威快照，提交后收到 `BID_ACCEPTED`（领先者为匿名值），换新票重连能对齐到最新价；
+- **结算对账**：`FINISHED`/`TIMEOUT` 后，钱包“总余额减少 = 冻结释放 = 成交价”。
+
+**局限（如实声明）**：公开 API 没有注册端点，种子只有 3 个演示账号，因此“20 个**不同用户**并发”
+无法只靠 HTTP 复现；脚本用“20 条并发出价请求（跨可用账号 + 唯一 `requestId`）”等价模拟并发压力，
+真正 20 个不同 `user_id` 的并发由真实库上的 `BidConcurrencyTest` 覆盖。
+
 ## 设计与决策
 
 - 业务全景（角色、主链路、四条不变式）、分层与一致性方案见 [DESIGN.md](DESIGN.md)。
@@ -193,10 +221,11 @@ python tools/agent_sim.py --duration 60     # 拍卖持续秒数（默认 300）
 
 目前**还不能**做到的事，以及对应的原因：
 
-- **模拟脚本只覆盖了 Agent 一侧**。`tools/agent_sim.py` 已能在真实双端口上跑通「签发 → 读 → 出价 →
-  幂等重放 → 越权/过期/吊销/限流边界 → 结果」，但原要求里的「20 用户并发 + 最后五秒狙击 +
-  断线快照」还不是独立脚本，目前由后端集成测试等价覆盖（`BidConcurrencyTest` 20 并发、
-  `BidServiceTest` 延时边界、`WsIntegrationTest` 重连快照）。
+- **模拟脚本已覆盖两侧**。`tools/agent_sim.py` 跑通 Agent 的「签发 → 读 → 出价 → 幂等重放 →
+  越权/过期/吊销/限流边界 → 结果」（**44/44**）；`tools/auction_sim.py` 跑通用户侧全链路——
+  并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结算对账（**52/52**）。
+  唯一不能只靠 HTTP 复现的是“20 个**不同用户**并发”：公开 API 没有注册端点、种子只有 3 个演示账号，
+  这部分由真实库上的 `BidConcurrencyTest` 覆盖（详见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md) E1）。
 - **Compose 的 `backend` 服务尚未在本机构建过镜像**。`Dockerfile` 与 `docker-compose.yml` 已就位，
   `docker compose config` 已校验；但按仓库约定（不重建评测机上的容器），没有实际 `docker compose up` 过。
 - **[AI_USAGE.md](AI_USAGE.md) 仍是骨架**：结构与素材索引就位，但分工比例、本人设计决定等
@@ -204,7 +233,7 @@ python tools/agent_sim.py --duration 60     # 拍卖持续秒数（默认 300）
 - **没有线上地址、没有演示录屏**（两段式现场核验的素材）。
 
 已实现的边界：用户侧 HTTP 15 个端点 + Agent 侧 3 个业务端点与 2 个签发/吊销端点 + WebSocket 实时通道（P2/P3）、
-前端真实接入（P4）、Agent API 与端到端模拟（P5）、架构守卫 9 条。
+前端真实接入（P4）、Agent API 与端到端模拟（P5）、用户侧全链路模拟（E1）、架构守卫 9 条。
 完整的逐项状态与证据见 [docs/STATUS.md](docs/STATUS.md) 与 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
 
 ## 公开仓库约定
