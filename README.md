@@ -2,16 +2,45 @@
 
 仓库地址：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开启分支保护）
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前包含可运行的领域核心、Vue Mock 前端、数据库迁移草案和完整的后端设计契约；真实 HTTP、MySQL Repository、鉴权和 WebSocket 正按文档逐步实现。
+这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V3）、身份/钱包/资金流水数据模型、以及**并发安全的出价事务**（含 16 个真实 MySQL 集成测试）。尚未完成：结算、HTTP 接口层与鉴权、WebSocket 推送、前端接真实接口、Agent API。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
-## 运行核心测试
+## 一键验证
+
+并发与结算相关测试跑在**真实 MySQL** 上，不依赖内存 Mock。准备一个独立测试库（切勿指向开发库）：
+
+```sql
+CREATE DATABASE IF NOT EXISTS bid_arena_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+GRANT ALL PRIVILEGES ON bid_arena_test.* TO 'bid_arena'@'%';
+FLUSH PRIVILEGES;
+```
+
+指定测试库并运行：
 
 ```powershell
-mvn -q test-compile
-java -ea -cp "target/classes;target/test-classes" com.bidarena.AuctionEngineTest
+# Windows PowerShell
+$env:BID_ARENA_TEST_DB_URL = "jdbc:mysql://主机:3307/bid_arena_test?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8"
+$env:BID_ARENA_TEST_DB_USER = "bid_arena"
+$env:BID_ARENA_TEST_DB_PASSWORD = "<本地口令>"
+mvn clean verify
 ```
+
+```bash
+# Git Bash / Linux
+export BID_ARENA_TEST_DB_URL="jdbc:mysql://主机:3307/bid_arena_test?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8"
+export BID_ARENA_TEST_DB_USER="bid_arena"
+export BID_ARENA_TEST_DB_PASSWORD="<本地口令>"
+mvn clean verify
+```
+
+说明：
+
+- 用 `clean` 而不是 `mvn test`：迁移脚本位于仓库根目录 `db/migration/`，增量构建可能让应用跑到旧副本（见 `DEBUG_LOG.md` DBG-2）。
+- 测试会自动建表、执行 Flyway 迁移，并在每个用例前清空业务表；库名不得与开发库相同，否则拒绝启动。
+- 断言消息含中文；Windows 控制台若乱码，执行 `chcp 65001`，或直接看 `target/surefire-reports/` 下的报告。
+
+当前断言内容与未验证部分见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
 
 ## 开发环境
 

@@ -8,38 +8,58 @@
 
 不变式定义见 [`DESIGN.md` §1.3](../DESIGN.md#13-四条不变式可执行断言)。并发压测后**直接查库校验不变式**，是“并发正确”最硬的证据；只看接口返回不算。
 
-| 不变式 | 覆盖的验收项 | 校验手段（压测后 SQL） |
+| 不变式 | 覆盖的验收项 | 校验手段（压测后 SQL） | 实现类 | 状态 |
+|---|---|---|---|---|
+| INV-1 资金非负且守恒 | A2, A5, A7, B2, B3 | 可用额非负；钱包冻结 = 各按场冻结之和；流水净额可解释冻结额；本场冻结总额 = 当前最高价 | `wallet.adapter.WalletRepository` | ✅ |
+| INV-2 领先者唯一 | A4, A5, A6 | 本场冻结中非领先者为 0；出价链 `server_seq` 严格递增、每步至少一个最小加价；末条出价与拍卖行领先者一致 | `auction.application.BidService` | ✅ |
+| INV-3 请求幂等 | A4, B6 | 同 `requestId` 重放后 `bids` 计数 = 1 且 `ledger_entries` 计数 = 1；重复提交返回首次结果 | `bid_requests` 主键 + `bids.uk_bid_request` | ✅ |
+| INV-4 成交唯一 | A7, B7 | 重复 / 并发触发结算后 `settlements` 计数 ≤ 1；余额与流水一致 | `SettlementService`（未实现） | ⬜ |
+
+## 已登记的验证证据
+
+上面 INV-1~3 的“校验手段”已实现为可执行 SQL，位于 `src/test/java/com/bidarena/support/Invariants.java`，
+由 16 个真实 MySQL 集成测试调用（`BidConcurrencyTest` 5 个、`BidServiceTest` 11 个）。
+运行方式见 [`README.md` 一键验证](../README.md)。
+
+**测试有效性经过变异测试反向确认**，不以“全绿”为证据：
+
+| 变异 | 预期被谁抓住 | 实测结果 |
 |---|---|---|
-| INV-1 资金非负且守恒 | A2, A5, A7, B2, B3 | 余额与冻结均非负；本场冻结总额 = 当前最高价（无领先者时为 0） |
-| INV-2 领先者唯一 | A4, A5, A6 | 本场冻结中，非领先者全为 0；领先者冻结 = 当前最高价 |
-| INV-3 请求幂等 | A4, B6 | 重放同一 `requestId` 后，`bids` 计数 = 1 且 `ledger_entries` 计数 = 1 |
-| INV-4 成交唯一 | A7, B7 | 重复 / 并发触发结算后 `settlements` 计数 ≤ 1；余额与流水一致 |
+| 拿掉拍卖行行锁（`lockAuction` 的 `FOR UPDATE`） | 并发用例 | 20 次同额出价中 14 次既非成功也非规则拒绝而是内部错误；两用例失败（断言 19 实际 6、断言 20 实际 5） |
+| 拿掉幂等重放短路 | 幂等用例 | 出价记录数与成功幂等记录数不再相等；两用例失败 |
+
+还原后复跑全绿。**绿而不会红，等于没测**——此规则已写入 [`CONTRIBUTING.md` §4 完成定义](../CONTRIBUTING.md)。
+
+### 尚未验证的部分
+
+以下内容**当前没有任何测试**，属于已知缺口而非已完成：结算（A7 / INV-4）、HTTP 接口层（C 组）、
+WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与模拟脚本（E1/E4/F1）。
 
 ## A. 拍卖与资金规则（原文 第 2 页）
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| A1 | 规则 1 数值规则 | 常量与起拍/加价/时长/初始余额（数值以原文为准） | 配置常量 + `db` 种子 | 单测 + 集成测试 | ⬜ |
-| A2 | 规则 2 余额口径 | 可用余额口径；按"本场新增冻结"校验 | `WalletService` / `BidCommandService` | 集成测试 | ⬜ |
-| A3 | 规则 3 截止边界 | 服务端接收时间严格早于截止 | `BidCommandService` | 边界单测 + 集成测试 | ⬜ |
-| A4 | 规则 4 幂等与并发 | 同 `requestId` 只生效一次；并发出价唯一赢家 | 唯一约束 + 行锁 + 死锁重试 | 并发集成测试 | ⬜ |
-| A5 | 规则 5 冻结余额 | 释放旧领先者、同用户只加差额、失败不改资金、非负、流水可解释、无半完成 | `BidCommandService` + `ledger_entries` | 事务集成测试 | ⬜ |
-| A6 | 规则 6 最后五秒延时 | 基准为最新截止、最多三次、超限仍成功、与出价同一边界 | `BidCommandService` | 单测 + 集成测试 | ⬜ |
-| A7 | 规则 7 唯一结算 | 赢家扣款、他人释放、无人出价无扣款、自动结算、重启继续、重复触发不重复 | `SettlementService` + 扫描器 + 唯一约束 | 集成测试 + 重启恢复测试 | ⬜ |
-| A8 | 规则 8 通知边界 | 广播失败不回滚、快照可重同步 | 事件发布层 | 集成测试 + 断线测试 | ⬜ |
+| A1 | 规则 1 数值规则 | 常量与起拍/加价/时长/初始余额（数值以原文为准） | 迁移种子 + 拍卖表字段 | 集成测试 | 🟨 |
+| A2 | 规则 2 余额口径 | 可用余额口径；按“本场新增冻结”校验 | `wallet.adapter.WalletRepository`、`auction.application.BidService` | `BidServiceTest.rebidBySameUserFreezesOnlyTheDelta`、`insufficientAvailableBalanceIsRejectedOnDeltaBasis` | ✅ |
+| A3 | 规则 3 截止边界 | 服务端接收时间严格早于截止 | `auction.application.BidService` | `BidServiceTest.bidAfterDeadlineIsRejected` | ✅ |
+| A4 | 规则 4 幂等与并发 | 同 `requestId` 只生效一次；并发出价唯一赢家 | 唯一约束 + 行锁 + 死锁重试 | `BidConcurrencyTest.sameAmountOnlyOneBecomesLeader`、`sameRequestIdIsAppliedOnce`、`repeatedConcurrentRounds` | ✅ |
+| A5 | 规则 5 冻结余额 | 释放旧领先者、同用户只加差额、失败不改资金、非负、流水可解释、无半完成 | `BidService` + `WalletRepository` + `ledger_entries` | `previousLeaderIsReleasedOnTransfer`、`bidBelowMinimumIsRejected`，均由 `Invariants` 逐条校验 | ✅ |
+| A6 | 规则 6 最后五秒延时 | 基准为最新截止、最多三次、超限仍成功、与出价同一边界 | `auction.application.BidService` | `bidWithinLastFiveSecondsExtendsDeadlineAtMostThreeTimes`、`bidOutsideWindowDoesNotExtend` | ✅ |
+| A7 | 规则 7 唯一结算 | 赢家扣款、他人释放、无人出价无扣款、自动结算、重启继续、重复触发不重复 | `SettlementService`（未实现） | 集成测试 + 重启恢复测试 | ⬜ |
+| A8 | 规则 8 通知边界 | 广播失败不回滚、快照可重同步 | 事件发布层（未实现） | 集成测试 + 断线测试 | ⬜ |
 
 ## B. 数据模型（原文 第 2~3 页）
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| B1 | 数据模型 用户 | 身份、角色、密码哈希、状态 | `db/migration` | 迁移执行 + 集成测试 | ⬜ |
-| B2 | 数据模型 钱包 | 总余额、冻结金额、并发所需字段 | `db/migration` | 迁移 + 并发测试 | ⬜ |
-| B3 | 数据模型 资金流水 | 用户、类型、金额、关联拍卖、关联请求、时间 | `db/migration` + `ledger_entries` | 结算一致性核对 | ⬜ |
-| B4 | 数据模型 拍卖 | 状态、起拍价、当前价、领先者、截止、延长次数 | `db/migration` | 迁移 + 集成测试 | ⬜ |
-| B5 | 数据模型 参与者 | 拍卖用户关系、加入时间、Agent/真人标识 | `db/migration` | 迁移 + 集成测试 | ⬜ |
-| B6 | 数据模型 出价 | 拍卖、用户、金额、`requestId`、服务端序号、时间 | `db/migration` + `bids` | 幂等测试 | ⬜ |
-| B7 | 数据模型 成交结果 | 赢家、成交价、原因；每场最多一条 | `db/migration` + `settlements` 唯一键 | 重复结算测试 | ⬜ |
-| B8 | 数据模型 Agent Token | 摘要、所属用户、拍卖范围、权限、过期、吊销 | `db/migration` + `agent_tokens` | Agent 测试 | ⬜ |
+| B1 | 数据模型 用户 | 身份、角色、密码哈希、状态 | `db/migration` V2 | 迁移执行 + 种子账号可登录（待登录接口） | ✅ |
+| B2 | 数据模型 钱包 | 总余额、冻结金额、并发所需字段 | `db/migration` V2 + `ck_wallets_available_nonneg` | `Invariants.walletsAvailableNonNegative`、`frozenMatchesTwoLevels`；约束反向验证 | ✅ |
+| B3 | 数据模型 资金流水 | 用户、类型、金额、关联拍卖、关联请求、时间 | `db/migration` V2 + `ledger_entries` | `Invariants.ledgerReconcilesWithFrozen`（流水净额可解释冻结额） | ✅ |
+| B4 | 数据模型 拍卖 | 状态、起拍价、当前价、领先者、截止、延长次数 | `db/migration` V1 + V2 | `BidServiceTest`（截止、延时、状态流转列均被读写） | ✅ |
+| B5 | 数据模型 参与者 | 拍卖用户关系、加入时间、Agent/真人标识 | `db/migration` V1 + V3（按场冻结） | `Invariants.auctionFrozenEqualsPrice` | ✅ |
+| B6 | 数据模型 出价 | 拍卖、用户、金额、`requestId`、服务端序号、时间 | `db/migration` + `bids.uk_bid_request` | `Invariants.oneBidPerRequest`、`bidChainStrictlyIncreasing` | ✅ |
+| B7 | 数据模型 成交结果 | 赢家、成交价、原因；每场最多一条 | `db/migration` + `settlements` 唯一键 | 表已就位，结算逻辑未实现 | 🟨 |
+| B8 | 数据模型 Agent Token | 摘要、所属用户、拍卖范围、权限、过期、吊销 | `db/migration` + `agent_tokens` | 表已就位，Agent 认证未实现 | 🟨 |
 
 ## C. 接口与事件（原文 第 3 页）
 
@@ -63,7 +83,7 @@
 |---|---|---|---|---|---|
 | E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `scripts/` 模拟脚本 | 脚本输出断言与摘要 | ⬜ |
 | E2 | 自动化测试 | 覆盖原文列出的全部测试点 | `src/test` | `mvn test` 报告 | ⬜ |
-| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | Testcontainers 或 Compose | CI/本地可复现 | ⬜ |
+| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：16 个用例全部跑在真实 MySQL 8.4 上 | 🟨 |
 | E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend` 测试 | 测试报告 | ⬜ |
 
 ## F. 快速启动与初始数据（原文 第 4 页）
