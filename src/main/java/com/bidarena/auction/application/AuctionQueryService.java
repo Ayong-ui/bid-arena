@@ -94,6 +94,16 @@ public class AuctionQueryService {
         return row;
     }
 
+    /**
+     * 是否为该场的参与者。WebSocket 订阅资格的唯一判据。
+     *
+     * <p>不在这里判断拍卖是否存在：调用方（{@code AuctionSocketHandler}）已经先读过快照，
+     * 那一步就会把“不存在”抛成 NOT_FOUND，再查一次只是多一次往返。
+     */
+    public boolean isParticipant(String auctionId, String userId) {
+        return Db.read(dataSource, conn -> auctions.isParticipant(conn, auctionId, userId));
+    }
+
     private Instant serverTime() {
         return Db.read(dataSource, Db::now);
     }

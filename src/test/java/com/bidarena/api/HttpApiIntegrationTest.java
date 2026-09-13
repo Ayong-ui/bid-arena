@@ -5,26 +5,11 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
-import com.bidarena.Application;
+import com.bidarena.support.ApiTestHarness;
 import com.bidarena.support.Fixtures;
-import com.bidarena.support.TestDatabase;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.ServerSocket;
-import javax.sql.DataSource;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.noear.solon.Solon;
-import org.noear.solon.net.http.HttpResponse;
-import org.noear.solon.net.http.HttpUtils;
-import org.noear.solon.test.HttpTester;
 
 /**
  * HTTP 层集成测试：真启动服务、真发包、真查库。
@@ -34,94 +19,11 @@ import org.noear.solon.test.HttpTester;
  * 异常到封套的翻译、201/405 这些状态码、Jackson 的字段名、分页参数校验。
  * 直接调控制器方法会把这些**全部跳过**，测出来的东西和线上跑的不是一回事。
  *
- * <h2>为什么整个类只起一次服务</h2>
- * Solon 是进程级单例，一个 JVM 只能 start 一次。因此把这个类做成唯一持有服务的测试类，
- * 类内每个用例之间用 {@link TestDatabase#wipe()} 复位数据，而不是复位进程。
- *
- * <h2>为什么把扫描间隔调到一小时</h2>
- * {@code Application} 启动时会拉起到期结算扫描器。它在测试进程里每秒扫一次库，
- * 会把**别的测试类**刚造出来还没结算的拍卖顺手结掉，症状是那些用例随机失败，
- * 而失败信息里看不出是这个后台线程干的。这里把它调远，测试需要结算时显式调
- * {@link com.bidarena.auction.application.SettlementScheduler#tick()}。
+ * <h2>为什么服务由基座持有</h2>
+ * Solon 是进程级单例，一个 JVM 只能 start 一次，而 WebSocket 用例需要连的是**同一个**服务。
+ * 起停、端口探测、演示账号播种都在 {@link ApiTestHarness} 里，这里只写断言。
  */
-class HttpApiIntegrationTest extends HttpTester {
-
-    private static final ObjectMapper JSON = new ObjectMapper();
-
-    private static final String ADMIN_EMAIL = "admin@example.com";
-    private static final String ADMIN_PASSWORD = "Admin123456!";
-    private static final String BIDDER_A_EMAIL = "bidder_a@example.com";
-    private static final String BIDDER_B_EMAIL = "bidder_b@example.com";
-    private static final String BIDDER_PASSWORD = "Test123456!";
-
-    private static DataSource ds;
-    private static int port;
-
-    static {
-        // JDK 的 HttpURLConnection 默认把 Origin、Access-Control-Request-Method/Headers
-        // 列为"受限头"并**静默丢弃**。这里是 CORS 用例唯一发包的地方，不打开这个开关，
-        // 预检请求会变成"没有 Origin、也没有 Request-Method"的普通 OPTIONS，
-        // 服务端于是按普通请求 405 拒绝——测试会以为是 CORS 代码写错了。（DEBUG_LOG DBG-9）
-        // 必须在 HttpURLConnection 类初始化之前设置，所以放在静态块而不是 @BeforeAll。
-        System.setProperty("sun.net.http.allowRestrictedHeaders", "true");
-    }
-
-    // ---------------------------------------------------------------- 生命周期
-
-    @BeforeAll
-    static void startServer() throws Exception {
-        ds = TestDatabase.dataSource();
-
-        // 这些配置平时来自 .env，测试里用系统属性给出：Env 的读取顺序是系统属性优先，
-        // 因此不必为了跑测试去改环境变量（改环境变量会影响同机上的其它进程）。
-        System.setProperty("DB_URL", require("BID_ARENA_TEST_DB_URL"));
-        System.setProperty("DB_USER", require("BID_ARENA_TEST_DB_USER"));
-        System.setProperty("DB_PASSWORD", require("BID_ARENA_TEST_DB_PASSWORD"));
-        System.setProperty("JWT_SECRET", "bidarena-http-test-secret-0123456789abcdef");
-        System.setProperty("SETTLE_SCAN_INTERVAL_MS", "3600000");
-        System.setProperty("SETTLE_BATCH_SIZE", "50");
-        System.setProperty("CORS_ORIGINS", "http://localhost:5173");
-
-        // 端口用随机空闲端口，避免与开发机上跑着的实例撞车。
-        // 注意这里设的是 server.port 而不是 SERVER_PORT：app.yml 里的
-        // ${SERVER_PORT:8080} 那种占位符只认**环境变量**，测试里改不动；
-        // 而 SolonProps 会把系统属性里与 app.yml 同名的键盖上去（见 SolonProps.loadInit），
-        // 所以 server.port 是测试唯一能可靠改到端口的方式。（DEBUG_LOG DBG-10）
-        port = freePort();
-        System.setProperty("server.port", String.valueOf(port));
-
-        Application.main(new String[0]);
-        assertEquals(port, Solon.cfg().serverPort(), "服务没有按测试指定的端口启动，后续请求会打到别处");
-        awaitHealthy();
-    }
-
-    @AfterAll
-    static void stopServer() {
-        // 不能用 Solon.stop()：它会把停止流程丢到一个新线程里，而那个线程最后调的是
-        // System.exit(0)。在 surefire 的 fork 里这等于杀掉测试 JVM，
-        // 表现为 "forked VM terminated without properly saying goodbye"、
-        // 整轮构建失败（DEBUG_LOG DBG-8）。
-        // stopBlock(false, 0) 走的是同一条停止路径，只是不阻塞、不退出 JVM。
-        Solon.stopBlock(false, 0);
-
-        // 清掉带凭证的系统属性：surefire 会把 fork 的系统属性快照写进
-        // target/surefire-reports/*.xml，并且因为 fork 被复用，同一个 JVM 里
-        // 后面跑的测试类报告里也会带上它们——库口令就这样落到了构建产物里。
-        // （与 CONTRIBUTING.md「禁止提交的内容」及 .gitignore 的意图一致：
-        // target/ 不入库，但“不入库”不是理由把口令写进去。DEBUG_LOG DBG-12）
-        System.clearProperty("DB_URL");
-        System.clearProperty("DB_USER");
-        System.clearProperty("DB_PASSWORD");
-        System.clearProperty("JWT_SECRET");
-    }
-
-    @BeforeEach
-    void seed() {
-        TestDatabase.wipe();
-        Fixtures.userWithPassword(ds, "usr_admin", ADMIN_EMAIL, ADMIN_PASSWORD, "ADMIN", 1000);
-        Fixtures.userWithPassword(ds, "usr_bidder_a", BIDDER_A_EMAIL, BIDDER_PASSWORD, "BIDDER", 1000);
-        Fixtures.userWithPassword(ds, "usr_bidder_b", BIDDER_B_EMAIL, BIDDER_PASSWORD, "BIDDER", 1000);
-    }
+class HttpApiIntegrationTest extends ApiTestHarness {
 
     // ---------------------------------------------------------------- 基础：健康检查 / 鉴权 / 封套
 
@@ -296,8 +198,9 @@ class HttpApiIntegrationTest extends HttpTester {
         assertTrue(bid.body().at("/data/accepted").asBoolean());
         assertFalse(bid.body().at("/data/idempotent").asBoolean());
         assertEquals(120, bid.body().at("/data/price").asLong());
-        // seq 是拍卖的单调版本号，开始拍卖本身就会推进一次，所以第一次出价是 2。
-        assertEquals(2, bid.body().at("/data/seq").asLong());
+        // seq 是拍卖的单调版本号，每次成功提交推进一次：开始拍卖一次、加入一次，所以第一次出价是 3。
+        // 这里写死具体值（而不是“比之前大”）是有意的：它把“哪一次状态变更占用了哪个版本号”钉成了契约。
+        assertEquals(3, bid.body().at("/data/seq").asLong());
         assertFalse(bid.body().at("/data/serverTime").asText().isEmpty());
 
         // 同一个幂等键重发：必须返回首次结果，并让客户端能认出"这是重放"。
@@ -522,157 +425,4 @@ class HttpApiIntegrationTest extends HttpTester {
         assertNotEquals("http://evil.example", denied.header("Access-Control-Allow-Origin"));
     }
 
-    // ---------------------------------------------------------------- 工具
-
-    /** 一次响应的最小快照：状态码、解析后的 JSON、原始文本（断言失败时打印它）。 */
-    private record Resp(int code, JsonNode body, String raw, java.util.Map<String, String> headers) {
-        String header(String name) {
-            return headers.get(name.toLowerCase());
-        }
-    }
-
-    private Resp call(String method, String url, String token, String jsonBody, String... headers) {
-        HttpUtils http = path(url);
-        if (token != null) {
-            http = http.header("Authorization", "Bearer " + token);
-        }
-        for (int i = 0; i + 1 < headers.length; i += 2) {
-            http = http.header(headers[i], headers[i + 1]);
-        }
-        if (jsonBody != null) {
-            http = http.bodyJson(jsonBody);
-        }
-        try (HttpResponse resp = http.exec(method)) {
-            String raw = resp.bodyAsString();
-            java.util.Map<String, String> map = new java.util.HashMap<>();
-            for (String name : resp.headerNames()) {
-                map.put(name.toLowerCase(), resp.header(name));
-            }
-            JsonNode parsed = raw == null || raw.isBlank() ? JSON.createObjectNode() : JSON.readTree(raw);
-            return new Resp(resp.code(), parsed, raw, map);
-        } catch (IOException e) {
-            throw new UncheckedIOException("请求失败 " + method + " " + url + "：" + e.getMessage(), e);
-        }
-    }
-
-    private static void assertCode(String expected, Resp resp) {
-        assertEquals(expected, resp.body().path("code").asText(),
-                "业务码不符，实际响应：" + resp.raw());
-    }
-
-    private String login(String email, String password) {
-        Resp resp = call("POST", "/api/v1/auth/login", null, json("email", email, "password", password));
-        assertEquals(200, resp.code(), resp.raw());
-        return resp.body().at("/data/accessToken").asText();
-    }
-
-    private String adminToken() {
-        return login(ADMIN_EMAIL, ADMIN_PASSWORD);
-    }
-
-    private String bidderToken() {
-        return login(BIDDER_A_EMAIL, BIDDER_PASSWORD);
-    }
-
-    private String bidderTokenB() {
-        return login(BIDDER_B_EMAIL, BIDDER_PASSWORD);
-    }
-
-    private String createAuction(String title, long startPrice, long minIncrement, int durationSeconds) {
-        Resp resp = call("POST", "/api/v1/admin/auctions", adminToken(),
-                createAuctionJson(title, startPrice, minIncrement, durationSeconds));
-        assertEquals(201, resp.code(), resp.raw());
-        String id = resp.body().at("/data/id").asText();
-        assertFalse(id.isEmpty(), resp.raw());
-        return id;
-    }
-
-    private String createRunningAuction(String title, long startPrice, long minIncrement, int durationSeconds) {
-        String id = createAuction(title, startPrice, minIncrement, durationSeconds);
-        Resp started = call("POST", "/api/v1/admin/auctions/" + id + "/start", adminToken(), null);
-        assertEquals(200, started.code(), started.raw());
-        assertEquals("RUNNING", started.body().at("/data/status").asText());
-        return id;
-    }
-
-    private void join(String auctionId, String token) {
-        Resp resp = call("POST", "/api/v1/auctions/" + auctionId + "/join", token, null);
-        assertEquals(200, resp.code(), resp.raw());
-    }
-
-    private static String createAuctionJson(String title, long startPrice, long minIncrement, int durationSeconds) {
-        return "{\"title\":\"" + title + "\",\"description\":\"测试描述\",\"startPrice\":" + startPrice
-                + ",\"minIncrement\":" + minIncrement + ",\"durationSeconds\":" + durationSeconds + "}";
-    }
-
-    /**
-     * 拼 JSON。字符串值自动加引号，数字/布尔原样写入。
-     *
-     * <p>刻意不接受"预拼好的 JSON 片段"：早先的版本把字符串值当成裸值拼进去，
-     * 生成 {@code "password":Admin123456!} 这种非法 JSON，而服务端只会回一个
-     * 500，排查成本比在这里多写两行高得多。
-     */
-    private static String json(Object... keyValues) {
-        StringBuilder sb = new StringBuilder("{");
-        for (int i = 0; i + 1 < keyValues.length; i += 2) {
-            if (i > 0) {
-                sb.append(',');
-            }
-            sb.append('"').append(keyValues[i]).append("\":");
-            Object value = keyValues[i + 1];
-            if (value instanceof Number || value instanceof Boolean) {
-                sb.append(value);
-            } else {
-                sb.append('"').append(value).append('"');
-            }
-        }
-        return sb.append('}').toString();
-    }
-
-    private static String require(String name) {
-        String value = System.getenv(name);
-        if (value == null || value.isBlank()) {
-            fail("缺少环境变量 " + name + "，本测试需要真实 MySQL（见 README 的一键验证节）");
-        }
-        return value;
-    }
-
-    /**
-     * 取一个空闲端口，但**刻意避开高位端口**。
-     *
-     * <p>WebSocket 插件默认绑在 HTTP 端口 + 10000 上（{@code WebSocketServerProps.getPort()}），
-     * 而 Windows 的临时端口段一直在 49152–65535。用 {@code new ServerSocket(0)} 抽到的端口
-     * 有机会落在 55536 以上，加上偏移量就超过 65535，服务会直接起不来。
-     * 固定在一个较低的区间内探测，两边都能绑上。
-     */
-    private static int freePort() {
-        for (int attempt = 0; attempt < 50; attempt++) {
-            int candidate = 40000 + java.util.concurrent.ThreadLocalRandom.current().nextInt(9000);
-            try (ServerSocket probe = new ServerSocket(candidate)) {
-                return probe.getLocalPort();
-            } catch (IOException busy) {
-                // 被占用就换一个，50 次足够。
-            }
-        }
-        throw new IllegalStateException("在 40000-49000 区间内找不到空闲端口");
-    }
-
-    private static void awaitHealthy() {
-        for (int attempt = 0; attempt < 100; attempt++) {
-            try (HttpResponse resp = HttpUtils.http("http://localhost:" + port + "/api/v1/health").exec("GET")) {
-                if (resp.code() == 200) {
-                    return;
-                }
-            } catch (Exception ignored) {
-                // 端口还没起来是正常的，继续等。
-            }
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("等待服务启动时被中断", e);
-            }
-        }
-        throw new IllegalStateException("服务在 10 秒内没有在端口 " + port + " 上就绪");
-    }
 }

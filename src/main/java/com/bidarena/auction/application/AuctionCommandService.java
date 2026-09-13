@@ -4,6 +4,8 @@ import com.bidarena.auction.adapter.AuctionRepository;
 import com.bidarena.auction.adapter.AuctionRepository.AuctionRow;
 import com.bidarena.auction.adapter.AuctionRepository.ParticipantRow;
 import com.bidarena.auction.adapter.AuctionViews;
+import com.bidarena.auction.domain.AuctionEvent;
+import com.bidarena.auction.domain.AuctionEventPublisher;
 import com.bidarena.auction.domain.AuctionStatus;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.Db;
@@ -11,6 +13,8 @@ import com.bidarena.shared.ErrorCode;
 import java.util.Map;
 import java.util.UUID;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 拍卖的写操作：创建、开始、取消、加入。
@@ -26,6 +30,8 @@ import javax.sql.DataSource;
  */
 public class AuctionCommandService {
 
+    private static final Logger log = LoggerFactory.getLogger(AuctionCommandService.class);
+
     /** 参与类型。HTTP 用户为 HUMAN；Agent 出价在 P5 用 AGENT，使运营能区分两类参与者。 */
     public static final String PARTICIPANT_HUMAN = "HUMAN";
 
@@ -37,11 +43,14 @@ public class AuctionCommandService {
     private final DataSource dataSource;
     private final AuctionRepository auctions;
     private final SettlementService settlement;
+    private final AuctionEventPublisher events;
 
-    public AuctionCommandService(DataSource dataSource, AuctionRepository auctions, SettlementService settlement) {
+    public AuctionCommandService(DataSource dataSource, AuctionRepository auctions, SettlementService settlement,
+            AuctionEventPublisher events) {
         this.dataSource = dataSource;
         this.auctions = auctions;
         this.settlement = settlement;
+        this.events = events;
     }
 
     /** 创建拍品请求。与契约 {@code CreateAuctionRequest} 一致。 */
@@ -99,7 +108,11 @@ public class AuctionCommandService {
      * "开始"是一次有副作用的指令，第二次调用没有生效，必须让调用方知道。
      */
     public void start(String auctionId) {
-        auctions.startNow(auctionId);
+        AuctionRepository.Started started = auctions.startNow(auctionId);
+        // 开拍是一次状态变更（DRAFT → RUNNING），产生新版本号。
+        // 广播完整快照而不是一个“已开始”信号：此刻拍卖的每个字段都变了
+        // （状态、截止时间、版本号），订阅者直接拿到可替换的权威状态，不必自己拼。
+        publishQuietly(AuctionEvents.snapshot(AuctionViews.Snapshot.of(started.auction(), started.serverTime())));
     }
 
     /** 取消拍卖并释放全部冻结。委托给 {@link SettlementService#cancel}，使取消与到期结算共用同一套资金逻辑。 */
@@ -115,7 +128,7 @@ public class AuctionCommandService {
      * 且会让"参与者"这个集合在结算之后继续增长，破坏"结算时遍历本场全部参与者"的前提。
      */
     public AuctionViews.Participant join(String auctionId, String userId) {
-        ParticipantRow row = Db.tx(dataSource, conn -> {
+        JoinOutcome outcome = Db.tx(dataSource, conn -> {
             AuctionRow auction = auctions.lockAuction(conn, auctionId);
             if (auction == null) {
                 throw new BizException(ErrorCode.NOT_FOUND, "拍卖不存在", Map.of("auctionId", auctionId));
@@ -124,6 +137,9 @@ public class AuctionCommandService {
                 throw new BizException(ErrorCode.INVALID_STATE, "拍卖已结束，无法加入",
                         Map.of("auctionId", auctionId, "status", auction.status().name()));
             }
+            // 先判断是否首次加入，再写：只有首次加入才是状态变更，才能推进版本号。
+            // 重复加入若也推进 seq，任何登录用户都能靠连点 join 让所有客户端不停重新拉快照。
+            boolean firstJoin = !auctions.isParticipant(conn, auctionId, userId);
             auctions.join(conn, auctionId, userId, PARTICIPANT_HUMAN);
             ParticipantRow joined = auctions.findParticipant(conn, auctionId, userId);
             if (joined == null) {
@@ -132,8 +148,28 @@ public class AuctionCommandService {
                 throw new BizException(ErrorCode.INTERNAL_ERROR, "加入后无法读取参与记录",
                         Map.of("auctionId", auctionId, "userId", userId));
             }
-            return joined;
+            long seq = firstJoin ? auctions.bumpSeq(conn, auctionId) : auction.seq();
+            return new JoinOutcome(joined, seq, auctions.countParticipants(conn, auctionId), firstJoin);
         });
-        return AuctionViews.Participant.of(row);
+        if (outcome.firstJoin()) {
+            publishQuietly(AuctionEvents.participantJoined(auctionId, outcome.seq(), userId,
+                    outcome.participantCount(), outcome.joined().joinedAt()));
+        }
+        return AuctionViews.Participant.of(outcome.joined());
+    }
+
+    /** 一次加入事务的结果：参与记录 + 新版本号 + 参与人数 + 是否首次加入。 */
+    private record JoinOutcome(ParticipantRow joined, long seq, int participantCount, boolean firstJoin) {}
+
+    /**
+     * 广播的兜底：事件在事务**提交后**发布，推送失败不能推翻已经提交的状态变更（契约 §7）。
+     */
+    private void publishQuietly(AuctionEvent event) {
+        try {
+            events.publish(event);
+        } catch (RuntimeException e) {
+            log.warn("事件广播失败，已提交的状态变更不受影响 auction={} type={}: {}",
+                    event.auctionId(), event.type(), e.getMessage());
+        }
     }
 }

@@ -3,6 +3,8 @@ package com.bidarena.auction.application;
 import com.bidarena.auction.adapter.AuctionRepository;
 import com.bidarena.auction.adapter.AuctionRepository.AuctionRow;
 import com.bidarena.auction.adapter.AuctionRepository.RequestRow;
+import com.bidarena.auction.domain.AuctionEvent;
+import com.bidarena.auction.domain.AuctionEventPublisher;
 import com.bidarena.auction.domain.AuctionStatus;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.Db;
@@ -68,11 +70,14 @@ public class BidService {
     private final DataSource dataSource;
     private final AuctionRepository auctions;
     private final WalletRepository wallets;
+    private final AuctionEventPublisher events;
 
-    public BidService(DataSource dataSource, AuctionRepository auctions, WalletRepository wallets) {
+    public BidService(DataSource dataSource, AuctionRepository auctions, WalletRepository wallets,
+            AuctionEventPublisher events) {
         this.dataSource = dataSource;
         this.auctions = auctions;
         this.wallets = wallets;
+        this.events = events;
     }
 
     /**
@@ -80,18 +85,89 @@ public class BidService {
      *
      * <p>重放（{@code idempotent = true}）时，{@code price} 与 {@code seq} 取**首次**结果的快照，
      * 因此同一个 requestId 反复提交会得到相同的这两个值，幂等可被验证；
-     * {@code leader}/{@code extensions} 描述的是拍卖**当前**状态（期间可能已有他人出价）。
+     * {@code leader}/{@code extensions}/{@code endsAt} 描述的是拍卖**当前**状态（期间可能已有他人出价）。
+     *
+     * <p>{@code endsAt} 与 {@code extended} 是给实时事件用的：截止时间与延长次数属于出价结果的一部分
+     * （一次出价可能顺带延时），由事务自己返回，比“提交后再去查一遍”多一次竞态窗口——
+     * 期间可能已有别人出价，查回来的就不是本次提交的状态了。
      */
     public record BidResult(
             boolean accepted, boolean idempotent, long price, String leader, int extensions, long seq,
-            Instant serverTime) {}
+            Instant serverTime, Instant endsAt, boolean extended) {}
 
     public BidResult placeBid(String auctionId, String userId, long amount, String requestId) {
+        BidResult result;
         try {
-            return Db.tx(dataSource, conn -> doPlaceBid(conn, auctionId, userId, amount, requestId));
+            result = Db.tx(dataSource, conn -> doPlaceBid(conn, auctionId, userId, amount, requestId));
         } catch (BizException e) {
             recordRejection(auctionId, userId, requestId, e);
+            publishRejected(auctionId, userId, e);
             throw e;
+        }
+        publishAccepted(auctionId, result);
+        return result;
+    }
+
+    /**
+     * 发布“出价被接受”（以及可能的延时）。
+     *
+     * <p>顺序是先主后从：{@code BID_ACCEPTED} 已经带上本次的 {@code endsAt} 与 {@code extensionCount}，
+     * 因此只看了第一帧的客户端也是对的；{@code AUCTION_EXTENDED} 是给“延时”这种强调场景的补充视图。
+     * 两者 {@code seq} 相同（一次提交 = 一个版本号，契约 §3）。
+     *
+     * <p>重放**不发布**：重放意味着本次调用没有产生任何状态变更，
+     * 再广播一次会把“同一版本”推给所有人，客户端只能靠去重吃掉。
+     */
+    private void publishAccepted(String auctionId, BidResult result) {
+        if (result.idempotent()) {
+            return;
+        }
+        publishQuietly(AuctionEvents.bidAccepted(auctionId, result.seq(), result.price(), result.leader(),
+                result.endsAt(), result.extensions(), result.serverTime()));
+        if (result.extended()) {
+            publishQuietly(AuctionEvents.auctionExtended(auctionId, result.seq(), result.endsAt(),
+                    result.extensions(), result.serverTime()));
+        }
+    }
+
+    /**
+     * 发布“出价被拒”。只发给请求者本人（事件类型自己声明了范围）。
+     *
+     * <p>拍卖不存在时跳过：既没有可对齐的 {@code seq}，也没有“这一场”的概念。
+     */
+    private void publishRejected(String auctionId, String userId, BizException cause) {
+        AuctionRow auction = auctions.load(auctionId);
+        if (auction == null) {
+            return;
+        }
+        publishToUserQuietly(userId, auctionId,
+                AuctionEvents.bidRejected(auctionId, auction.seq(), cause, Instant.now()));
+    }
+
+    /**
+     * 发布失败的兜底：事件在事务**提交后**发布，推送失败不能把一次已成功的出价变成失败（契约 §7）。
+     *
+     * <p>发布端口自己也会吞异常，这里再兜一层是刻意的双重保险：这层保证“事务已提交”这件事
+     * 不会被下游任何实现细节推翻，那层保证单个连接的失败不会影响同一场其它连接的广播。
+     */
+    private void publishQuietly(AuctionEvent event) {
+        try {
+            events.publish(event);
+        } catch (RuntimeException e) {
+            log.warn("事件广播失败，已提交的事务不受影响 auction={} type={}: {}",
+                    event.auctionId(), event.type(), e.getMessage());
+        }
+    }
+
+    private void publishToUserQuietly(String userId, String auctionId, AuctionEvent event) {
+        if (userId == null) {
+            return;
+        }
+        try {
+            events.publishToUser(userId, event);
+        } catch (RuntimeException e) {
+            log.warn("事件单播失败，已提交的事务不受影响 auction={} type={}: {}",
+                    auctionId, event.type(), e.getMessage());
         }
     }
 
@@ -116,7 +192,7 @@ public class BidService {
         if (prior != null && prior.done()) {
             if (prior.succeeded()) {
                 return new BidResult(true, true, prior.resultPrice(), auction.leaderId(),
-                        auction.extensionCount(), prior.resultSeq(), now);
+                        auction.extensionCount(), prior.resultSeq(), now, auction.endsAt(), false);
             }
             throw new BizException(replayCode(prior.resultCode()), "重复提交：返回首次的处理结果");
         }
@@ -194,7 +270,8 @@ public class BidService {
 
         log.info("出价成功 auction={} user={} amount={} seq={} extensions={} endsAt={}",
                 auctionId, userId, amount, newSeq, newExtensionCount, newEndsAt);
-        return new BidResult(true, false, amount, userId, newExtensionCount, newSeq, now);
+        return new BidResult(true, false, amount, userId, newExtensionCount, newSeq, now, newEndsAt,
+                newExtensionCount != auction.extensionCount());
     }
 
     /**

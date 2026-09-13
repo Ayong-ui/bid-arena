@@ -3,6 +3,7 @@ package com.bidarena;
 import com.bidarena.api.ApiExceptionFilter;
 import com.bidarena.api.AuthFilter;
 import com.bidarena.api.CorsFilter;
+import com.bidarena.auction.adapter.AuctionSocketHandler;
 import com.bidarena.auction.application.AuctionCommandService;
 import com.bidarena.auction.application.AuctionQueryService;
 import com.bidarena.auction.application.BidService;
@@ -11,11 +12,13 @@ import com.bidarena.bootstrap.DatabaseBootstrap;
 import com.bidarena.bootstrap.Env;
 import com.bidarena.bootstrap.Services;
 import com.bidarena.identity.application.IdentityService;
+import com.bidarena.identity.application.WsTicketService;
 import com.bidarena.wallet.application.WalletQueryService;
 import java.util.Arrays;
 import java.util.List;
 import org.noear.solon.Solon;
 import org.noear.solon.annotation.SolonMain;
+import org.noear.solon.net.websocket.WebSocketRouter;
 
 @SolonMain
 public class Application {
@@ -40,6 +43,7 @@ public class Application {
           app.context().wrapAndPut(WalletQueryService.class, services.walletQueries);
           app.context().wrapAndPut(AuctionQueryService.class, services.auctionQueries);
           app.context().wrapAndPut(AuctionCommandService.class, services.auctionCommands);
+          app.context().wrapAndPut(WsTicketService.class, services.wsTickets);
 
           // —— 过滤器 ——
           // 数值越小越靠外层。顺序是刻意的：
@@ -61,6 +65,12 @@ public class Application {
           Runtime.getRuntime().addShutdownHook(new Thread(scheduler::stop, "settlement-shutdown"));
 
           app.enableWebSocket(true);
+
+          // —— 实时通道 ——
+          // 路由用 {auctionId} 路径变量；鉴权不走 AuthFilter（浏览器的 WebSocket
+          // 不能带 Authorization 头），而是握手时用一次性票换取身份，见 AuctionSocketHandler。
+          // 放在 enableWebSocket 之后：端口与路由器都就绪了再挂路径。
+          WebSocketRouter.getInstance().of(AuctionSocketHandler.PATH, services.auctionSocket);
         });
   }
 

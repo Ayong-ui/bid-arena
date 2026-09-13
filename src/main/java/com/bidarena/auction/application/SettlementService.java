@@ -4,6 +4,8 @@ import com.bidarena.auction.adapter.AuctionRepository;
 import com.bidarena.auction.adapter.AuctionRepository.AuctionRow;
 import com.bidarena.auction.adapter.SettlementRepository;
 import com.bidarena.auction.adapter.SettlementRepository.SettlementRow;
+import com.bidarena.auction.domain.AuctionEvent;
+import com.bidarena.auction.domain.AuctionEventPublisher;
 import com.bidarena.auction.domain.AuctionStatus;
 import com.bidarena.auction.domain.SettlementReason;
 import com.bidarena.shared.BizException;
@@ -65,19 +67,26 @@ public class SettlementService {
     private final AuctionRepository auctions;
     private final WalletRepository wallets;
     private final SettlementRepository settlements;
+    private final AuctionEventPublisher events;
 
     public SettlementService(DataSource dataSource, AuctionRepository auctions, WalletRepository wallets,
-            SettlementRepository settlements) {
+            SettlementRepository settlements, AuctionEventPublisher events) {
         this.dataSource = dataSource;
         this.auctions = auctions;
         this.wallets = wallets;
         this.settlements = settlements;
+        this.events = events;
     }
 
-    /** {@code replay = true} 表示这次调用没有产生任何资金变化，只是返回了已有的成交结果。 */
+    /**
+     * {@code replay = true} 表示这次调用没有产生任何资金变化，只是返回了已有的成交结果。
+     *
+     * <p>{@code seq}/{@code status} 是终态事件的输入：结算同样是一次状态变更，要推进版本号，
+     * 否则订阅者会停在“最后一次出价”的版本上，永远等不到"已结束"。
+     */
     public record SettlementResult(
             String auctionId, String winnerId, long finalPrice, SettlementReason reason, boolean replay,
-            Instant serverTime) {}
+            Instant serverTime, long seq, AuctionStatus status) {}
 
     /**
      * 到期结算。拍卖未到期或状态不对时抛 {@link ErrorCode#INVALID_STATE}。
@@ -85,7 +94,9 @@ public class SettlementService {
      * <p>重复调用是安全的：第二次会返回 {@code replay = true} 的同一结果。
      */
     public SettlementResult settleIfDue(String auctionId) {
-        return Db.tx(dataSource, conn -> end(conn, auctionId, false));
+        SettlementResult result = Db.tx(dataSource, conn -> end(conn, auctionId, false));
+        publishFinished(result);
+        return result;
     }
 
     /**
@@ -97,7 +108,9 @@ public class SettlementService {
      * 谁先拿到谁定结局，后到者看到的是已经变了的 {@code status}。
      */
     public SettlementResult cancel(String auctionId) {
-        return Db.tx(dataSource, conn -> end(conn, auctionId, true));
+        SettlementResult result = Db.tx(dataSource, conn -> end(conn, auctionId, true));
+        publishFinished(result);
+        return result;
     }
 
     /**
@@ -141,11 +154,16 @@ public class SettlementService {
             // 只有"同一种结束方式已经发生过"才算重放。
             // 若把"取消"打到已成交的拍卖上也返回 replay=true，等于告诉调用方"你的取消已生效"，
             // 而实际发生的是成交——这是在对调用方说谎，比报错危险得多。
-            boolean sameKind = cancelRequested == (existing.reason() == SettlementReason.CANCELLED);            if (sameKind) {
+            boolean sameKind = cancelRequested == (existing.reason() == SettlementReason.CANCELLED);
+            if (sameKind) {
                 log.info("拍卖已按 {} 结束，返回已有结果 auction={} winner={}",
                         existing.reason(), auctionId, existing.winnerId());
+                // 重放：不改状态、不推版本号、不广播（与出价重放同一规则）。
                 return new SettlementResult(auctionId, existing.winnerId(), existing.finalPrice(),
-                        existing.reason(), true, now);
+                        existing.reason(), true, now, auction.seq(),
+                        existing.reason() == SettlementReason.CANCELLED
+                                ? AuctionStatus.CANCELLED
+                                : AuctionStatus.FINISHED);
             }
             throw new BizException(ErrorCode.INVALID_STATE,
                     cancelRequested
@@ -161,16 +179,38 @@ public class SettlementService {
         moveMoney(conn, auction, winnerId, finalPrice);
         settlements.insert(conn, auctionId, winnerId, finalPrice, reason, now);
 
+        AuctionStatus finalStatus;
         if (cancelRequested) {
             auctions.updateStatus(conn, auctionId, auction.status(), AuctionStatus.CANCELLED);
+            finalStatus = AuctionStatus.CANCELLED;
         } else {
             // 状态机的 SETTLING 在这里出现，但不跨事务提交，见类注释。
             auctions.updateStatus(conn, auctionId, auction.status(), AuctionStatus.SETTLING);
             auctions.updateStatus(conn, auctionId, AuctionStatus.SETTLING, AuctionStatus.FINISHED);
+            finalStatus = AuctionStatus.FINISHED;
         }
+        // 结束也是一次状态变更：推进版本号，使订阅者能收到高于“最后一次出价”的 seq。
+        long newSeq = auctions.bumpSeq(conn, auctionId);
 
-        log.info("结算完成 auction={} reason={} winner={} finalPrice={}", auctionId, reason, winnerId, finalPrice);
-        return new SettlementResult(auctionId, winnerId, finalPrice, reason, false, now);
+        log.info("结算完成 auction={} reason={} winner={} finalPrice={} seq={}",
+                auctionId, reason, winnerId, finalPrice, newSeq);
+        return new SettlementResult(auctionId, winnerId, finalPrice, reason, false, now, newSeq, finalStatus);
+    }
+
+    /**
+     * 广播终态事件。重放不广播（没有状态变更），发送失败也不影响已提交的结算（契约 §7）。
+     */
+    private void publishFinished(SettlementResult result) {
+        if (result.replay()) {
+            return;
+        }
+        AuctionEvent event = AuctionEvents.auctionFinished(result.auctionId(), result.seq(), result.winnerId(),
+                result.finalPrice(), result.status().name(), result.reason().name(), result.serverTime());
+        try {
+            events.publish(event);
+        } catch (RuntimeException e) {
+            log.warn("事件广播失败，已提交的结算不受影响 auction={}: {}", result.auctionId(), e.getMessage());
+        }
     }
 
     private SettlementReason decideReason(AuctionRow auction, boolean cancelRequested, Instant now) {

@@ -1,7 +1,9 @@
 package com.bidarena.bootstrap;
 
 import com.bidarena.auction.adapter.AuctionRepository;
+import com.bidarena.auction.adapter.AuctionSocketHandler;
 import com.bidarena.auction.adapter.SettlementRepository;
+import com.bidarena.auction.adapter.WsEventBroadcaster;
 import com.bidarena.auction.application.AuctionCommandService;
 import com.bidarena.auction.application.AuctionQueryService;
 import com.bidarena.auction.application.BidService;
@@ -11,6 +13,7 @@ import com.bidarena.identity.adapter.JwtTokens;
 import com.bidarena.identity.adapter.UserRepository;
 import com.bidarena.identity.application.IdentityService;
 import com.bidarena.identity.application.TokenService;
+import com.bidarena.identity.application.WsTicketService;
 import com.bidarena.wallet.adapter.WalletRepository;
 import com.bidarena.wallet.application.WalletQueryService;
 import javax.sql.DataSource;
@@ -48,7 +51,17 @@ public final class Services {
     public final AuctionQueryService auctionQueries;
     public final AuctionCommandService auctionCommands;
 
-    private Services(DataSource ds, String jwtSecret, long jwtTtlSeconds) {
+    // —— 实时通道 ——
+    public final WsEventBroadcaster broadcaster;
+    public final WsTicketService wsTickets;
+    public final AuctionSocketHandler auctionSocket;
+
+    /** WebSocket 票的默认参数，与 {@code .env.example} 里的默认值保持一致。 */
+    private static final long WS_TICKET_TTL_SECONDS_DEFAULT = 60L;
+    private static final int WS_TICKET_CAPACITY_DEFAULT = 10_000;
+
+    private Services(DataSource ds, String jwtSecret, long jwtTtlSeconds, long wsTicketTtlSeconds,
+            int wsTicketCapacity) {
         // —— 出站适配器（仓储）——
         this.auctions = new AuctionRepository(ds);
         this.wallets = new WalletRepository(ds);
@@ -60,9 +73,16 @@ public final class Services {
         // 令牌服务要读配置，所以从组合根传入，使 application 层看不到环境变量。
         this.tokens = new JwtTokens(jwtSecret, jwtTtlSeconds);
 
+        // —— 实时通道 ——
+        // 广播器要在应用服务之前建出来：它是服务与连接之间的唯一出口，
+        // 服务只知道 AuctionEventPublisher 这个端口，不知道 WebSocket 的存在。
+        this.broadcaster = new WsEventBroadcaster();
+        this.wsTickets = WsTicketService.withSystemClock(
+                java.time.Duration.ofSeconds(wsTicketTtlSeconds), wsTicketCapacity);
+
         // —— 应用服务（事务边界）——
-        this.bids = new BidService(ds, auctions, wallets);
-        this.settlement = new SettlementService(ds, auctions, wallets, settlements);
+        this.bids = new BidService(ds, auctions, wallets, broadcaster);
+        this.settlement = new SettlementService(ds, auctions, wallets, settlements, broadcaster);
         this.identity = new IdentityService(users, new BCryptPasswordHasher(), tokens);
 
         // —— 只读查询 ——
@@ -72,16 +92,27 @@ public final class Services {
         // —— 写用例 ——
         // AuctionCommandService 复用同一个 SettlementService 实例，而不是自己 new 一个：
         // "取消"与"到期结算"必须是同一套资金逻辑，两个实例会让"改了其中一个"变成可能的缺陷。
-        this.auctionCommands = new AuctionCommandService(ds, auctions, settlement);
+        this.auctionCommands = new AuctionCommandService(ds, auctions, settlement, broadcaster);
+
+        // 入站适配器放在最后：它依赖查询服务（握手要先读快照），而路由注册在 Application。
+        this.auctionSocket = new AuctionSocketHandler(wsTickets, auctionQueries, broadcaster);
     }
 
     /** 生产接线：令牌配置从环境读取，缺失即启动失败（见 {@link Env#required}）。 */
     public static Services wire(DataSource ds) {
-        return new Services(ds, Env.required("JWT_SECRET"), Env.longOr("JWT_TTL_SECONDS", 8 * 3600L));
+        return new Services(ds, Env.required("JWT_SECRET"), Env.longOr("JWT_TTL_SECONDS", 8 * 3600L),
+                Env.longOr("WS_TICKET_TTL_SECONDS", WS_TICKET_TTL_SECONDS_DEFAULT),
+                Env.intOr("WS_TICKET_CAPACITY", WS_TICKET_CAPACITY_DEFAULT));
     }
 
-    /** 测试接线：显式给出令牌密钥与有效期，不读环境变量。 */
+    /**
+     * 测试接线：显式给出令牌密钥与有效期，不读环境变量。
+     *
+     * <p>WebSocket 票用默认 TTL 与容量。需要验证"票过期"的用例自己构造一个带假时钟的
+     * {@link WsTicketService}（纯单元测试），而不是让整张对象图为了一个时间参数变形。
+     */
     public static Services wire(DataSource ds, String jwtSecret, long jwtTtlSeconds) {
-        return new Services(ds, jwtSecret, jwtTtlSeconds);
+        return new Services(ds, jwtSecret, jwtTtlSeconds, WS_TICKET_TTL_SECONDS_DEFAULT,
+                WS_TICKET_CAPACITY_DEFAULT);
     }
 }

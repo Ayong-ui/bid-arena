@@ -13,6 +13,10 @@ info:
        客户端不要用 in/keys 判断字段是否存在（例：取消的拍卖结果里没有 winner）。
     2) 成功码有两种：OK 与 IDEMPOTENCY_REPLAY（都是 HTTP 200）。重放不是错误，
        但客户端应当用它提示“本次提交已按首次结果处理”，而不是当成新成交。
+
+    实时事件走 WebSocket，不在本文件里描述消息体：事件信封与事件类型见
+    docs/REALTIME_AND_COMMAND_FLOW.md（§3 信封、§4 事件表、§6 缺口恢复）。
+    这里只固定它的**入口**：POST /auth/ws-tickets 换一次性票，再用票连 WS。
 servers:
   - url: http://localhost:8080/api/v1
 tags:
@@ -41,9 +45,19 @@ paths:
       tags: [Auth]
       security: [{bearerAuth: []}]
       operationId: createWebSocketTicket
+      description: |
+        领一张一次性 WebSocket 入场券（默认 60 秒有效）。
+
+        为什么不让客户端把 JWT 直接放进 WS 的 URL：浏览器无法在 WebSocket 握手上自定义头，
+        令牌只能进查询串，而查询串会落进访问日志与浏览器历史——把一个长效凭证留在日志里。
+        换成一次性短票后，日志里最坏只会留下一个已作废的字符串。
+
+        用法：拿到 ticket 后连 `ws(s)://<host>:<wsPort>/ws/auctions/{auctionId}?ticket=<ticket>`。
+        票只能核销一次，重复使用会被拒绝（先收到 CONNECTION_STATE(connected=false)，再被断开）。
       responses:
         '200': {$ref: '#/components/responses/EnvelopeWsTicket'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
   /users/me:
     get:
       tags: [Auth]
@@ -432,7 +446,24 @@ components:
     ErrorData:
       type: object
       additionalProperties: true
-    WsTicket: {type: object, properties: {ticket: {type: string}, expiresAt: {type: string, format: date-time}}}
+    WsTicket:
+      type: object
+      required: [ticket, expiresAt, wsPath, wsPort]
+      properties:
+        ticket:
+          type: string
+          description: 一次性入场券。base64url、无填充，可直接放进查询串。
+        expiresAt: {type: string, format: date-time}
+        wsPath:
+          type: string
+          description: |
+            连接路径模板，把 `{auctionId}` 换成目标拍品 ID。服务端给出而不是让前端硬编码：
+            路径属于契约，改一次就该只改一处。
+        wsPort:
+          type: integer
+          description: |
+            WebSocket 监听的端口。它与 HTTP 端口**不同**（默认是 `WS_PORT`，没配时是 HTTP 端口 + 10000），
+            因此必须由服务端告知，客户端不能拿它当 80/443 去拼。
     Participant: {type: object, properties: {auctionId: {type: string}, userId: {type: string}, joinedAt: {type: string, format: date-time}}}
     AuctionResult:
       type: object

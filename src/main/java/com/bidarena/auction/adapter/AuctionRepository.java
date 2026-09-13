@@ -108,12 +108,42 @@ public class AuctionRepository {
      *
      * <p>不能用 INSERT IGNORE：它会把外键失败一起吞掉，使"用户不存在"变成静默成功。
      */
+    /**
+     * 写入参与记录（重复加入不改动任何东西，保持首次的 {@code joined_at}）。
+     *
+     * <p><b>seq 的推进不在这里</b>：重复加入不是状态变更，不能推进版本号——
+     * 否则任何登录用户都能靠反复调用 join 制造“版本在变”的假象，逼所有客户端不停重新拉快照。
+     * 是否首次加入由调用方在事务内判断（见 {@code AuctionCommandService.join}）。
+     */
     public void join(Connection conn, String auctionId, String userId, String participantType)
             throws SQLException {
         Db.update(conn,
                 "INSERT INTO auction_participants (auction_id, user_id, participant_type) VALUES (?, ?, ?) "
                         + "ON DUPLICATE KEY UPDATE user_id = user_id",
                 auctionId, userId, participantType);
+    }
+
+    /** 本场参与人数。用于 {@code PARTICIPANT_JOINED} 的 payload。 */
+    public int countParticipants(Connection conn, String auctionId) throws SQLException {
+        Integer count = Db.queryOne(conn,
+                "SELECT COUNT(*) FROM auction_participants WHERE auction_id = ?",
+                rs -> rs.getInt(1), auctionId);
+        return count == null ? 0 : count;
+    }
+
+    /**
+     * 推进拍卖版本号并返回新值。
+     *
+     * <p>调用方必须已经持有该拍卖的行锁（{@link #lockAuction}）：这两条语句
+     * （UPDATE 再 SELECT）只有在锁内才是一个整体，否则返回的可能是别人的版本号。
+     */
+    public long bumpSeq(Connection conn, String auctionId) throws SQLException {
+        Db.update(conn, "UPDATE auctions SET seq = seq + 1 WHERE id = ?", auctionId);
+        Long seq = Db.queryOne(conn, "SELECT seq FROM auctions WHERE id = ?", rs -> rs.getLong(1), auctionId);
+        if (seq == null) {
+            throw new BizException(ErrorCode.NOT_FOUND, "拍卖不存在", Map.of("auctionId", auctionId));
+        }
+        return seq;
     }
 
     public void insertBid(Connection conn, String auctionId, String userId, long amount, String requestId,
@@ -312,19 +342,30 @@ public class AuctionRepository {
      * 再在事务里写截止时间，中间那一小段窗口里管理员改了时长也不会生效，
      * 而调用方会以为生效了。截止时间同样必须用 {@link Db#now} 的数据库时间。
      *
-     * @return 实际写入的截止时间
+     * <p>返回值是**事务提交后**的行快照（含新 {@code seq}）与当时取到的数据库时间，
+     * 调用方据此构造 {@code AUCTION_SNAPSHOT} 事件——事件必须描述已提交的状态，
+     * 所以不能拿事务前的旧行去拼。
      */
-    public Instant startNow(String auctionId) {
+    public Started startNow(String auctionId) {
         return Db.tx(dataSource, conn -> {
             AuctionRow auction = lockAuction(conn, auctionId);
             if (auction == null) {
                 throw new BizException(ErrorCode.NOT_FOUND, "拍卖不存在", Map.of("auctionId", auctionId));
             }
-            Instant endsAt = Db.now(conn).plusSeconds(auction.durationSeconds());
+            Instant now = Db.now(conn);
+            Instant endsAt = now.plusSeconds(auction.durationSeconds());
             start(conn, auctionId, endsAt);
-            return endsAt;
+            AuctionRow started = lockAuction(conn, auctionId);
+            if (started == null) {
+                throw new BizException(ErrorCode.INTERNAL_ERROR, "开始后无法读回拍卖状态",
+                        Map.of("auctionId", auctionId));
+            }
+            return new Started(started, now);
         });
     }
+
+    /** 开始拍卖的结果：已提交的行快照 + 当时的事务内数据库时间。 */
+    public record Started(AuctionRow auction, Instant serverTime) {}
 
     private static AuctionRow mapAuction(ResultSet rs) throws SQLException {
         return new AuctionRow(
