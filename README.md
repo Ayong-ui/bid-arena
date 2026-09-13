@@ -298,8 +298,9 @@ python tools/stress_test.py --mode throughput -c 50 --seconds 10
   这部分由真实库上的 `BidConcurrencyTest` 覆盖（详见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md) E1）。
 - **Compose 的 `backend` 服务尚未在本机构建过镜像**。`Dockerfile` 与 `docker-compose.yml` 已就位，
   `docker compose config` 已校验；但按仓库约定（不重建评测机上的容器），没有实际 `docker compose up` 过。
-- **[AI_USAGE.md](AI_USAGE.md) 仍是骨架**：结构与素材索引就位，但分工比例、本人设计决定等
-  `【本人填写】` 段落需由作者本人补齐，不代填。
+- **[AI_USAGE.md](AI_USAGE.md) 已填写**：工具与模型（`pi` + `deepseek-v4-flash`）、各模块人机分工与口径、
+  四项本人设计决定、六项未采用方案、四项真实错误，以及七类目前仍不能独立解释/修改的代码；
+  文末留三项「作者核对清单」（模型列表完整性、比例口径、决定归属）。
 - **没有线上地址、没有演示录屏**（两段式现场核验的素材）。
 
 已实现的边界：用户侧 HTTP 19 个端点 + Agent 侧 3 个业务端点与 2 个签发/吊销端点 + WebSocket 实时通道（P2/P3）、

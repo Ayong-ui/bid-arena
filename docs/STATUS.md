@@ -15,7 +15,7 @@
 | P3.5 | 架构守卫：出站适配器独立成 `persistence` 包 + ArchUnit 九条规则（D-6 验证） | ✅ | 出站 JDBC 仓储独立成 `<ctx>.persistence`、视图归 `<ctx>.application`、`ApiTime`/`PageQuery` 归 `shared`（D-24、D-25）；`ArchitectureTest` 九条规则全绿，`tools/arch_mutation_check.py` 注入九种违规 **9/9 KILLED**；全量 **125/125** 绿 |
 | P4 | 前端接入真实 HTTP/WS，替换 Mock | ✅ | 类型由契约生成（D-26）；类型化 HTTP 客户端 + 实时订阅状态机 + Pinia store 接上真实服务，界面不再本地算钱/倒计时（D-27/D-28）。**59 个单测**（P6 后累计 63） + **3 个真后端联调**（HTTP/WS）+ **16 个变异 16/16 KILLED**；`npm run typecheck` 与 `vite build` 通过 |
 | P5 | Agent API（:8090）+ 模拟脚本 + Compose/E2E | ✅ | 独立端口（`AgentApiPlugin`，只暴露 `/api/v1/agent/**`）+ 独立 Token（签发/范围/权限/过期/吊销/限流）+ 复用同一出价事务并事务内自动加入（D-30）；P5 新增 **62 个用例**，全量 **187/187** 绿；`tools/agent_mutation_check.py` **14/14 KILLED**；端到端模拟 `tools/agent_sim.py`；后端 Dockerfile + Compose `backend` 服务（配置已校验，镜像未在本机构建，见 §3） |
-| P6 | 交付收尾：README 边界、录屏、测试证据 | 🟨 | E1 全链路模拟 `tools/auction_sim.py` 已交付并实跑 **52/52**（并发同/邻价、幂等重试、拒绝场景、最后五秒狙击、断线快照、结束核对）；另交付尾段“博弈时间”（D-32，最后 20 秒强制拒绝 Agent 出价）与成交主体标识/隐私遮蔽（D-33），并交付压力/手动测试工具 `tools/stress_test.py`；再把 Agent 授权从运营动作改为用户自助（D-34）：后端新增 `/me/agent-tokens` 三端点 + `/admin/agent-tokens` 总览，前端把“智能体接入”整页换成**“我的 AI 代理”**（授权列表 / 新建 / 一次性明文 / 接入指引 / 运营总览）；最后把 AI 真正做成普通用户可用的产品功能（D-35/D-36）：拍品可预告 `starts_at` 并由 `AuctionStartScheduler` 到点自动开拍，侧边栏“AI 代理”页可直接**创建托管代理**（选进行中/未开拍的场次 + 设定预算上限），`AgentProxyScheduler` 到点自动进场并按最小加价跟价、触顶停手；后端 **225/225** 绿，前端 **69** 单测绿；README 已补 Agent/E2E 路径与更新后的未完成边界；录屏（G7）与 `AI_USAGE.md` 本人填写段（G1）仍待作者完成 |
+| P6 | 交付收尾：README 边界、录屏、测试证据 | 🟨 | E1 全链路模拟 `tools/auction_sim.py` 已交付并实跑 **52/52**（并发同/邻价、幂等重试、拒绝场景、最后五秒狙击、断线快照、结束核对）；另交付尾段“博弈时间”（D-32，最后 20 秒强制拒绝 Agent 出价）与成交主体标识/隐私遮蔽（D-33），并交付压力/手动测试工具 `tools/stress_test.py`；再把 Agent 授权从运营动作改为用户自助（D-34）：后端新增 `/me/agent-tokens` 三端点 + `/admin/agent-tokens` 总览，前端把“智能体接入”整页换成**“我的 AI 代理”**（授权列表 / 新建 / 一次性明文 / 接入指引 / 运营总览）；最后把 AI 真正做成普通用户可用的产品功能（D-35/D-36）：拍品可预告 `starts_at` 并由 `AuctionStartScheduler` 到点自动开拍，侧边栏“AI 代理”页可直接**创建托管代理**（选进行中/未开拍的场次 + 设定预算上限），`AgentProxyScheduler` 到点自动进场并按最小加价跟价、触顶停手；后端 **225/225** 绿，前端 **69** 单测绿；README 已补 Agent/E2E 路径与更新后的未完成边界；`AI_USAGE.md` 已填写（G1 ✅）；录屏（G7）仍待作者录制 |
 
 ## 2. 必交文档状态
 
@@ -24,7 +24,7 @@
 | `README.md` | 快速启动完整路径、演示账号、未完成边界 | 🟨 已补「竞拍 Agent API（:8090）」与 E2E 模拟脚本路径、Compose 后端服务；未完成边界已按 P5 更新 |
 | `DESIGN.md` | 架构边界、出价事务、结算、恢复 | ✅ 已同步 §1.6（V1~V6、Agent 边界、尾段博弈时间与成交主体、预告开拍与托管代理、225 证据与“尚未实现”）、§2.2~§2.4（分层与依赖规则）、§4（流水主体）、§8（验证重点）；P5 的 Agent 边界与 P6 的博弈时间/主体标识/托管代理已补入 |
 | `DECISIONS.md` | ≥3 项决策（背景/候选/选择/代价/验证） | ✅ 已写 D-1~D-36（含背景/候选/选择/代价/验证结果）；D-9 的验证结果已随 P5 补全；P5 新增 D-29（范围缺省即拒绝）、D-30（复用同一出价事务）；E1 阶段新增 D-31（幂等键颗粒度含 `user_id`）；P6 新增 D-32（尾段博弈时间清场 Agent，有意偏离原文规则 6）、D-33（成交主体标识与隐私遮蔽）、D-34（Agent 授权自助化）、D-35（预告开拍 `starts_at` + 到点自动开拍）、D-36（服务端托管 AI 代理） |
-| `AI_USAGE.md` | AI 分工、本人决定、未采用方案、真实错误 | 🟨 骨架已建（`AI_USAGE.md`）：结构、素材索引与“不得预填”约定就位，`【本人填写】` 段落待作者本人补齐 |
+| `AI_USAGE.md` | AI 分工、本人决定、未采用方案、真实错误 | ✅ 已填写（§1~§6 无占位）：工具与模型（`pi` + `deepseek-v4-flash`，可由 `PI_*` 自证）、各模块人机分工与口径、四项本人设计决定（D-32/D-33/D-36/D-5）、六项未采用方案及否决依据、四项真实错误（DBG-30/DBG-29/DBG-27 + 两条未入 DEBUG_LOG 的补充）、七类尚不能独立解释/修改的代码；文末留三项「作者核对清单」（模型列表完整性、比例口径、决定归属） |
 | `DEBUG_LOG.md` | ≥2 个真实问题（现象/日志/定位/修复/验证） | ✅ 已写 30 条真实问题（DBG-8~12 来自 P2；DBG-13~17 来自 P3；DBG-18~20 来自架构守卫；DBG-21 来自 P4 前端变异 F14 存活；DBG-22~26 来自 P5：Solon 单例启动、提前拒绝后的连接错位、base64url 填充位、增量编译旧字节码、E2E 脚本自己的断言用错凭证；DBG-27~28 来自 E1 全链路模拟：断言比契约强、幂等键含 `user_id`；DBG-29 手工测试时发现前端仍声称 Agent API 未实现；DBG-30 手工核验托管代理时发现数据库容器时钟慢 3 分钟） |
 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 查询与出价 | ✅ 已从“骨架/尚不可用”更新为 P5 已实现并验证：操作步骤、提示词模板、失败边界、验收清单已勾选并登记证据（对应 `tools/agent_sim.py`） |
 | `docs/openapi.yaml` | 覆盖原文要求的能力 | ✅ 已修正；P2 已按实现回填 `ErrorCode`、分页、`Bid`、`LedgerEntry.requestId`；P3 补上 `WsTicket.wsPath/wsPort` 与 `/auth/ws-tickets` 的 429；P4 前端类型已由 `npm run gen:api` 从本文件生成（`frontend/src/api/schema.d.ts`，D-26）；P6 补上 `HUMAN_ONLY_PERIOD`、`AuctionResult.winnerType`、`LedgerEntry.actorType`、`AuctionSnapshot.finalGameWindowSeconds` 与 `/admin/auctions/{auctionId}/ledger`，以及 `/me/agent-proxies`（get/post）、`/me/agent-proxies/{proxyId}/revoke`、`/admin/agent-proxies` 与 `AuctionSnapshot.startsAt` / `CreateAuctionRequest.startsAt` |
@@ -150,9 +150,9 @@
    - ✅ store 与界面：Pinia store 接管会话/数据/命令，`App.vue` 不再本地算钱与倒计时（D-27）；`arena.test.ts` 18 用例。
    - ✅ 反向确认：前端变异脚本扩到 **16 条**，全部 KILLED；其中 F14 存活暴露了一条“声称验证幂等键、实际没验证”的测试（DBG-21，已修）。
    - ✅ 真后端联调：后端跑在 8080/18080 时，`npm run test:live` 的 HTTP/WS 3 个用例全绿。
-5. **文档骨架 — 已完成**：
-   - ✅ `AI_USAGE.md`：结构（工具与模型、人机分工、本人决定、未采用方案、真实错误、不可独立解释的代码）+ 素材索引（指向 `DECISIONS.md` / `DEBUG_LOG.md`）就位；`【本人填写】` 段落待作者本人补齐（不得预填）。
-   - ✅ `AGENT_TOOL_SPEC.md`：按 `docs/openapi.yaml` 的 `Agent` 端点写明 Token 形态、评审操作步骤、给 Coding Agent 的提示词模板与失败边界；实现属 P5，文档已标注“尚不可用”。
+5. **必交文档 — 已完成**：
+   - ✅ `AI_USAGE.md`：已按原文要求填写完毕（§1 工具与模型、§2 人机分工与口径、§3 四项本人设计决定、§4 六项未采用方案、§5 四项真实错误 + 两条未入 `DEBUG_LOG.md` 的补充、§6 尚不能独立解释的代码）；内容由 Coding Agent 依据会话记录与仓库证据起草，文末列出三项「作者核对清单」（模型列表是否完整、比例口径、决定归属）供作者 30 秒复核。
+   - ✅ `AGENT_TOOL_SPEC.md`：按 `docs/openapi.yaml` 的 `Agent` 端点写明 Token 形态、评审操作步骤、给 Coding Agent 的提示词模板与失败边界；P5 交付后已把“尚不可用”类表述全部换成已实现并验证的操作步骤（DBG-29），并补充“托管代理 vs Token 两条路径”的分岔说明（D-36）。
 6. **P5 — 已完成**（Agent API 与模拟脚本）：
    - ✅ 独立凭据：`agent_tokens`（V4）只存 `sha256` 摘要，明文只在签发响应返回一次；范围/权限/过期/吊销/限流五项在 `AgentToken`/`AgentTokenService`/`AgentRateLimiter` 中实现（D-9、D-29）。
    - ✅ 独立端口：`bootstrap/AgentApiPlugin` 在 `AGENT_SERVER_PORT`（默认 8090）上另起监听，只转 `/api/v1/agent/**`，其余路径 404 封套（DBG-22）。
@@ -166,7 +166,7 @@
    - ✅ Agent 授权自助化（D-34）：`/me/agent-tokens` 三端点 + `/admin/agent-tokens` 总览，前端“我的 AI 代理”页。
    - ✅ 预告开拍与托管代理（D-35/D-36）：`auctions.starts_at`（V6）+ `AuctionStartScheduler` 到点自动开拍（复用同一个 `start`）；`agent_proxies`（V6）+ `AgentProxyService`/`AgentProxyScheduler` 到点自动进场、按最小加价跟价、硬预算上限触顶停手、对 D-32 无例外；接口 `/me/agent-proxies` 与 `/admin/agent-proxies`；前端“创建 AI 代理”（选进行中/未开拍场次 + 预算上限）+ 在管列表（状态、下一手、撤销）；`AgentProxyIntegrationTest` **19/19** 绿，前端新增 6 例；另在重启后的开发服务上做了一次接口级手工核验（预告到点自动开拍 → 代理自动进场出价 110 → 被真人超过后夺回 → 尾段 0 次动作且真人仍可出价 → 结算收尾 `FINISHED`/`finalPrice=140` → 撤销），**27/27 checks passed**（脚本不入库，踩坑过程见 DBG-30）。
    - 🟨 录屏（G7）：待作者录制。
-   - 🟨 `AI_USAGE.md` 本人填写段（G1）：待作者本人补齐（不得预填）。
+   - ✅ `AI_USAGE.md` 填写段（G1）：已填写（依据会话记录与仓库证据起草，附三项作者核对清单）。
    - ⬜ README/DESIGN 最后一致性校对；H 组现场核验演练。
 
 ## 8. 更新规则
