@@ -4,6 +4,15 @@ info:
   version: 0.1.0
   description: |
     拍卖间 HTTP 契约。金额为整数积分，ID 使用字符串，服务端是唯一裁判。
+
+    所有响应（含 4xx/5xx）都是 Envelope 封套。出价的幂等键以下面 BidRequest.requestId
+    为准；Idempotency-Key 头是等价的可选写法，两者都提供时必须一致。
+
+    两个约定，写在前端接入前：
+    1) 服务端序列化器会**省略值为 null 的字段**，所以“字段缺失”与“值为 null”是同一件事，
+       客户端不要用 in/keys 判断字段是否存在（例：取消的拍卖结果里没有 winner）。
+    2) 成功码有两种：OK 与 IDEMPOTENCY_REPLAY（都是 HTTP 200）。重放不是错误，
+       但客户端应当用它提示“本次提交已按首次结果处理”，而不是当成新成交。
 servers:
   - url: http://localhost:8080/api/v1
 tags:
@@ -111,6 +120,10 @@ paths:
       tags: [Bids]
       security: [{bearerAuth: []}]
       operationId: placeBid
+      description: |
+        提交出价。幂等键以请求体的 requestId 为准；也可以用 Idempotency-Key 头代替。
+        重复提交同一个幂等键时返回**首次**结果，code 为 IDEMPOTENCY_REPLAY（HTTP 仍是 200），
+        客户端据此可以安全重试。
       parameters:
         - {$ref: '#/components/parameters/AuctionId'}
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -245,7 +258,15 @@ components:
     agentToken: {type: http, scheme: bearer, bearerFormat: AUCTION_AGENT_TOKEN}
   parameters:
     AuctionId: {in: path, name: auctionId, required: true, schema: {type: string}}
-    IdempotencyKey: {in: header, name: Idempotency-Key, required: true, schema: {type: string, minLength: 8, maxLength: 128}}
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: false
+      description: |
+        幂等键的可选写法。优先使用 BidRequest.requestId；只有本头而无 requestId 时以本头为准，
+        两者同时出现且不一致时返回 400 VALIDATION_FAILED（因为无法判断调用方真实意图，
+        猜错会把一次重试当成新出价，造成重复冻结）。
+      schema: {type: string, minLength: 8, maxLength: 128}
     Page: {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
     Size: {in: query, name: size, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
   schemas:
@@ -261,8 +282,9 @@ components:
       description: |
         业务结果码，所有响应的 code 字段取值。HTTP 状态码与之一一对应：
         OK=200；VALIDATION_FAILED=400；UNAUTHENTICATED=401；FORBIDDEN=403；
-        NOT_FOUND=404；其余冲突类=409；RATE_LIMITED=429；INTERNAL_ERROR=500。
+        NOT_FOUND=404；METHOD_NOT_ALLOWED=405；其余冲突类=409；RATE_LIMITED=429；INTERNAL_ERROR=500。
         客户端应以 code 判定业务结果，不要只依赖 HTTP 状态码。
+        两个成功码 OK 与 IDEMPOTENCY_REPLAY 都对应 200。
       type: string
       enum:
         - OK
@@ -277,6 +299,7 @@ components:
         - INSUFFICIENT_BALANCE
         - IDEMPOTENCY_REPLAY
         - CONFLICT
+        - METHOD_NOT_ALLOWED
         - RATE_LIMITED
         - INTERNAL_ERROR
     LoginRequest:
@@ -332,6 +355,41 @@ components:
         extensions: {type: integer}
         seq: {type: integer}
         serverTime: {type: string, format: date-time}
+    Bid:
+      description: 一条已接受的出价记录。seq 单调递增，客户端据此检测事件缺口。
+      type: object
+      required: [id, userId, amount, requestId, seq, serverTime]
+      properties:
+        id: {type: string}
+        userId: {type: string}
+        amount: {type: integer, minimum: 1}
+        requestId: {type: string}
+        seq: {type: integer, minimum: 1}
+        serverTime: {type: string, format: date-time}
+    AuctionPage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AuctionSnapshot'}}
+        page: {type: integer, minimum: 1}
+        size: {type: integer, minimum: 1}
+        total: {type: integer, minimum: 0}
+    BidPage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Bid'}}
+        page: {type: integer, minimum: 1}
+        size: {type: integer, minimum: 1}
+        total: {type: integer, minimum: 0}
+    LedgerPage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/LedgerEntry'}}
+        page: {type: integer, minimum: 1}
+        size: {type: integer, minimum: 1}
+        total: {type: integer, minimum: 0}
     CreateAuctionRequest:
       type: object
       required: [title, startPrice, minIncrement, durationSeconds]
@@ -358,11 +416,18 @@ components:
         availableBalance: {type: integer}
     LedgerEntry:
       type: object
+      required: [id, type, amount, createdAt]
       properties:
         id: {type: string}
         type: {type: string, enum: [FREEZE, RELEASE, SETTLE]}
         amount: {type: integer}
         auctionId: {type: string, nullable: true}
+        requestId:
+          type: string
+          nullable: true
+          description: |
+            触发本条流水的那次请求的幂等键，用于把资金变动追回到具体出价/结算。
+            结算产生的流水没有客户端请求，此处可能为空。
         createdAt: {type: string, format: date-time}
     ErrorData:
       type: object
@@ -383,16 +448,16 @@ components:
   responses:
     EnvelopeAuth: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AuthData'}}}]}}}}
     EnvelopeWsTicket: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/WsTicket'}}}]}}}}
-    EnvelopeUser: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
-    EnvelopeWallet: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
-    EnvelopeLedgerPage: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
-    EnvelopeAuction: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
-    EnvelopeAuctionPage: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
-    EnvelopeBidPage: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
-    EnvelopeBidResult: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeUser: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/User'}}}]}}}}
+    EnvelopeWallet: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/Wallet'}}}]}}}}
+    EnvelopeLedgerPage: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/LedgerPage'}}}]}}}}
+    EnvelopeAuction: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AuctionSnapshot'}}}]}}}}
+    EnvelopeAuctionPage: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AuctionPage'}}}]}}}}
+    EnvelopeBidPage: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/BidPage'}}}]}}}}
+    EnvelopeBidResult: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/BidResult'}}}]}}}}
     EnvelopeResult: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AuctionResult'}}}]}}}}
-    EnvelopeParticipant: {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
-    EnvelopeAgentToken: {description: Created; token is returned once, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+    EnvelopeParticipant: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/Participant'}}}]}}}}
+    EnvelopeAgentToken: {description: Created; token is returned once, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AgentToken'}}}]}}}}
     BadRequest: {description: Invalid request, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
     Unauthorized: {description: Authentication required, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
     Forbidden: {description: Permission denied, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
