@@ -324,6 +324,7 @@ components:
         password: {type: string, format: password, minLength: 8}
     AuthData:
       type: object
+      required: [accessToken, expiresAt, user]
       properties:
         accessToken: {type: string}
         expiresAt: {type: string, format: date-time}
@@ -361,6 +362,7 @@ components:
         amount: {type: integer, minimum: 1}
     BidResult:
       type: object
+      required: [accepted, idempotent, price, extensions, seq, serverTime]
       properties:
         accepted: {type: boolean}
         idempotent: {type: boolean}
@@ -424,6 +426,7 @@ components:
         expiresAt: {type: string, format: date-time}
     Wallet:
       type: object
+      required: [totalBalance, frozenAmount, availableBalance]
       properties:
         totalBalance: {type: integer}
         frozenAmount: {type: integer}

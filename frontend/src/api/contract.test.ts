@@ -11,8 +11,11 @@ import { describe, expect, it } from 'vitest'
 // “生成物里确实有契约里那些路径与错误码”。文本包含足以证明它。
 const frontendRoot = new URL('../../', import.meta.url)
 const repoRoot = new URL('../../../', import.meta.url)
-const contract = readFileSync(new URL('docs/openapi.yaml', repoRoot), 'utf8')
-const generated = readFileSync(new URL('src/api/schema.d.ts', frontendRoot), 'utf8')
+// 契约文件在 Windows 工作区里是 CRLF（.gitattributes 只保证入库时是 LF），
+// 而生成物永远是 LF。若不归一化，比对会因为换行符而假失败——测试不该关心换行符。
+const readText = (url: URL) => readFileSync(url, 'utf8').replace(/\r\n/g, '\n')
+const contract = readText(new URL('docs/openapi.yaml', repoRoot))
+const generated = readText(new URL('src/api/schema.d.ts', frontendRoot))
 
 /** 契约里 paths 段下声明的所有路径（缩进恰好两格的那一层 key）。 */
 function contractPaths(yaml: string): string[] {

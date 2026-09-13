@@ -334,10 +334,10 @@ export interface components {
             password: string;
         };
         AuthData: {
-            accessToken?: string;
+            accessToken: string;
             /** Format: date-time */
-            expiresAt?: string;
-            user?: components["schemas"]["User"];
+            expiresAt: string;
+            user: components["schemas"]["User"];
         };
         User: {
             id: string;
@@ -369,14 +369,14 @@ export interface components {
             amount: number;
         };
         BidResult: {
-            accepted?: boolean;
-            idempotent?: boolean;
-            price?: number;
+            accepted: boolean;
+            idempotent: boolean;
+            price: number;
             leader?: string | null;
-            extensions?: number;
-            seq?: number;
+            extensions: number;
+            seq: number;
             /** Format: date-time */
-            serverTime?: string;
+            serverTime: string;
         };
         /** @description 一条已接受的出价记录。seq 单调递增，客户端据此检测事件缺口。 */
         Bid: {
@@ -422,9 +422,9 @@ export interface components {
             expiresAt: string;
         };
         Wallet: {
-            totalBalance?: number;
-            frozenAmount?: number;
-            availableBalance?: number;
+            totalBalance: number;
+            frozenAmount: number;
+            availableBalance: number;
         };
         LedgerEntry: {
             id: string;
