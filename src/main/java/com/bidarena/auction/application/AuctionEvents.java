@@ -66,6 +66,7 @@ public final class AuctionEvents {
         put(payload, "extensionCount", view.extensionCount());
         put(payload, "participantCount", view.participantCount());
         put(payload, "seq", view.seq());
+        put(payload, "finalGameWindowSeconds", view.finalGameWindowSeconds());
         put(payload, "serverTime", view.serverTime());
         return new AuctionEvent(AuctionEventType.AUCTION_SNAPSHOT, view.id(), view.seq(), view.serverTime(), payload);
     }

@@ -26,6 +26,7 @@ const newStartPrice = ref(100)
 const newMinIncrement = ref(50)
 const newDuration = ref(60)
 let timer: number | undefined
+let copyTimer: number | undefined
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 
@@ -35,13 +36,14 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
+  if (copyTimer) window.clearTimeout(copyTimer)
   store.closeAuction()
 })
 
 const heading = computed(() => {
   if (view.value === 'wallet') return '我的资金'
   if (view.value === 'admin') return '运营台'
-  if (view.value === 'agent') return '智能体接入'
+  if (view.value === 'agent') return '我的 AI 代理'
   return store.current ? '竞价详情' : '拍卖大厅'
 })
 const roleLabel = computed(() => (store.currentUser?.role === 'ADMIN' ? '管理员' : '竞拍者'))
@@ -153,6 +155,84 @@ function notify(text: string): void {
 function settledLabel(code: string): string {
   return { FREEZE: '冻结', RELEASE: '释放', SETTLE: '成交扣款' }[code] ?? code
 }
+
+// ── 我的 AI 代理（D-34） ────────────────────────────────────────────────────
+const agentFormOpen = ref(false)
+const agentName = ref('')
+const agentScopes = ref<Array<'auction:read' | 'auction:bid'>>(['auction:read', 'auction:bid'])
+const agentAuctionIds = ref<string[]>([])
+const agentExpiresAt = ref(defaultAgentExpiry())
+const agentRateLimit = ref<number | null>(null)
+const agentCopied = ref(false)
+
+const agentStatusLabels: Record<string, string> = { ACTIVE: '生效中', EXPIRED: '已过期', REVOKED: '已吊销' }
+
+/** `datetime-local` 要的是本地时间字面量；提交前再转成 ISO 时刻（服务端只认 `Instant`）。 */
+function localDateTime(date: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function defaultAgentExpiry(): string {
+  return localDateTime(new Date(Date.now() + 7 * 24 * 3600 * 1000))
+}
+
+function agentStatusLabel(status: string): string {
+  return agentStatusLabels[status] ?? status
+}
+
+function showAgent(): void {
+  view.value = 'agent'
+  void store.loadMyAgentTokens()
+  if (store.isAdmin) void store.loadAllAgentTokens()
+}
+
+function toggleAgentScope(scope: 'auction:read' | 'auction:bid'): void {
+  agentScopes.value = agentScopes.value.includes(scope)
+    ? agentScopes.value.filter((item) => item !== scope)
+    : [...agentScopes.value, scope]
+}
+
+function toggleAgentAuction(auctionId: string): void {
+  agentAuctionIds.value = agentAuctionIds.value.includes(auctionId)
+    ? agentAuctionIds.value.filter((item) => item !== auctionId)
+    : [...agentAuctionIds.value, auctionId]
+}
+
+async function submitAgentToken(): Promise<void> {
+  if (!agentName.value.trim()) return notify('请给这份授权起个名字')
+  if (!agentScopes.value.length) return notify('至少要勾选一项权限')
+  const expires = new Date(agentExpiresAt.value)
+  if (Number.isNaN(expires.getTime())) return notify('请选择有效期')
+  const ok = await store.issueMyAgentToken({
+    name: agentName.value.trim(),
+    // 空数组与“省略”在服务端都表示默认拒绍；显式传空数组，语义更直白。
+    auctionIds: agentAuctionIds.value,
+    scopes: agentScopes.value,
+    expiresAt: expires.toISOString(),
+    // 契约里带 default 的字段在生成类型里是必填，所以这里显式给出与默认值一致的数字。
+    rateLimitPerMinute: typeof agentRateLimit.value === 'number' && agentRateLimit.value > 0 ? agentRateLimit.value : 60,
+  })
+  if (ok) {
+    agentFormOpen.value = false
+    agentName.value = ''
+    agentRateLimit.value = null
+    agentAuctionIds.value = []
+  }
+}
+
+async function copyAgentToken(): Promise<void> {
+  const issued = store.issuedAgentToken
+  if (!issued) return
+  try {
+    await navigator.clipboard.writeText(issued.token)
+    agentCopied.value = true
+    if (copyTimer) window.clearTimeout(copyTimer)
+    copyTimer = window.setTimeout(() => (agentCopied.value = false), 1500)
+  } catch {
+    notify('复制失败，请手动选中这串 Token')
+  }
+}
 </script>
 
 <template>
@@ -166,7 +246,7 @@ function settledLabel(code: string): string {
         <button :class="{ active: view === 'auctions' }" @click="view = 'auctions'">🏛 拍卖大厅</button>
         <button :class="{ active: view === 'wallet' }" @click="view = 'wallet'">◎ 我的资金</button>
         <button v-if="store.isAdmin" :class="{ active: view === 'admin' }" @click="view = 'admin'">⚙ 运营台</button>
-        <button :class="{ active: view === 'agent' }" @click="view = 'agent'">🐍 智能体接入</button>
+        <button :class="{ active: view === 'agent' }" @click="showAgent">🤖 我的 AI 代理</button>
       </nav>
       <div class="sidebar-note">
         <span :class="['live-dot', store.feedState === 'live' ? '' : 'off']"></span>{{ store.feedLabel }}
@@ -290,6 +370,12 @@ function settledLabel(code: string): string {
                     已延时 {{ store.current.extensionCount }} 次 · {{ store.current.participantCount }} 人参与
                   </small>
                 </div>
+                <div v-if="store.inFinalGameWindow" class="final-game-banner" role="status">
+                  <b>博弈时间</b>
+                  <span>
+                    最后 {{ store.current.finalGameWindowSeconds }} 秒：AI 代理已禁止出价，真人仍可继续叫价，请把握机会。
+                  </span>
+                </div>
               </section>
 
               <section class="bid-panel">
@@ -303,6 +389,9 @@ function settledLabel(code: string): string {
                   <input id="bid-amount" v-model.number="bidAmount" type="number" :min="store.nextBid" inputmode="numeric" />
                 </div>
                 <p class="hint">金额必须 ≥ 当前价 + 最小加价；同一金额重试会复用同一个幂等键。</p>
+                <p v-if="store.inFinalGameWindow" class="hint final-game-hint">
+                  博弈时间内 Agent 已退场，只有真人能出价；延时不会让本场离开博弈时间。
+                </p>
                 <div class="bid-actions">
                   <button class="small-button" @click="bump(1)">+ 最小加价</button>
                   <button class="small-button" @click="bump(2)">+ 两倍</button>
@@ -349,7 +438,14 @@ function settledLabel(code: string): string {
                   <div class="summary-row"><span>成交价</span><b>◎ {{ money(store.settlement.finalPrice) }}</b></div>
                   <div class="result-box">
                     中标者
-                    <b>{{ store.settlement.winner ? displayName(store.anonOf(store.settlement.winner ?? null)) : '无人中标' }}</b>
+                    <b>
+                      {{ store.settlement.winner ? displayName(store.anonOf(store.settlement.winner ?? null)) : '无人中标' }}
+                      <span
+                        v-if="store.settlement.winnerType"
+                        class="actor-badge"
+                        :class="store.settlement.winnerType.toLowerCase()"
+                      >{{ store.settlement.winnerType === 'AGENT' ? 'AI 代理' : '真人' }}</span>
+                    </b>
                   </div>
                 </template>
                 <p v-else class="empty">
@@ -386,6 +482,9 @@ function settledLabel(code: string): string {
                 <small>{{ new Date(entry.createdAt).toLocaleString('zh-CN') }} · {{ shortId(entry.auctionId) }}</small>
               </div>
               <strong>◎ {{ money(entry.amount) }}</strong>
+              <span class="actor-badge" :class="entry.actorType.toLowerCase()">
+                {{ entry.actorType === 'AGENT' ? 'AI' : '真人' }}
+              </span>
             </div>
             <p v-if="!store.ledger.length" class="empty">暂无流水</p>
           </section>
@@ -425,42 +524,168 @@ function settledLabel(code: string): string {
                 >
                   取消
                 </button>
+                <button class="small-button" @click="store.loadAuctionLedger(auction.id)">流水</button>
               </div>
               <p v-if="!store.auctions.length" class="empty">暂无拍品</p>
             </section>
           </div>
+          <section class="table-panel admin-ledger">
+            <div class="panel-heading">
+              <h3>场次流水（含成交主体）</h3>
+              <span v-if="store.adminLedgerAuctionId">
+                {{ shortId(store.adminLedgerAuctionId) }} · {{ store.adminLedger.length }} 条
+                <template v-if="store.adminLedgerLoading"> · 加载中…</template>
+              </span>
+            </div>
+            <p v-if="!store.adminLedgerAuctionId" class="empty">
+              在上方拍品点「流水」：这里按场次列出每一笔资金动作及其主体（AI / 真人）。仅管理员可见。
+            </p>
+            <template v-else>
+              <div v-for="entry in store.adminLedger" :key="entry.id" class="ledger-row">
+                <span :class="['ledger-icon', entry.type.toLowerCase()]">{{ entry.type.slice(0, 1) }}</span>
+                <div>
+                  <b>{{ settledLabel(entry.type) }}</b>
+                  <small>{{ new Date(entry.createdAt).toLocaleString('zh-CN') }} · {{ shortId(entry.auctionId) }}</small>
+                </div>
+                <span class="actor-badge" :class="entry.actorType.toLowerCase()">
+                  {{ entry.actorType === 'AGENT' ? 'AI 代理' : '真人' }}
+                </span>
+                <strong>◎ {{ money(entry.amount) }}</strong>
+              </div>
+              <p v-if="!store.adminLedger.length" class="empty">该场暂无流水</p>
+            </template>
+          </section>
         </template>
 
-        <!-- ── 智能体 ─────────────────────────────────────────────── -->
+        <!-- ── 我的 AI 代理 ───────────────────────────────────────── -->
         <template v-else>
           <div class="page-heading">
             <div>
-              <p class="kicker">AGENT API</p>
-              <h1>智能体接入</h1>
+              <p class="kicker">MY AI PROXY</p>
+              <h1>我的 AI 代理</h1>
               <p class="muted">
-                Agent API 已在<b>独立端口 <code>:8090</code></b> 实现，使用独立于用户 JWT 的 Agent Token（库里只存 sha256 摘要，
-                明文只在签发响应出现一次），范围 / 权限 / 过期 / 吊销 / 限流五项在鉴权阶段生效。
-                本页<b>不伪造</b>调用记录：要看真实链路请用 <code>tools/agent_sim.py</code>，操作步骤见 <code>AGENT_TOOL_SPEC.md</code>。
+                授权一个你自己的程序代替你出价。它拿到的是一枚<b>独立凭证</b>（不是你的登录令牌），
+                只能访问你勾选的场次、只能做你勾选的事，随时可吊销；花的仍然是<b>你自己钱包里的钱</b>。
               </p>
             </div>
-          </div>
-          <section class="table-panel">
-            <div class="panel-heading"><h3>已实现的接口</h3><span>P5 交付</span></div>
-            <div
-              v-for="item in [
-                { path: 'POST :8080 /admin/agent-tokens', note: '签发（明文只返回这一次）· admin' },
-                { path: 'POST :8080 /admin/agent-tokens/{tokenId}/revoke', note: '吊销 · admin' },
-                { path: 'GET :8090 /agent/auctions/{auctionId}', note: '读取快照 · auction:read' },
-                { path: 'POST :8090 /agent/auctions/{auctionId}/bids', note: '出价 · auction:bid' },
-                { path: 'GET :8090 /agent/auctions/{auctionId}/result', note: '读取结果 · auction:read' },
-              ]"
-              :key="item.path"
-              class="admin-row"
-            >
-              <div><b>{{ item.path }}</b><small>{{ item.note }}</small></div>
+            <div class="agent-rule-chip">
+              <span>⚔ 博弈时间</span>
+              <small>每场结束前 {{ store.finalGameWindowSeconds ?? '—' }} 秒，AI 一律禁止出价</small>
             </div>
-            <p class="muted" style="padding: 12px 16px">
-              <code>:8090</code> 上只挂载 <code>/api/v1/agent/**</code>，其余路径（含 <code>/api/v1/health</code>）一律 404。
+          </div>
+
+          <!-- 明文只出现这一次 -->
+          <section v-if="store.issuedAgentToken" class="token-reveal">
+            <div class="token-reveal-head">
+              <b>「{{ store.issuedAgentToken.name }}」已创建</b>
+              <button class="small-button" @click="store.dismissIssuedAgentToken()">我已保存，关闭</button>
+            </div>
+            <p class="muted">这是明文 Token <b>唯一一次</b>出现。关掉后服务端只剩下摘要，谁也取不回来。</p>
+            <div class="token-line">
+              <code>{{ store.issuedAgentToken.token }}</code>
+              <button class="small-button" @click="copyAgentToken">{{ agentCopied ? '已复制' : '复制' }}</button>
+            </div>
+            <small class="muted">
+              有效期至 {{ new Date(store.issuedAgentToken.expiresAt).toLocaleString('zh-CN') }} ·
+              tokenId {{ shortId(store.issuedAgentToken.tokenId) }}
+            </small>
+          </section>
+
+          <div class="agent-layout">
+            <section class="table-panel">
+              <div class="panel-heading">
+                <h3>我的授权</h3>
+                <span class="agent-head-actions">
+                  {{ store.myAgentTokens.length }} 枚
+                  <button class="small-button" @click="agentFormOpen = !agentFormOpen">
+                    {{ agentFormOpen ? '收起' : '＋ 新建授权' }}
+                  </button>
+                </span>
+              </div>
+
+              <form v-if="agentFormOpen" class="agent-form" @submit.prevent="submitAgentToken">
+                <label>给它起个名字<input v-model="agentName" type="text" maxlength="80" placeholder="例如：我的抄底机器人" /></label>
+                <div class="agent-field">
+                  <span class="agent-field-label">它能做什么</span>
+                  <label class="check">
+                    <input type="checkbox" :checked="agentScopes.includes('auction:read')" @change="toggleAgentScope('auction:read')" />
+                    读取拍卖快照
+                  </label>
+                  <label class="check">
+                    <input type="checkbox" :checked="agentScopes.includes('auction:bid')" @change="toggleAgentScope('auction:bid')" />
+                    代替我出价
+                  </label>
+                </div>
+                <div class="agent-field">
+                  <span class="agent-field-label">只能在这些场次里活动</span>
+                  <div class="auction-picks">
+                    <label v-for="auction in store.auctions" :key="auction.id" class="check">
+                      <input
+                        type="checkbox"
+                        :checked="agentAuctionIds.includes(auction.id)"
+                        @change="toggleAgentAuction(auction.id)"
+                      />
+                      {{ auction.title }} <small class="muted">{{ statusLabel(auction.status) }}</small>
+                    </label>
+                    <p v-if="!store.auctions.length" class="empty">暂无拍品可授权。</p>
+                  </div>
+                  <p class="hint">一个都不选 = 这份授权对任何场次都不可用（默认拒绝，不是“全部允许”）。</p>
+                </div>
+                <div class="agent-inline">
+                  <label>有效期至<input v-model="agentExpiresAt" type="datetime-local" /></label>
+                  <label>每分钟最多请求<input v-model.number="agentRateLimit" type="number" min="1" max="6000" placeholder="默认 60" /></label>
+                </div>
+                <button class="primary-button full" type="submit">创建授权</button>
+              </form>
+
+              <div v-for="token in store.myAgentTokens" :key="token.tokenId" class="agent-token-row">
+                <div class="agent-token-main">
+                  <b>{{ token.name }}</b>
+                  <small>
+                    {{ token.auctionIds.length }} 场 · {{ token.scopes.join(' / ') }} · 每分钟 {{ token.rateLimitPerMinute }} 次 ·
+                    至 {{ new Date(token.expiresAt).toLocaleString('zh-CN') }}
+                  </small>
+                </div>
+                <span class="agent-status" :class="token.status.toLowerCase()">{{ agentStatusLabel(token.status) }}</span>
+                <button v-if="token.status === 'ACTIVE'" class="small-button danger" @click="store.revokeMyAgentToken(token.tokenId)">
+                  吊销
+                </button>
+              </div>
+              <p v-if="!store.myAgentTokens.length" class="empty">
+                {{ store.myAgentTokensLoading ? '加载中…' : '还没有授权。点「＋ 新建授权」给你的程序一把钥匙。' }}
+              </p>
+            </section>
+
+            <section class="table-panel">
+              <div class="panel-heading"><h3>怎么把它交给你的程序</h3></div>
+              <ol class="agent-steps">
+                <li>把上面那串 Token 存进程序的环境变量（例如 <code>AGENT_TOKEN</code>），不要写进代码仓库。</li>
+                <li>你的程序访问 <b>Agent 专用地址</b> <code>:8090</code>，带上 <code>Authorization: Bearer &lt;Token&gt;</code>，而不是你的登录令牌。</li>
+                <li>未带凭证 401、越权 403、超过频率 429；被吊销后立即失效。</li>
+                <li>想照着跑一遍，用仓库里的例子：<code>python tools/agent_sim.py --help</code>。</li>
+              </ol>
+              <p class="hint">
+                隐私边界：你只能看到自己的授权；哪一笔成交是 AI、哪一笔是真人，只在自己的
+                <b>资金流水</b>里以徽章显示。
+              </p>
+            </section>
+          </div>
+
+          <!-- 运营总览 -->
+          <section v-if="store.isAdmin" class="table-panel">
+            <div class="panel-heading">
+              <h3>全部授权（运营总览）</h3>
+              <span>{{ store.allAgentTokens.length }} 枚 · 仅管理员可见 · 不含明文</span>
+            </div>
+            <div v-for="token in store.allAgentTokens" :key="token.tokenId" class="agent-token-row">
+              <div class="agent-token-main">
+                <b>{{ token.name }}</b>
+                <small>{{ token.agentUserId }} · {{ token.auctionIds.length }} 场 · {{ token.scopes.join(' / ') }}</small>
+              </div>
+              <span class="agent-status" :class="token.status.toLowerCase()">{{ agentStatusLabel(token.status) }}</span>
+            </div>
+            <p v-if="!store.allAgentTokens.length" class="empty">
+              {{ store.allAgentTokensLoading ? '加载中…' : '当前没有任何 Agent 授权。' }}
             </p>
           </section>
         </template>

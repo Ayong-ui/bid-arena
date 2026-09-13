@@ -633,7 +633,83 @@
 
 ---
 
-## 未采用方案汇总
+## D-32　尾段“博弈时间”系统性清场 Agent（有意收紧原文规则 6）
+
+**背景**：原文规则 6 是“最后五秒狙击并触发延时”。但“狙击”如果由 Agent 完成，尾段就不再是留给人的博弈，而是谁的机器更快谁赢。需求方给出了一条**有意偏离原文**的规则：拍卖最后一段是“博弈时间”，此时**强制拒绝一切 Agent 出价**；人不在场 Agent 也不能操作，人在场就可以和他人博弈。
+
+| 决策点 | 方案 | 说明 | 代价 |
+|---|---|---|---|
+| 窗口长度 | 最后 5 秒（复用延时窗口） | 只罩住已有的狙击窗口 | 太短：Agent 可在前 15 秒把价格抬到位，人的博弈窗口实质不存在 |
+| 窗口长度 | **最后 20 秒**（当前实现） | 从截止时间往前数 20 秒，把 5 秒延时窗口整个罩住并留出缓冲 | 与原文规则 6 的字面数字不同，必须在文档里显式记录为有意偏离 |
+| 判定位置 | 只做 HTTP 过滤器拦截 | 实现简单，靠近入口 | Agent 端口与用户端口是两套过滤器；且过滤器拿不到“事务内的数据库时间”，仍存在 TOCTOU |
+| 判定位置 | **`BidService` 事务内、拍卖行锁之后**（当前实现） | 用数据库时间判定，与出价是同一个一致性边界 | `BidService` 多一个配置参数；拒绝路径也要走一次事务 |
+| 是否记幂等 | 不记录，每次重新判定 | 省一条记录 | 同一 `requestId` 在窗口内/外的重试会返回不同结论，重试语义不可依赖 |
+| 是否记幂等 | **记入 `bid_requests`，重放返回同一拒绝**（当前实现） | 与既有 `BID_LATE`/`BID_TOO_LOW` 同构 | 无 |
+| 是否只禁写 | **只禁 `POST .../bids`，读仍可用** | Agent 仍能不断读到权威状态并自行停手 | Agent 需要在客户端侧正确理解 403 并停止尝试 |
+| 前端如何知道窗口 | 前端写死 20 秒 | 少一个契约字段 | 与 D-27“前端不得自己算服务端事实”相扞；环境变量改窗口后提示会漂 |
+| 前端如何知道窗口 | **快照带 `finalGameWindowSeconds`（当前实现）** | HTTP 与 WS 快照同构，前端只用来渲染提示 | 契约多一个字段；`AuctionViews.Snapshot.of` 多一个入参 |
+
+**最终选择**：窗口取**最后 20 秒**，常量 `BidService.FINAL_GAME_WINDOW_SECONDS_DEFAULT = 20`，可被环境变量 `AUCTION_FINAL_GAME_WINDOW_SECONDS` 覆盖；判定在 `BidService.doPlaceBid` 内、`BID_LATE` 之后、自动加入之前，主体信号取**本次调用通道** `autoJoinAs`（Agent 通道恒为非 null，真人通道恒为 null），而不是库里存量的参与类型。拒绝码 `HUMAN_ONLY_PERIOD`（HTTP 403），并加入可记录的拒绝集合。
+
+**为什么“进入窗口就出不去”是自动的、不需要额外锁**：延时规则是“最后 5 秒内出价 +10 秒”。一旦剩余时间 ≤ 20 秒，任何一次真人触发的延时后剩余时间最多 15 秒，仍落在 20 秒窗口内。因此**进入博弈时间等于一直清场到结算**，不需要一个会随崩溃悬空的“锁定态”。
+
+**代价**：与原文规则 6 的字面数字不同（原文没有“清场 Agent”这条）；这是产品要求下的有意收紧，已在本条留痕。`EventPublishingTest` 与其它直接 `new BidService` 的测试需要显式传入窗口参数。
+
+**验证结果**：✅ `BidServiceTest` 新增 4 例（窗口内 Agent 被拒且不留痕迹、同一 `requestId` 重放同一拒绝、窗口外 Agent 可出价并记为 `AGENT`、窗口内真人可出价并记为 `HUMAN`、真人延时后 Agent 仍被挡）；`AgentApiIntegrationTest#agentBidInFinalGameWindowIsRejected` 断言端到端 403 与“同一窗口内真人仍可出价”；`HttpApiIntegrationTest`/`WsIntegrationTest` 断言 HTTP 与 WS 快照都带 `finalGameWindowSeconds`；前端 `arena.test.ts` 断言剩余 ≤ 窗口时 `inFinalGameWindow` 为真、且真人 `canBid` 仍为真（提示不等于拦截）。
+
+---
+
+## D-33　成交主体标识：`bids.actor_type` → `settlements.winner_type` → `ledger_entries.actor_type`
+
+**背景**：需求是“管理员后台流水以及用户流水可以看到最后成交的是 AI 还是人；用户只能看到自己的，要保护隐私”。这要求一个**可追溯的主体标识**，且它的暴露范围要可控。
+
+| 决策点 | 方案 | 说明 | 代价 |
+|---|---|---|---|
+| 事实来源 | `auction_participants.participant_type` | 已有列，不新增 | 该列首次加入后**不再更新**（`join` 是 `ON DUPLICATE KEY UPDATE user_id = user_id`）；人先加入、Agent 后出价会被记成 `HUMAN` |
+| 事实来源 | **`bids.actor_type`，结算时快照进 `settlements.winner_type`**（当前实现） | 主体跟着**每一笔出价**走；结算快照之后不受后续数据变化影响 | 多两列与一次快照写 |
+| 流水主体 | 结算时按赢家类型写全部流水 | 少一次查询 | 被超过的一方（或取消时所有人）的释放流水会记错主体 |
+| 流水主体 | **每条流水写它自己来源出价的主体**（当前实现） | 释放流水也准确 | 释放时多一次“最后出价主体”查询 |
+| 暴露范围 | `result` 与流水都公开 `winnerType`/`actorType` | 前端实现最简单 | 泄漏谁是 AI，等于给他人做画像 |
+| 暴露范围 | **`winnerType` 只对赢家本人与管理员可见，其余为 null；个人流水只返回本人；另给管理员一个按场次的流水端点**（当前实现） | 满足“管理员可见 + 用户只可见自己” | 多一个 `/admin/auctions/{id}/ledger` 端点；控制器里多一层遮蔽 |
+
+**最终选择**：`bids.actor_type`（`HUMAN`/`AGENT`，`V5` 迁移，存量回填 `HUMAN`）是唯一事实来源；结算把它快照进 `settlements.winner_type`（无成交为 `NULL`）；每条 `ledger_entries` 记 `actor_type`。`GET /auctions/{id}/result` 的 `winnerType` **仅当请求者是赢家本人或 ADMIN 时保留，否则置 null**；`GET /wallets/me/ledger` 只返回本人流水；新增 `GET /admin/auctions/{id}/ledger`（`CurrentUser.requireAdmin`）供运营按场次查看。枚举 `ActorType` 放在 `shared`，因为 auction 与 wallet 都要用，而 wallet 不能反向依赖 auction（`ArchitectureTest`）。
+
+**隐私边界**：本方案不新增“按 `user_id` 查别人流水”的路由；管理员端点按 `auction_id` 过滤、且强制 ADMIN。`actorType` 属于“主体身份”，与既有的匿名标识（D-21）是两回事：前者只在有权限的读路径出现。
+
+**代价**：`bids`/`ledger_entries` 各多一列与一条 CHECK；结算事务多两次查询；管理员的“按场次流水”是新增契约面，需要前端重新生成类型。
+
+**验证结果**：✅ `SettlementServiceTest` 断言真人赢时 `winner_type=HUMAN` 且被超过的 Agent 释放流水为 `AGENT`、Agent 赢时 `winner_type=AGENT`、无成交为 `NULL`；`HttpApiIntegrationTest#winnerTypeVisibleOnlyToWinnerAndAdmin` 断言赢家/管理员可见 `AGENT`、落败者拿到 null；`#adminAuctionLedgerRequiresAdminAndShowsActorType` 断言普通用户 403、管理员可见两条流水的 `actorType`。
+
+---
+
+## D-34　“我的 AI 代理”：把 Agent 授权从运营动作变成用户自助
+
+**背景**：P5 交付的授权链路只有 `POST /admin/agent-tokens`（管理员签发）与吊销，前端“智能体接入”页只是一张**接口清单 dump**：用户点进去既看不到自己的授权、也拿不到一枚 Token，“让我的 AI 替我出价”这条产品路径实际不可用。评审意见很直接——**“前端的 ai 部分有很多问题……不像是给人使用的”**。
+
+| 决策点 | 方案 | 说明 | 代价 |
+|---|---|---|---|
+| 授权主体 | 用户只读管理员发的 Token | 实现最省 | 仍是运营功能，普通用户永远拿不到钥匙 |
+| 授权主体 | **用户为自己的 `agentUserId` 自助签发 / 吊销**（当前实现） | 产品闭环 | 需要 `/me/agent-tokens` 三个端点 |
+| 归属钉死方式 | 请求体带 `agentUserId`，服务端校验等于调用者 | 表面等价 | 校验漏写即越权，且“代表别人签发”在类型上是**可表达的** |
+| 归属钉死方式 | **请求体没有 `agentUserId` 字段，`AgentTokenService.issueForSelf` 在服务层写死**（当前实现） | 越权不可表达 | 多一个请求 DTO |
+| scope 限制 | 只允许 `auction:read`（凭证不能花钱） | 安全直觉 | 自相矛盾：Agent 的核心价值就是出价，钱本来就是用户自己的 |
+| scope 限制 | **两个 scope 都允许，由用户自选**（当前实现） | 与 D-29 / D-30 的既有语义一致 | 用户可给自己发一枚能出价的凭证——但花的是他自己的钱，且尾段博弈时间仍被 D-32 拦下 |
+| 吊销非本人 Token | 403 | 语义直白 | 403 / 404 的差异可被用来枚举 `tokenId` |
+| 吊销非本人 Token | **404**（与“不存在”不可区分，当前实现） | 不泄漏存在性 | 排错时略绕（日志里记真实原因） |
+| 列表含明文 | 列表返回明文，方便随时复制 | 用户能找回 | 库里只有 sha256，返回明文意味着**反存明文**，破坏 P5 的取证边界 |
+| 列表含明文 | **列表永不含明文；明文只在签发响应出现一次**（当前实现） | 保持既有边界 | 用户必须当次保存 |
+| 状态口径 | 前端按 `expiresAt` / `revokedAt` 自己算 `ACTIVE` | 少一个字段 | 与鉴权路径的 `AgentToken.activeAt` 可能漂移，症状是“界面说生效，调接口 401” |
+| 状态口径 | **服务端下发 `status`（`REVOKED` > `EXPIRED` > `ACTIVE`）**（当前实现） | 与 `activeAt` 同口径 | 多一个派生字段 |
+| 列表查询 | 每行各查一次它的场次范围 | 代码直观 | N+1 |
+| 列表查询 | **一页一次查询 + 一次 `IN (...)` 批量查 `agent_token_auctions`**（当前实现） | 常数次查询 | 需要独立的 `TokenSummaryRow` 读模型 |
+| 全局总览 | 普通用户也能看全局授权 | 少一个分支 | 泄漏他人用了几个 AI，与 D-33 的隐私边界冲突 |
+| 全局总览 | **`GET /admin/agent-tokens` 仅 ADMIN，用户只有 `/me`**（当前实现） | 隐私一致 | 前端要按 `isAdmin` 分支渲染 |
+
+**最终选择**：新增 `GET /me/agent-tokens`、`POST /me/agent-tokens`、`POST /me/agent-tokens/{tokenId}/revoke` 与 `GET /admin/agent-tokens`。`CreateMyAgentTokenRequest` 与管理员版本唯一的区别就是**没有** `agentUserId`；服务层 `issueForSelf` 把 owner 钉成调用者，`revokeForAgentUser` 只认自己的 Token（否则 404）。列表走专门的 `TokenSummaryRow` 读模型（`AgentToken` 没有 `createdAt`，且可空语义不同），由 `AgentTokenViews.AgentTokenSummary.of` 统一产出 `status`，前端不再自己算状态。前端把“智能体接入”整页替换为**“我的 AI 代理”**：我的授权（列表 + 新建表单 + 一次性明文卡 + 接入指引）＋（仅管理员）全局授权总览；`store` 里的 `issuedAgentToken` 在 `logout()` 时清空，因为明文在其他账号手里仍是一枚可用凭证。
+
+**为什么不设“只能读不能出价”的档位**：这枚 Token 花的是用户自己的钱，与“用户自己点出价”在资金语义上完全等价，收紧 scope 只会做出一个用户看不懂、也用不上的功能。真正需要拦的是**时机**（D-32 的博弈时间）而非**主体**。
+
+**验证结果**：✅ `AgentTokenServiceTest` 断言 `issueForSelf` 忽略越权归属、非本人吊销抛 404、列表按 owner 过滤且 `status` 与 `activeAt` 同口径、摘要里不存在明文字段、管理员列表覆盖全部 owner；`AgentApiIntegrationTest` 断言 `/me/**` 需要登录、签发出来的 Token 归属调用者、他人吊销返回 404、管理员总览不含明文且要求 ADMIN；前端 `store/arena.test.ts` 断言列表来自服务端且结构上无 `token` 字段、签发请求**从不包含** `agentUserId`、明文只进一次性展示位、吊销后收走明文、`logout()` 清空明文与列表。
 
 | 方案 | 未采用原因 | 如果重来会怎样 |
 |---|---|---|
@@ -671,6 +747,17 @@
 | Agent Token 的 `auctionIds` 省略即“全部允许” | 漏填一个字段就等于发了一枚全站可用的凭证，权限边界默认打开 | 省略 = 空集合 = 默认拒绝（D-29） |
 | 为 Agent 单开一条出价路径 / 加“先加入再出价” | 资金与幂等规则被复制第二份；Agent 被迫理解一个与决策无关的状态机 | 复用同一出价事务并在事务内自动补参与记录（D-30） |
 | 幂等键只按 `requestId`（全站唯一）或 `(auctionId, requestId)` | 两个调用方撞串时，后者的出价被静默当成前者的重放并返回别人的成交价，等于让别人的请求号能杀死你的出价 | 按 `(auctionId, userId, requestId)` 各自一个幂等域（D-31） |
+| 只在最后 5 秒（延时窗口）清场 Agent | 5 秒太短，Agent 可在前 15 秒把价格抬到位，人的博弈窗口实质不存在 | 用最后 20 秒覆盖延时窗口（D-32） |
+| 用 HTTP 过滤器（而非出价事务）判定博弈时间 | 过滤器拿不到事务内的数据库时间，仍存在检查与出价之间的竞态 | 在 `BidService` 事务内用数据库时间判定（D-32） |
+| 前端把博弈窗口写死为 20 秒 | 与 D-27 冲突，改环境变量后提示会漂 | 快照下发 `AuctionSnapshot.finalGameWindowSeconds`，前端只做提示（D-32） |
+| 用 `auction_participants.participant_type` 判定主体 | 该列 `join` 时 `ON DUPLICATE KEY UPDATE user_id = user_id`，人先加入、Agent 后出价会被记成 `HUMAN` | 主体跟着每一笔 `bids`/`ledger_entries` 走（D-33） |
+| 在公开的 `result`/`bids` 响应里直接给出 `winnerType` | 泄漏谁是 AI，等于给他人做画像 | 仅赢家本人与管理员可见，其余为 null（D-33） |
+| Agent 授权只能由管理员签发、用户只读接口清单 | “让我的 AI 替我出价”这条产品路径对普通用户不可用 | 用户自助签发自己名下的授权（D-34） |
+| “代表谁签发”作为请求体字段再校验 | 越权在类型上可表达，漏写一次校验就是越权 | 请求体不含 `agentUserId`，服务层写死（D-34） |
+| 吊销他人的 Token 返回 403 | 403/404 的差异可用来枚举 `tokenId` | 统一 404，不泄漏存在性（D-34） |
+| 列表接口返回明文 Token 方便复制 | 库里只存 sha256，返回明文等于反存明文 | 明文只在签发响应出现一次（D-34） |
+| 前端自己按时间算授权是否生效 | 与 `AgentToken.activeAt` 会漂移，出现“界面说生效但 401” | 服务端下发 `status`（D-34） |
+| 为 AI 授权设“只能读不能出价”的档位 | 花的是用户自己的钱，只是让功能不可用；要拦的是时机不是主体 | 两个 scope 都允许，时机由 D-32 兜住（D-34） |
 
 ---
 

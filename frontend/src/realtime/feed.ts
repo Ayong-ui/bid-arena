@@ -24,6 +24,11 @@ export interface SnapshotPayload {
   extensionCount: number
   participantCount: number
   seq: number
+  /**
+   * 尾段“博弈时间”长度（秒），由服务端下发（`AUCTION_FINAL_GAME_WINDOW_SECONDS`）。
+   * 前端只用它把“剩余时间 ≤ 窗口”渲染成提示，不做任何出价判定。
+   */
+  finalGameWindowSeconds: number
   serverTime: string
 }
 
@@ -363,6 +368,8 @@ export function snapshotFromEvent(event: AuctionEventEnvelope): SnapshotPayload 
     endsAt: stringField(payload, 'endsAt') ?? null,
     extensionCount: numberField(payload, 'extensionCount') ?? 0,
     participantCount: numberField(payload, 'participantCount') ?? 0,
+    // 缺省 0 表示“没有博弈时间”：宁可什么都不提示，也不凭一个猜测的窗口去提示用户。
+    finalGameWindowSeconds: numberField(payload, 'finalGameWindowSeconds') ?? 0,
     seq,
     serverTime,
   }

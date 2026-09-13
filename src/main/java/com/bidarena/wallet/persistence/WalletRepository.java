@@ -1,5 +1,6 @@
 package com.bidarena.wallet.persistence;
 
+import com.bidarena.shared.ActorType;
 import com.bidarena.shared.Db;
 import com.bidarena.shared.ErrorCode;
 import com.bidarena.shared.BizException;
@@ -55,7 +56,8 @@ public class WalletRepository {
     }
 
     public record LedgerRow(
-            long id, LedgerType type, long amount, String auctionId, String requestId, Instant createdAt) {}
+            long id, ActorType actorType, LedgerType type, long amount, String auctionId, String requestId,
+            Instant createdAt) {}
 
     // ------------------------------------------------------------------
     // 事务内：加锁读取
@@ -221,13 +223,13 @@ public class WalletRepository {
      * 同时记录变更后的两个余额快照，使任意一次余额变化都能被单行解释，
      * 不必回放整个历史。
      */
-    public void appendLedger(Connection conn, String userId, LedgerType type, long amount, String auctionId,
-            String requestId, long totalAfter, long frozenAfter) throws SQLException {
+    public void appendLedger(Connection conn, String userId, ActorType actorType, LedgerType type, long amount,
+            String auctionId, String requestId, long totalAfter, long frozenAfter) throws SQLException {
         Db.update(conn,
                 "INSERT INTO ledger_entries "
-                        + "(user_id, entry_type, amount, auction_id, request_id, total_after, frozen_after) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                userId, type.name(), amount, auctionId, requestId, totalAfter, frozenAfter);
+                        + "(user_id, actor_type, entry_type, amount, auction_id, request_id, total_after, frozen_after) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                userId, actorType.name(), type.name(), amount, auctionId, requestId, totalAfter, frozenAfter);
     }
 
     // ------------------------------------------------------------------
@@ -254,9 +256,10 @@ public class WalletRepository {
      */
     public List<LedgerRow> pageLedger(String userId, int limit, int offset) {
         return Db.read(dataSource, conn -> Db.queryList(conn,
-                "SELECT id, entry_type, amount, auction_id, request_id, created_at FROM ledger_entries "
+                "SELECT id, actor_type, entry_type, amount, auction_id, request_id, created_at FROM ledger_entries "
                         + "WHERE user_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
-                rs -> new LedgerRow(rs.getLong("id"), LedgerType.valueOf(rs.getString("entry_type")),
+                rs -> new LedgerRow(rs.getLong("id"), ActorType.parse(rs.getString("actor_type")),
+                        LedgerType.valueOf(rs.getString("entry_type")),
                         rs.getLong("amount"),
                         rs.getString("auction_id"), rs.getString("request_id"),
                         Db.instant(rs, "created_at")),
@@ -267,6 +270,32 @@ public class WalletRepository {
         return Db.read(dataSource, conn -> {
             Long total = Db.queryOne(conn, "SELECT COUNT(*) FROM ledger_entries WHERE user_id = ?",
                     rs -> rs.getLong(1), userId);
+            return total == null ? 0L : total;
+        });
+    }
+
+    /**
+     * 某场拍卖的全部流水，按 {@code id} 倒序。
+     *
+     * <p>管理员"这场最后成交的是 AI 还是人"的入口。与个人流水共用同一个投影，
+     * 因此 {@code actorType} 字段不会在两个读路径里长出两种含义。
+     */
+    public List<LedgerRow> pageLedgerByAuction(String auctionId, int limit, int offset) {
+        return Db.read(dataSource, conn -> Db.queryList(conn,
+                "SELECT id, actor_type, entry_type, amount, auction_id, request_id, created_at FROM ledger_entries "
+                        + "WHERE auction_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+                rs -> new LedgerRow(rs.getLong("id"), ActorType.parse(rs.getString("actor_type")),
+                        LedgerType.valueOf(rs.getString("entry_type")),
+                        rs.getLong("amount"),
+                        rs.getString("auction_id"), rs.getString("request_id"),
+                        Db.instant(rs, "created_at")),
+                auctionId, limit, offset));
+    }
+
+    public long countLedgerByAuction(String auctionId) {
+        return Db.read(dataSource, conn -> {
+            Long total = Db.queryOne(conn, "SELECT COUNT(*) FROM ledger_entries WHERE auction_id = ?",
+                    rs -> rs.getLong(1), auctionId);
             return total == null ? 0L : total;
         });
     }

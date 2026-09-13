@@ -4,6 +4,9 @@ import { ApiError, type ApiOk } from '../api/client'
 import type { AuctionApi } from '../api/endpoints'
 import { createMemoryStorage, createSessionStorage, type SessionStorage } from '../api/session'
 import type {
+  AgentToken,
+  AgentTokenPage,
+  AgentTokenSummary,
   ApiCode,
   AuctionPage,
   AuctionResult,
@@ -54,13 +57,51 @@ const SNAPSHOT: AuctionSnapshot = {
   extensionCount: 0,
   participantCount: 1,
   seq: 3,
+  finalGameWindowSeconds: 20,
   serverTime: SERVER_TIME,
 }
 
 const WALLET: Wallet = { totalBalance: 1000, frozenAmount: 120, availableBalance: 880 }
 const PAGE: AuctionPage = { items: [SNAPSHOT], page: 1, size: 50, total: 1 }
 const LEDGER: LedgerPage = { items: [], page: 1, size: 20, total: 0 }
+const ADMIN_LEDGER: LedgerPage = {
+  items: [
+    {
+      id: 'lg-2',
+      actorType: 'AGENT',
+      type: 'SETTLE',
+      amount: 150,
+      auctionId: 'auc-1',
+      requestId: null,
+      createdAt: SERVER_TIME,
+    },
+    {
+      id: 'lg-1',
+      actorType: 'HUMAN',
+      type: 'FREEZE',
+      amount: 150,
+      auctionId: 'auc-1',
+      requestId: 'r1',
+      createdAt: SERVER_TIME,
+    },
+  ],
+  page: 1,
+  size: 50,
+  total: 2,
+}
 const BIDS: BidPage = { items: [], page: 1, size: 50, total: 0 }
+const MY_TOKEN: AgentTokenSummary = {
+  tokenId: 'agt_1',
+  name: '我的抄底机器人',
+  agentUserId: USER.id,
+  status: 'ACTIVE',
+  scopes: ['auction:read', 'auction:bid'],
+  auctionIds: ['auc-1'],
+  rateLimitPerMinute: 60,
+  expiresAt: '2030-01-01T00:00:00.000Z',
+  revokedAt: null,
+  createdAt: SERVER_TIME,
+}
 const BID_RESULT: BidResult = {
   accepted: true,
   idempotent: false,
@@ -131,6 +172,7 @@ function makeWorld(overrides?: (world: FakeWorld) => Partial<AuctionApi>, now: (
         extensionCount: 0,
         participantCount: 1,
         seq,
+        finalGameWindowSeconds: SNAPSHOT.finalGameWindowSeconds,
         serverTime: SERVER_TIME,
       })
     },
@@ -141,6 +183,7 @@ function makeWorld(overrides?: (world: FakeWorld) => Partial<AuctionApi>, now: (
     currentUser: async () => ok(USER),
     wallet: async () => ok(WALLET),
     ledger: async () => ok(LEDGER),
+    auctionLedger: async () => ok(ADMIN_LEDGER),
     auctions: async () => ok(PAGE),
     auction: async () => {
       snapshotCalls += 1
@@ -166,6 +209,11 @@ function makeWorld(overrides?: (world: FakeWorld) => Partial<AuctionApi>, now: (
       ticketCalls += 1
       return ok<WsTicket>({ ...TICKET, ticket: `t${ticketCalls}` })
     },
+    // AI 授权（D-34）：这些用例不演它，给出空实现即可（接口变动会让编译先报错）。
+    myAgentTokens: async () => ok<AgentTokenPage>({ items: [], page: 1, size: 20, total: 0 }),
+    issueMyAgentToken: async () => ok<AgentToken>({ token: 'tok-1', tokenId: 'agt_1', expiresAt: SERVER_TIME }),
+    revokeMyAgentToken: async () => ok<AgentToken>({ tokenId: 'agt_1', expiresAt: SERVER_TIME }),
+    agentTokens: async () => ok<AgentTokenPage>({ items: [], page: 1, size: 50, total: 0 }),
   }
   world.api = { ...base, ...(overrides?.(world) ?? {}) }
   installDeps(world)
@@ -310,6 +358,27 @@ describe('商店：实时订阅', () => {
     // endsAt 距服务端现在 5 分钟。若用本机时间，这里会算出负数、界面显示 00:00。
     expect(store.remainingMs).toBe(300_000)
     expect(store.remainingLabel).toBe('05:00')
+  })
+
+  it('尾段博弈时间提示由服务端下发的窗口决定，且不会拦住真人出价', async () => {
+    const endsAt = new Date(SERVER_NOW + 10_000).toISOString()
+    const world = makeWorld(() => ({
+      auction: async () => ok({ ...SNAPSHOT, endsAt, finalGameWindowSeconds: 20 }),
+    }))
+    const store = await signedIn(world)
+    await store.openAuction('auc-1')
+    expect(store.inFinalGameWindow).toBe(true)
+    await store.joinCurrent()
+    // 提示 ≠ 拦截：博弈时间里真人**仍然可以**出价，被拦的只有服务端的 Agent 通道（D-32）。
+    expect(store.canBid).toBe(true)
+  })
+
+  it('离截止还远时不进入博弈时间（窗口是服务端字段，不是前端写死的）', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world)
+    await store.openAuction('auc-1')
+    expect(store.current?.finalGameWindowSeconds).toBe(20)
+    expect(store.inFinalGameWindow).toBe(false)
   })
 
   it('拍卖结束事件触发结算结果与钱包刷新', async () => {
@@ -499,5 +568,118 @@ describe('商店：运营台', () => {
     await store.startAuction('auc-1')
     expect(store.auctions[0].status).toBe('RUNNING')
     expect(store.notice?.text).toContain('已开始')
+  })
+
+  it('按场次拉流水并保留每条的主体标识（AI / 真人）', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world, ADMIN)
+    let asked: string | null = null
+    world.api.auctionLedger = async (auctionId: string) => {
+      asked = auctionId
+      return ok(ADMIN_LEDGER)
+    }
+
+    await store.loadAuctionLedger('auc-1')
+
+    expect(asked).toBe('auc-1')
+    expect(store.adminLedgerAuctionId).toBe('auc-1')
+    expect(store.adminLedger.map((entry) => entry.actorType)).toEqual(['AGENT', 'HUMAN'])
+    expect(store.adminLedgerLoading).toBe(false)
+  })
+})
+
+describe('商店：我的 AI 代理', () => {
+  it('列表只来自服务端，且结构上没有明文字段', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world)
+    world.api.myAgentTokens = async () => ok<AgentTokenPage>({ items: [MY_TOKEN], page: 1, size: 50, total: 1 })
+
+    await store.loadMyAgentTokens()
+
+    expect(store.myAgentTokens).toEqual([MY_TOKEN])
+    expect('token' in store.myAgentTokens[0]).toBe(false)
+    expect(store.myAgentTokensLoading).toBe(false)
+  })
+
+  it('签发把明文留在一次性的展示位、刷新列表，并且从不发送 agentUserId', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world)
+    let sent: unknown = null
+    world.api.issueMyAgentToken = async (body) => {
+      sent = body
+      return ok<AgentToken>({ token: 'plain-1', tokenId: 'agt_9', expiresAt: '2030-01-01T00:00:00.000Z' })
+    }
+    world.api.myAgentTokens = async () => ok<AgentTokenPage>({ items: [MY_TOKEN], page: 1, size: 50, total: 1 })
+
+    const created = await store.issueMyAgentToken({
+      name: '我的抄底机器人',
+      auctionIds: ['auc-1'],
+      scopes: ['auction:read'],
+      expiresAt: '2030-01-01T00:00:00.000Z',
+      rateLimitPerMinute: 60,
+    })
+
+    expect(created).toBe(true)
+    expect(sent).toMatchObject({ name: '我的抄底机器人', scopes: ['auction:read'] })
+    // 归属由服务端钉死：前端连“代表谁”这个字段都不存在。
+    expect(sent).not.toHaveProperty('agentUserId')
+    expect(store.issuedAgentToken).toEqual({
+      token: 'plain-1',
+      tokenId: 'agt_9',
+      name: '我的抄底机器人',
+      expiresAt: '2030-01-01T00:00:00.000Z',
+    })
+    expect(store.myAgentTokens).toEqual([MY_TOKEN])
+
+    store.dismissIssuedAgentToken()
+    expect(store.issuedAgentToken).toBeNull()
+  })
+
+  it('吊销自己的授权后刷新列表，并收走同一条的明文', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world)
+    world.api.issueMyAgentToken = async () =>
+      ok<AgentToken>({ token: 'plain-1', tokenId: 'agt_1', expiresAt: '2030-01-01T00:00:00.000Z' })
+    world.api.myAgentTokens = async () => ok<AgentTokenPage>({ items: [], page: 1, size: 50, total: 0 })
+    await store.issueMyAgentToken({
+      name: 'x',
+      auctionIds: [],
+      scopes: ['auction:read'],
+      expiresAt: '2030-01-01T00:00:00.000Z',
+      rateLimitPerMinute: 60,
+    })
+    expect(store.issuedAgentToken).not.toBeNull()
+
+    let revoked: string | null = null
+    world.api.revokeMyAgentToken = async (tokenId: string) => {
+      revoked = tokenId
+      return ok<AgentToken>({ tokenId, expiresAt: '2030-01-01T00:00:00.000Z' })
+    }
+
+    await store.revokeMyAgentToken('agt_1')
+
+    expect(revoked).toBe('agt_1')
+    expect(store.issuedAgentToken).toBeNull()
+    expect(store.notice?.text).toContain('已吊销')
+  })
+
+  it('退出登录会清掉明文 Token（换个人登录时它仍然是一枚可用凭证）', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world)
+    world.api.issueMyAgentToken = async () =>
+      ok<AgentToken>({ token: 'plain-1', tokenId: 'agt_1', expiresAt: '2030-01-01T00:00:00.000Z' })
+    await store.issueMyAgentToken({
+      name: 'x',
+      auctionIds: [],
+      scopes: ['auction:read'],
+      expiresAt: '2030-01-01T00:00:00.000Z',
+      rateLimitPerMinute: 60,
+    })
+
+    store.logout()
+
+    expect(store.issuedAgentToken).toBeNull()
+    expect(store.myAgentTokens).toEqual([])
+    expect(store.allAgentTokens).toEqual([])
   })
 })

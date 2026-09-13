@@ -96,6 +96,41 @@ class SettlementServiceTest {
     }
 
     @Test
+    @DisplayName("结算快照成交主体：谁的笑到最后，winner_type 就是谁")
+    void settlementSnapshotsWinnerActorType() {
+        Fixtures.user(ds, "u_agent", 1000);
+        Fixtures.bidService(ds).placeBid(AUCTION, "u_agent", 120, "r-agent", "AGENT");
+        Fixtures.user(ds, "u_human", 1000);
+        Fixtures.join(ds, AUCTION, "u_human");
+        Fixtures.bidService(ds).placeBid(AUCTION, "u_human", 150, "r-human");
+
+        Fixtures.expireAuction(ds, AUCTION);
+        settlementService.settleIfDue(AUCTION);
+
+        assertEquals("HUMAN", Fixtures.settlementWinnerType(ds, AUCTION), "赢家是真人，快照应为 HUMAN");
+        assertEquals("HUMAN", Fixtures.ledgerActorType(ds, "u_human", AUCTION, "SETTLE"),
+                "扣款流水应带赢家的主体标识");
+        assertEquals("AGENT", Fixtures.ledgerActorType(ds, "u_agent", AUCTION, "RELEASE"),
+                "被超过的 Agent 释放流水应保留它自己的主体标识");
+        Invariants.assertAllHolds(ds, AUCTION);
+    }
+
+    @Test
+    @DisplayName("Agent 赢下拍卖：winner_type 与 SETTLE 流水均为 AGENT")
+    void settlementRecordsAgentWinner() {
+        Fixtures.user(ds, "u_agent", 1000);
+        Fixtures.bidService(ds).placeBid(AUCTION, "u_agent", 120, "r-agent", "AGENT");
+
+        Fixtures.expireAuction(ds, AUCTION);
+        settlementService.settleIfDue(AUCTION);
+
+        assertEquals("AGENT", Fixtures.settlementWinnerType(ds, AUCTION),
+                "成交主体必须能从结算记录读出，不能依赖会变的参与记录");
+        assertEquals("AGENT", Fixtures.ledgerActorType(ds, "u_agent", AUCTION, "SETTLE"));
+        Invariants.assertAllHolds(ds, AUCTION);
+    }
+
+    @Test
     @DisplayName("结算后本场不再接受出价")
     void bidAfterSettlementIsRejected() {
         givenBidders("u_1", "u_2", 1000);
@@ -127,6 +162,7 @@ class SettlementServiceTest {
         assertEquals(SettlementReason.NO_BIDS, result.reason());
         assertEquals("FINISHED", Fixtures.status(ds, AUCTION));
         assertEquals("-|0|NO_BIDS", Fixtures.settlement(ds, AUCTION));
+        assertNull(Fixtures.settlementWinnerType(ds, AUCTION), "未成交不得有 winner_type");
 
         for (String user : new String[] {"u_1", "u_2"}) {
             assertEquals(1000L, Fixtures.totalBalance(ds, user), user + " 不得被扣款");

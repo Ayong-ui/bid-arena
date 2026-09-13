@@ -17,6 +17,7 @@ export interface LiveAuction {
   extensionCount: number
   participantCount: number
   seq: number
+  finalGameWindowSeconds: number
 }
 
 /** 演示账号：契约与种子数据里就是这三个（密码只用于本地演示，见 README）。 */
@@ -47,6 +48,7 @@ export function toLive(snapshot: AuctionSnapshot, description: string, leaderAno
     extensionCount: snapshot.extensionCount,
     participantCount: snapshot.participantCount,
     seq: snapshot.seq,
+    finalGameWindowSeconds: snapshot.finalGameWindowSeconds,
   }
 }
 
@@ -74,6 +76,7 @@ export function toSnapshotPayload(snapshot: AuctionSnapshot, leaderAnon: string 
     extensionCount: snapshot.extensionCount,
     participantCount: snapshot.participantCount,
     seq: snapshot.seq,
+    finalGameWindowSeconds: snapshot.finalGameWindowSeconds,
     // 服务端时间必须带上：消费方要用它校准时钟。
     serverTime: snapshot.serverTime,
   }

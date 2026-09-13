@@ -4,6 +4,7 @@ import com.bidarena.agentaccess.application.AgentAuctionService;
 import com.bidarena.agentaccess.domain.AgentToken;
 import com.bidarena.api.ApiTrace;
 import com.bidarena.api.IdempotencyKeys;
+import com.bidarena.auction.application.AuctionViews;
 import com.bidarena.auction.application.BidService;
 import com.bidarena.shared.ApiResponse;
 import com.bidarena.shared.ApiTime;
@@ -82,6 +83,12 @@ public class HttpAgentController {
     @Mapping(value = "/auctions/{auctionId}/result", method = MethodType.GET)
     public ApiResponse auctionResult(@Path("auctionId") String auctionId) {
         AgentToken token = AgentCaller.require(ContextUtil.current());
-        return ApiResponse.ok(agentAuctions.result(token, auctionId), ApiTrace.current());
+        AuctionViews.Result result = agentAuctions.result(token, auctionId);
+        // Agent 不是管理员：只有它所属用户本人赢了这一场，才允许看到 winnerType。
+        if (!token.agentUserId().equals(result.winner())) {
+            result = new AuctionViews.Result(result.auctionId(), result.status(), result.winner(), null,
+                    result.finalPrice(), result.reason(), result.settledAt());
+        }
+        return ApiResponse.ok(result, ApiTrace.current());
     }
 }

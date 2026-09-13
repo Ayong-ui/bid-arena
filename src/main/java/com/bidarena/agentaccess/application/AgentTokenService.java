@@ -4,8 +4,10 @@ import com.bidarena.agentaccess.domain.AgentScope;
 import com.bidarena.agentaccess.domain.AgentScopes;
 import com.bidarena.agentaccess.domain.AgentToken;
 import com.bidarena.agentaccess.persistence.AgentTokenRepository;
+import com.bidarena.agentaccess.persistence.AgentTokenRepository.TokenSummaryRow;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.ErrorCode;
+import com.bidarena.shared.PageQuery;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -194,6 +196,58 @@ public class AgentTokenService {
             throw new BizException(ErrorCode.NOT_FOUND, "Agent Token 不存在", Map.of("tokenId", tokenId));
         }
         return tokens.findByTokenId(tokenId.trim());
+    }
+
+    // ---------------------------------------------------------------- 自助授权（D-34）
+
+    /**
+     * 为<b>本人</b>签发一枚 Token。
+     *
+     * <p>把 {@code agentUserId} 强制改写成调用方本人：自助入口在类型上就表达不了
+     * "替别人签发"，因此不需要在每个控制器里记得校验归属——漏一处就是一个真实越权。
+     * 其余校验（权限非空、过期必须晚于现在、范围必须存在）与管理员签发完全一致。
+     */
+    public Issued issueForSelf(String userId, IssueCommand command) {
+        IssueCommand safe = new IssueCommand(command.name(), userId, command.auctionIds(),
+                command.scopes(), command.expiresAt(), command.rateLimitPerMinute());
+        return issue(safe);
+    }
+
+    /**
+     * 本人吊销自己的 Token。
+     *
+     * <p>不属于本人时返回 404 而不是 403：404 与"这枚 tokenId 不存在"无法区分，
+     * 调用方因此探不出别人的 tokenId 是否存在（tokenId 虽不是秘密，但没必要的暴露就不给）。
+     */
+    public AgentToken revokeForAgentUser(String tokenId, String agentUserId) {
+        AgentToken token = tokenId == null ? null : tokens.findByTokenId(tokenId.trim());
+        if (token == null || !token.agentUserId().equals(agentUserId)) {
+            throw new BizException(ErrorCode.NOT_FOUND, "Agent Token 不存在",
+                    Map.of("tokenId", String.valueOf(tokenId)));
+        }
+        return revoke(token.tokenId());
+    }
+
+    /** 本人名下的授权列表（新→旧）。 */
+    public PageQuery.Page<AgentTokenViews.AgentTokenSummary> listForAgentUser(String agentUserId, PageQuery page) {
+        List<TokenSummaryRow> rows = tokens.pageByAgentUser(agentUserId, page.limit(), page.offset());
+        long total = tokens.countByAgentUser(agentUserId);
+        return summarise(rows, total, page);
+    }
+
+    /** 全部授权（管理员总览）。 */
+    public PageQuery.Page<AgentTokenViews.AgentTokenSummary> listAll(PageQuery page) {
+        List<TokenSummaryRow> rows = tokens.pageAll(page.limit(), page.offset());
+        long total = tokens.countAll();
+        return summarise(rows, total, page);
+    }
+
+    private PageQuery.Page<AgentTokenViews.AgentTokenSummary> summarise(
+            List<TokenSummaryRow> rows, long total, PageQuery page) {
+        Instant now = clock.instant();
+        return new PageQuery.Page<>(
+                rows.stream().map(row -> AgentTokenViews.AgentTokenSummary.of(row, now)).toList(),
+                page.page(), page.size(), total);
     }
 
     // ---------------------------------------------------------------- 内部

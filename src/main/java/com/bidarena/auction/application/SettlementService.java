@@ -8,6 +8,7 @@ import com.bidarena.auction.domain.AuctionEvent;
 import com.bidarena.auction.domain.AuctionEventPublisher;
 import com.bidarena.auction.domain.AuctionStatus;
 import com.bidarena.auction.domain.SettlementReason;
+import com.bidarena.shared.ActorType;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.Db;
 import com.bidarena.shared.ErrorCode;
@@ -175,9 +176,12 @@ public class SettlementService {
         SettlementReason reason = decideReason(auction, cancelRequested, now);
         String winnerId = reason.hasWinner() ? auction.leaderId() : null;
         long finalPrice = winnerId == null ? 0L : auction.currentPrice();
+        // 主体类型取赢家**最后一笔出价**的类型：参与记录的类型首次加入后不再更新，
+        // 不能用它来判断"最后成交的是 AI 还是人"（见 ActorType 类注释）。
+        ActorType winnerType = winnerId == null ? null : auctions.latestBidActorType(conn, auctionId, winnerId);
 
-        moveMoney(conn, auction, winnerId, finalPrice);
-        settlements.insert(conn, auctionId, winnerId, finalPrice, reason, now);
+        moveMoney(conn, auction, winnerId, winnerType, finalPrice);
+        settlements.insert(conn, auctionId, winnerId, winnerType, finalPrice, reason, now);
 
         AuctionStatus finalStatus;
         if (cancelRequested) {
@@ -246,8 +250,8 @@ public class SettlementService {
      * 报错会让拍卖卡在未结算状态、资金继续悬着，而归还至少把钱还给了用户，
      * 并留下一条可追溯的 RELEASE 流水。该情形记 WARN。
      */
-    private void moveMoney(Connection conn, AuctionRow auction, String winnerId, long finalPrice)
-            throws SQLException {
+    private void moveMoney(Connection conn, AuctionRow auction, String winnerId, ActorType winnerType,
+            long finalPrice) throws SQLException {
         List<Map.Entry<String, Long>> freezes = wallets.lockAllAuctionFreezes(conn, auction.id());
 
         // 赢家的冻结额必须**恰好**等于成交价。少一分都不能放行：
@@ -287,14 +291,15 @@ public class SettlementService {
             if (userId.equals(winnerId)) {
                 wallets.settleWinner(conn, userId, finalPrice);
                 wallets.setAuctionFrozen(conn, auction.id(), userId, 0L);
-                wallets.appendLedger(conn, userId, LedgerType.SETTLE, finalPrice, auction.id(), null,
+                wallets.appendLedger(conn, userId, winnerType, LedgerType.SETTLE, finalPrice, auction.id(), null,
                         wallet.totalBalance() - finalPrice, wallet.frozenAmount() - finalPrice);
             } else {
                 log.warn("非赢家存在非零冻结，予以释放 auction={} user={} frozen={}",
                         auction.id(), userId, frozen);
                 wallets.decreaseFrozen(conn, userId, frozen);
                 wallets.setAuctionFrozen(conn, auction.id(), userId, 0L);
-                wallets.appendLedger(conn, userId, LedgerType.RELEASE, frozen, auction.id(), null,
+                wallets.appendLedger(conn, userId, auctions.latestBidActorType(conn, auction.id(), userId),
+                        LedgerType.RELEASE, frozen, auction.id(), null,
                         wallet.totalBalance(), wallet.frozenAmount() - frozen);
             }
         }

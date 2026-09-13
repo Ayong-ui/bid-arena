@@ -24,11 +24,13 @@ public final class WalletViews {
     }
 
     public record LedgerEntry(
-            String id, String type, long amount, String auctionId, String requestId, String createdAt) {
+            String id, String actorType, String type, long amount, String auctionId, String requestId,
+            String createdAt) {
 
         public static LedgerEntry of(LedgerRow row) {
             return new LedgerEntry(
                     String.valueOf(row.id()),
+                    row.actorType().name(),
                     row.type().name(),
                     row.amount(),
                     row.auctionId(),

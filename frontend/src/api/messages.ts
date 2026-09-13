@@ -38,6 +38,9 @@ export function messageForCode(code: ClientErrorCode): string {
       return '出价低于最低加价，请提高金额'
     case 'BID_LATE':
       return '已经超过截止时间，本次出价被拒绝'
+    case 'HUMAN_ONLY_PERIOD':
+      // 尾段“博弈时间”：真人仍可出价，Agent 被系统清场（见 DECISIONS D-32）。
+      return '已进入最后博弈时间，仅限真人出价'
     case 'NOT_JOINED':
       return '请先加入本场拍卖'
     case 'INSUFFICIENT_BALANCE':

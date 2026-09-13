@@ -13,6 +13,7 @@ import com.bidarena.agentaccess.domain.AgentToken;
 import com.bidarena.bootstrap.Services;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.ErrorCode;
+import com.bidarena.shared.PageQuery;
 import com.bidarena.support.Fixtures;
 import com.bidarena.support.TestDatabase;
 import java.time.Clock;
@@ -21,7 +22,9 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -359,6 +362,99 @@ class AgentTokenServiceTest {
         assertThrows(BizException.class, () -> tokens.checkRateLimit(first));
 
         tokens.checkRateLimit(second);
+    }
+
+    // ---------------------------- 自助授权与列表（D-34） ----------------------------
+
+    @Test
+    @DisplayName("自助签发：agentUserId 恒为本人，请求里写谁都不算")
+    void issueForSelfPinsOwner() {
+        Fixtures.user(ds, "usr_other", 10_000);
+
+        AgentTokenService.Issued issued = tokens.issueForSelf("usr_other",
+                command("替别人签的", List.of(AUCTION), List.of("auction:read"), T0.plusSeconds(600), null));
+
+        AgentToken loaded = services.agentTokenRepo.findByTokenId(issued.tokenId());
+        assertEquals("usr_other", loaded.agentUserId(), "请求里的 agentUserId 必须被忽略");
+    }
+
+    @Test
+    @DisplayName("自助吊销：不属于本人一律 404，且不产生任何副作用")
+    void revokeForAgentUserRejectsForeignToken() {
+        Fixtures.user(ds, "usr_other", 10_000);
+        AgentTokenService.Issued mine = tokens.issueForSelf("usr_agent_owner",
+                command("我的", List.of(AUCTION), List.of("auction:read"), T0.plusSeconds(600), null));
+
+        BizException error = assertThrows(BizException.class,
+                () -> tokens.revokeForAgentUser(mine.tokenId(), "usr_other"));
+
+        assertEquals(ErrorCode.NOT_FOUND, error.code(), "404 而不是 403：不区分“不存在”与“不是你的”");
+        assertNull(services.agentTokenRepo.findByTokenId(mine.tokenId()).revokedAt(),
+                "别人的吊销尝试不得生效");
+        assertNotNull(tokens.authenticate(mine.token()));
+    }
+
+    @Test
+    @DisplayName("列表：只列本人，状态 ACTIVE/EXPIRED/REVOKED 由服务端按当前时刻判定")
+    void listForAgentUserScopesToOwnerAndMarksStatus() {
+        Fixtures.user(ds, "usr_other", 10_000);
+        AgentTokenService.Issued active = tokens.issueForSelf("usr_agent_owner",
+                command("活跃", List.of(AUCTION), List.of("auction:read", "auction:bid"), T0.plusSeconds(7200), null));
+        AgentTokenService.Issued revoked = tokens.issueForSelf("usr_agent_owner",
+                command("已吊销", List.of(AUCTION), List.of("auction:read"), T0.plusSeconds(7200), null));
+        AgentTokenService.Issued expired = tokens.issueForSelf("usr_agent_owner",
+                command("已过期", List.of(AUCTION), List.of("auction:read"), T0.plusSeconds(600), null));
+        tokens.issueForSelf("usr_other",
+                command("别人的", List.of(AUCTION), List.of("auction:read"), T0.plusSeconds(7200), null));
+        tokens.revokeForAgentUser(revoked.tokenId(), "usr_agent_owner");
+
+        clock.set(T0.plusSeconds(1800));
+
+        PageQuery.Page<AgentTokenViews.AgentTokenSummary> page =
+                tokens.listForAgentUser("usr_agent_owner", new PageQuery(1, 20));
+
+        assertEquals(3, page.total(), "别人的授权不得计入自己的总数");
+        Map<String, String> statuses = page.items().stream().collect(Collectors.toMap(
+                AgentTokenViews.AgentTokenSummary::tokenId, AgentTokenViews.AgentTokenSummary::status));
+        assertEquals("ACTIVE", statuses.get(active.tokenId()));
+        assertEquals("REVOKED", statuses.get(revoked.tokenId()));
+        assertEquals("EXPIRED", statuses.get(expired.tokenId()));
+        assertTrue(page.items().stream().noneMatch(item -> "别人的".equals(item.name())),
+                "列表里混进了别人的授权：" + page.items());
+    }
+
+    @Test
+    @DisplayName("列表：摘要带范围与权限，且结构上就没有明文 token 字段")
+    void listSummaryExposesScopeWithoutPlaintext() {
+        Fixtures.user(ds, "usr_other", 10_000);
+        tokens.issueForSelf("usr_agent_owner",
+                command("带范围", List.of(AUCTION, OTHER_AUCTION), List.of("auction:read", "auction:bid"),
+                        T0.plusSeconds(600), 240));
+
+        AgentTokenViews.AgentTokenSummary summary = tokens
+                .listForAgentUser("usr_agent_owner", new PageQuery(1, 20)).items().get(0);
+
+        assertEquals("usr_agent_owner", summary.agentUserId());
+        assertEquals(Set.of("auction:read", "auction:bid"), summary.scopes());
+        assertEquals(Set.of(AUCTION, OTHER_AUCTION), summary.auctionIds());
+        assertEquals(240, summary.rateLimitPerMinute());
+        assertNotNull(summary.createdAt());
+    }
+
+    @Test
+    @DisplayName("列表：管理员总览覆盖所有人的授权")
+    void listAllCoversEveryOwner() {
+        Fixtures.user(ds, "usr_other", 10_000);
+        tokens.issueForSelf("usr_agent_owner",
+                command("甲的", List.of(AUCTION), List.of("auction:read"), T0.plusSeconds(600), null));
+        tokens.issueForSelf("usr_other",
+                command("乙的", List.of(AUCTION), List.of("auction:read"), T0.plusSeconds(600), null));
+
+        PageQuery.Page<AgentTokenViews.AgentTokenSummary> page = tokens.listAll(new PageQuery(1, 20));
+
+        assertEquals(2, page.total());
+        assertEquals(Set.of("usr_agent_owner", "usr_other"), page.items().stream()
+                .map(AgentTokenViews.AgentTokenSummary::agentUserId).collect(Collectors.toSet()));
     }
 
     // ---------------------------- 辅助 ----------------------------

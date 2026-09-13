@@ -7,6 +7,7 @@ import com.bidarena.auction.persistence.AuctionRepository.RequestRow;
 import com.bidarena.auction.domain.AuctionEvent;
 import com.bidarena.auction.domain.AuctionEventPublisher;
 import com.bidarena.auction.domain.AuctionStatus;
+import com.bidarena.shared.ActorType;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.Db;
 import com.bidarena.shared.ErrorCode;
@@ -58,6 +59,15 @@ public class BidService {
     public static final int MAX_EXTENSIONS = 3;
 
     /**
+     * 尾段"博弈时间"的默认长度（秒）。
+     *
+     * <p>从截止时间往前数这幺长一段，只允许真人出价，竞拍 Agent 一律拒绝。
+     * 取 20 是为了把原文"最后 5 秒延时"的狙击窗口整个罩住，并在它之前多留一段缓冲。
+     * 可被环境变量 {@code AUCTION_FINAL_GAME_WINDOW_SECONDS} 覆盖，便于演示与回归。
+     */
+    public static final long FINAL_GAME_WINDOW_SECONDS_DEFAULT = 20;
+
+    /**
      * 这些拒绝是"该次出价已被评估过"的结论，值得写入幂等记录；
      * 参数非法、拍卖不存在等属于请求本身有问题，不记录。
      */
@@ -66,19 +76,22 @@ public class BidService {
             ErrorCode.BID_LATE,
             ErrorCode.NOT_JOINED,
             ErrorCode.INSUFFICIENT_BALANCE,
+            ErrorCode.HUMAN_ONLY_PERIOD,
             ErrorCode.INVALID_STATE);
 
     private final DataSource dataSource;
     private final AuctionRepository auctions;
     private final WalletRepository wallets;
     private final AuctionEventPublisher events;
+    private final long finalGameWindowSeconds;
 
     public BidService(DataSource dataSource, AuctionRepository auctions, WalletRepository wallets,
-            AuctionEventPublisher events) {
+            AuctionEventPublisher events, long finalGameWindowSeconds) {
         this.dataSource = dataSource;
         this.auctions = auctions;
         this.wallets = wallets;
         this.events = events;
+        this.finalGameWindowSeconds = finalGameWindowSeconds;
     }
 
     /**
@@ -238,6 +251,7 @@ public class BidService {
             throw new BizException(ErrorCode.BID_LATE, "拍卖已截止",
                     Map.of("endsAt", String.valueOf(auction.endsAt()), "serverTime", now.toString()));
         }
+        ensureBidderAllowedInFinalWindow(auction, now, autoJoinAs);
         if (autoJoinAs == null && !auctions.isParticipant(conn, auctionId, userId)) {
             throw new BizException(ErrorCode.NOT_JOINED, "尚未加入该拍卖间", Map.of("auctionId", auctionId));
         }
@@ -290,10 +304,11 @@ public class BidService {
 
         releasePreviousLeader(conn, auction, previousLeader, userId, freezes, walletRows);
 
+        ActorType actorType = ActorType.parse(autoJoinAs);
         if (delta > 0) {
             wallets.increaseFrozen(conn, userId, delta);
             wallets.setAuctionFrozen(conn, auctionId, userId, amount);
-            wallets.appendLedger(conn, userId, LedgerType.FREEZE, delta, auctionId, requestId,
+            wallets.appendLedger(conn, userId, actorType, LedgerType.FREEZE, delta, auctionId, requestId,
                     me.totalBalance(), me.frozenAmount() + delta);
         }
 
@@ -307,7 +322,7 @@ public class BidService {
         }
 
         auctions.applyBid(conn, auctionId, auction.seq(), amount, userId, newEndsAt, newExtensionCount, newSeq);
-        auctions.insertBid(conn, auctionId, userId, amount, requestId, newSeq, now);
+        auctions.insertBid(conn, auctionId, userId, amount, requestId, newSeq, now, actorType);
         auctions.markRequestDone(conn, auctionId, userId, requestId, ErrorCode.OK.name(), amount, newSeq);
 
         log.info("出价成功 auction={} user={} amount={} seq={} extensions={} endsAt={} autoJoined={}",
@@ -346,8 +361,34 @@ public class BidService {
         }
         wallets.decreaseFrozen(conn, previousLeader, leaderFrozen);
         wallets.setAuctionFrozen(conn, auction.id(), previousLeader, 0L);
-        wallets.appendLedger(conn, previousLeader, LedgerType.RELEASE, leaderFrozen, auction.id(), null,
+        wallets.appendLedger(conn, previousLeader, auctions.latestBidActorType(conn, auction.id(), previousLeader),
+                LedgerType.RELEASE, leaderFrozen, auction.id(), null,
                 leaderWallet.totalBalance(), leaderWallet.frozenAmount() - leaderFrozen);
+    }
+
+    /**
+     * 尾段清场：进入最后 {@link #finalGameWindowSeconds} 秒后，竞拍 Agent 一律不得出价。
+     *
+     * <p>判定用事务内取到的数据库时间与拍卖行锁，因此与出价是同一个一致性边界，
+     * 不存在"先检查再出价"之间被抢进的竞态。
+     *
+     * <p>主体信号取 {@code autoJoinAs}（Agent 通道恒为非 null，真人通道恒为 null），
+     * 而不是库里存量字段：一个用户可能既用网页也用 Agent，要按**本次调用通道**判。
+     *
+     * <p>为什么这个窗口天然"出不去"：延时规则是最后 5 秒内出价 +10 秒，
+     * 因此一旦剩余时间 ≤ 20 秒，任何一次延时后剩余时间最多 15 秒，仍在这个窗口内。
+     * 换句话说，进入博弈时间就等于一直清场到结算，不需要额外的锁定状态。
+     */
+    private void ensureBidderAllowedInFinalWindow(AuctionRow auction, Instant now, String autoJoinAs) {
+        if (autoJoinAs == null) {
+            return;
+        }
+        if (!now.isBefore(auction.endsAt().minusSeconds(finalGameWindowSeconds))) {
+            throw new BizException(ErrorCode.HUMAN_ONLY_PERIOD,
+                    "拍卖已进入最后 " + finalGameWindowSeconds + " 秒博弈时间，竞拍 Agent 禁止出价",
+                    Map.of("auctionId", auction.id(), "endsAt", String.valueOf(auction.endsAt()),
+                            "serverTime", now.toString(), "finalGameWindowSeconds", finalGameWindowSeconds));
+        }
     }
 
     private void recordRejection(String auctionId, String userId, String requestId, BizException e) {

@@ -110,7 +110,7 @@ class EventPublishingTest {
     }
 
     private BidService bids(AuctionEventPublisher publisher) {
-        return new BidService(ds, auctions, wallets, publisher);
+        return new BidService(ds, auctions, wallets, publisher, BidService.FINAL_GAME_WINDOW_SECONDS_DEFAULT);
     }
 
     private SettlementService settlements(AuctionEventPublisher publisher) {
@@ -118,7 +118,8 @@ class EventPublishingTest {
     }
 
     private AuctionCommandService commands(AuctionEventPublisher publisher) {
-        return new AuctionCommandService(ds, auctions, settlements(publisher), publisher);
+        return new AuctionCommandService(ds, auctions, settlements(publisher), publisher,
+                BidService.FINAL_GAME_WINDOW_SECONDS_DEFAULT);
     }
 
     /** 造一场正在进行的、已有两个参与者的拍卖，返回拍品 ID。 */

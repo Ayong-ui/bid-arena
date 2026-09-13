@@ -7,6 +7,7 @@ import com.bidarena.auction.application.AuctionViews;
 import com.bidarena.auction.domain.AuctionEvent;
 import com.bidarena.auction.domain.AuctionEventPublisher;
 import com.bidarena.auction.domain.AuctionStatus;
+import com.bidarena.shared.ActorType;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.Db;
 import com.bidarena.shared.ErrorCode;
@@ -33,13 +34,13 @@ public class AuctionCommandService {
     private static final Logger log = LoggerFactory.getLogger(AuctionCommandService.class);
 
     /** 参与类型。HTTP 用户为 HUMAN；Agent 出价在 P5 用 AGENT，使运营能区分两类参与者。 */
-    public static final String PARTICIPANT_HUMAN = "HUMAN";
+    public static final String PARTICIPANT_HUMAN = ActorType.HUMAN.name();
 
     /**
      * Agent 参与类型。Agent 没有独立的加入接口：它在**出价事务内**以该类型补上参与记录
      * （见 {@link BidService#placeBid(String, String, long, String, String)}，D-30）。
      */
-    public static final String PARTICIPANT_AGENT = "AGENT";
+    public static final String PARTICIPANT_AGENT = ActorType.AGENT.name();
 
     private static final int TITLE_MAX = 120;
     private static final int DESCRIPTION_MAX = 2000;
@@ -50,13 +51,15 @@ public class AuctionCommandService {
     private final AuctionRepository auctions;
     private final SettlementService settlement;
     private final AuctionEventPublisher events;
+    private final long finalGameWindowSeconds;
 
     public AuctionCommandService(DataSource dataSource, AuctionRepository auctions, SettlementService settlement,
-            AuctionEventPublisher events) {
+            AuctionEventPublisher events, long finalGameWindowSeconds) {
         this.dataSource = dataSource;
         this.auctions = auctions;
         this.settlement = settlement;
         this.events = events;
+        this.finalGameWindowSeconds = finalGameWindowSeconds;
     }
 
     /** 创建拍品请求。与契约 {@code CreateAuctionRequest} 一致。 */
@@ -118,7 +121,8 @@ public class AuctionCommandService {
         // 开拍是一次状态变更（DRAFT → RUNNING），产生新版本号。
         // 广播完整快照而不是一个“已开始”信号：此刻拍卖的每个字段都变了
         // （状态、截止时间、版本号），订阅者直接拿到可替换的权威状态，不必自己拼。
-        publishQuietly(AuctionEvents.snapshot(AuctionViews.Snapshot.of(started.auction(), started.serverTime())));
+        publishQuietly(AuctionEvents.snapshot(
+                AuctionViews.Snapshot.of(started.auction(), started.serverTime(), finalGameWindowSeconds)));
     }
 
     /** 取消拍卖并释放全部冻结。委托给 {@link SettlementService#cancel}，使取消与到期结算共用同一套资金逻辑。 */

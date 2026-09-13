@@ -8,7 +8,7 @@
 
 | 角色 | 能做 | 不能做 |
 |---|---|---|
-| 管理员 | 创建 / 开始 / 取消拍卖；签发与吊销 Agent Token | 代替服务端改余额、最高价、截止时间或赢家 |
+| 管理员 | 创建 / 开始 / 取消拍卖；签发与吊销 Agent Token；查看全局授权与按场次流水 | 代替服务端改余额、最高价、截止时间或赢家 |
 | 真人竞拍者 | 登录、加入、出价、查询自己的钱包与流水 | 直接改余额或冻结；读取他人私有数据 |
 | 竞拍 Agent | 用受限 Token 读取被授权拍卖的状态、出价、读取结果 | 访问管理接口、数据库、他人钱包；超出授权拍卖范围 |
 | 服务端（Solon） | 唯一裁判：校验、冻结 / 释放 / 扣款、判定赢家、写流水、广播 | —— |
@@ -59,18 +59,20 @@
 
 **已实现并已在真实 MySQL 8.4 上验证：**
 
-- 迁移与连接：Flyway `V1`~`V4`（含两级冻结、`CHECK` 约束、种子数据、Agent Token 表），HikariCP，`Services` 组合根（测试与生产共用同一套接线）。
-- 出价事务 `BidService`：差额冻结、换庄释放、幂等重放、最后 5 秒延时（上限 3 次）、按 `user_id` 升序的固定锁序。
+- 迁移与连接：Flyway `V1`~`V5`（含两级冻结、`CHECK` 约束、种子数据、Agent Token 表、成交主体与流水主体），HikariCP，`Services` 组合根（测试与生产共用同一套接线）。
+- 出价事务 `BidService`：差额冻结、换庄释放、幂等重放、最后 5 秒延时（上限 3 次）、按 `user_id` 升序的固定锁序；**尾段“博弈时间”（默认最后 20 秒，`AUCTION_FINAL_GAME_WINDOW_SECONDS`）在事务内强制拒绝一切 Agent 出价**（`HUMAN_ONLY_PERIOD`，D-32），真人不受限。
 - 结算 `SettlementService` + 扫描器 `SettlementScheduler`：到期结算、无人出价、取消三条路径共用一个终局逻辑，成交记录唯一、可重放。
 - HTTP API（`docs/openapi.yaml` 为契约）：统一响应封套与错误码、JWT 鉴权与 RBAC、幂等键、限流、分页。
 - 实时通道：一次性 WS 票、提交后广播（广播失败不回滚）、`seq` 缺口恢复，事件负载只带确定性匿名标识。
-- 实时通道：一次性 WS 票、提交后广播（广播失败不回滚）、`seq` 缺口恢复，事件负载只带确定性匿名标识。
 - Agent 接入（P5）：独立端口 `:8090` 只暴露 `/api/v1/agent/**`（其余路径 404）、独立凭据（明文只回一次、库里只存 sha256）、
   范围/权限/过期/吊销/限流五项在鉴权阶段生效；Agent 出价**复用同一出价事务**（`BidService.placeBid`，`AGENT` 参与记录同事务插入），不新开写入路径（D-30）。
+- 结算与主体标识：结算把赢家最后一笔出价的 `actor_type` 快照进 `settlements.winner_type`，也写进每条 `ledger_entries.actor_type`；`result.winnerType` 仅赢家本人/管理员可见，另提供管理员按场次流水 `GET /admin/auctions/{id}/ledger`（D-33）。
+- Agent 授权自助化（D-34）：新增 `GET/POST /me/agent-tokens` 与 `POST /me/agent-tokens/{tokenId}/revoke`，请求体**没有** `agentUserId`（归属由服务层 `issueForSelf` 钉死），他人的 Token 吊销返回 404；管理员侧另有 `GET /admin/agent-tokens` 总览；所有列表接口**从不回明文**，状态 `status` 由服务端按 `activeAt` 同口径下发；前端对应“我的 AI 代理”页面。
+- 博弈时间的可见性：快照（HTTP 与 WS 同构）带 `finalGameWindowSeconds`，由服务端下发而不是前端硬编码；前端只用它把“剩余 ≤ 窗口”渲染成提示（真人仍可出价，Agent 已被服务端事务无条件拒绝），不承担任何判定职责。
 - 架构守卫：`ArchUnit` 九条分层/跨上下文/无环规则（§2.4）。
-- 前端：Vue 3 + Pinia 接入真实 HTTP/WS，类型从契约生成，金额/倒计时以服务端为准（P4）。
-- 证据：`mvn clean verify` 共 187 个测试全绿（真库集成 58 + 其余领域/身份/结算/事件/WS/Agent 单元 120 + 架构守卫 9）；
-  关键路径另做变异测试反向确认确实会红（架构 9/9、Agent 14/14、前端 16/16）。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
+- 前端：Vue 3 + Pinia 接入真实 HTTP/WS，类型从契约生成，金额/倒计时以服务端为准（P4）；P6 增补尾段“博弈时间”提示（依据快照下发的 `finalGameWindowSeconds`）、成交主体 `AI/真人` 徽标与管理员按场次流水面板（D-33），并把“智能体接入”整页换成用户向的“我的 AI 代理”（自助授权，D-34）。
+- 证据：`mvn clean verify` 共 206 个测试全绿（真库集成 66 + 其余领域/身份/结算/事件/WS/Agent 单元 131 + 架构守卫 9）；
+  关键路径另做变异测试反向确认确实会红（架构 9/9、Agent 14/14、前端 16/16）；前端另有 63 单测与 3 个真后端联调。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
 
 **尚未实现（如实声明）：** 只能靠 HTTP 复现的部分已全部有脚本——`tools/auction_sim.py` 覆盖并发同/邻价、`requestId`
 重试、拒绝场景、最后五秒狙击、断线快照与结算对账（实测 52/52），`tools/agent_sim.py` 覆盖 Agent 侧（44/44）。
@@ -104,7 +106,7 @@ Vue 3 + Pinia  ──HTTP/JSON──>  Solon API  ──事务/行锁──> MyS
 | `identity` | 用户、角色、密码哈希、状态、会话令牌 | 登录、查询当前用户、管理员 RBAC |
 | `wallet` | 钱包、冻结金额、资金流水 | 冻结、释放、扣款、查询余额与流水 |
 | `auction` | 拍卖、参与者、出价、`seq`、成交结果 | 创建 / 开始 / 取消、加入、出价、结算、查询 |
-| `agentaccess` | Agent Token 摘要、范围、权限、过期、吊销、限流 | 签发、吊销、校验 Agent 请求 |
+| `agentaccess` | Agent Token 摘要、范围、权限、过期、吊销、限流 | 签发（管理员代表他人 / 用户为自己）、吊销、校验 Agent 请求（D-34） |
 
 **刻意不拆成 7 个上下文**：参考方案中的 errand 等上下文来自另一个领域，此处不存在；`settlement` 也不是独立上下文——它与出价共享“拍卖生命周期”这一概念，只是**事务边界**不同（见 §3）。把事务边界误当成上下文边界，会凭空制造跨上下文事务，违背本项目的取舍原则。
 
@@ -216,7 +218,7 @@ com.bidarena
 
 ## 4. 资金模型
 
-金额使用整数积分。`available_balance = total_balance - frozen_amount`，任何更新都保证非负。出价只冻结 `max(0, amount - user_bid_frozen_in_auction)`；成为新领先者时释放上一领先者本场冻结。失败请求不写业务变化；每次冻结、释放、扣款均写 `ledger_entries`，可按 `request_id` 追溯。
+金额使用整数积分。`available_balance = total_balance - frozen_amount`，任何更新都保证非负。出价只冻结 `max(0, amount - user_bid_frozen_in_auction)`；成为新领先者时释放上一领先者本场冻结。失败请求不写业务变化；每次冻结、释放、扣款均写 `ledger_entries`，可按 `request_id` 追溯，并带 `actor_type`（`HUMAN`/`AGENT`）标识这笔资金动作的主体。
 
 ## 5. 实时一致性与恢复
 
@@ -240,6 +242,6 @@ Docker Compose 启动 MySQL、后端和前端，Flyway 在应用启动时自动�
 
 ## 8. 验证重点
 
-单测覆盖规则；真实 MySQL 8（由环境变量指向独立测试库 `bid_arena_test`，每次用例前清表）覆盖并发出价、幂等、结算和重启恢复；架构守卫覆盖分层与循环依赖；Vue 测试覆盖 Pinia 快照、seq 缺口和重连；**Agent 侧边界（端口隔离、凭证互不通用、范围/权限/过期/吊销/限流）由 `AgentApiIntegrationTest` 在真实双端口上断言**；`tools/agent_sim.py` 覆盖 Agent 的读/出价/幂等与全部失败边界（44/44）；`tools/auction_sim.py` 覆盖用户侧全链路——并发同/邻价、该场 `requestId` 重试与冻结不变量、拒绝场景、最后五秒狙击与延时上限、WebSocket 断线快照、到期结算对账（52/52）。真正“20 个不同用户”的并发由真实库上的 `BidConcurrencyTest` 覆盖（公开 API 无注册端点，无法脚本化）。验收以数据库余额、流水、成交记录与公开 API 快照一致为准。
+单测覆盖规则；真实 MySQL 8（由环境变量指向独立测试库 `bid_arena_test`，每次用例前清表）覆盖并发出价、幂等、结算和重启恢复；架构守卫覆盖分层与循环依赖；Vue 测试覆盖 Pinia 快照、seq 缺口和重连；**Agent 侧边界（端口隔离、凭证互不通用、范围/权限/过期/吊销/限流）与 P6 的“尾段博弈时间拒绝 Agent、真人仍可出价、成交主体隐私遮蔽”均由 `AgentApiIntegrationTest` / `HttpApiIntegrationTest` 在真实服务上断言**；`tools/agent_sim.py` 覆盖 Agent 的读/出价/幂等与全部失败边界（44/44）；`tools/auction_sim.py` 覆盖用户侧全链路——并发同/邻价、该场 `requestId` 重试与冻结不变量、拒绝场景、最后五秒狙击与延时上限、WebSocket 断线快照、到期结算对账（52/52）。真正“20 个不同用户”的并发由真实库上的 `BidConcurrencyTest` 覆盖（公开 API 无注册端点，无法脚本化）。验收以数据库余额、流水、成交记录与公开 API 快照一致为准。
 
 反向确认：架构规则 `tools/arch_mutation_check.py` 9/9 KILLED；Agent 凭据与端口隔离 `tools/agent_mutation_check.py` 14/14 KILLED；前端 `tools/mutation_check.py` 16/16 KILLED。“全部测试通过”本身不构成证据，只有“把缺陷注入后确实变红”才算。

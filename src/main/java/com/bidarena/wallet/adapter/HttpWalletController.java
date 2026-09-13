@@ -10,6 +10,7 @@ import com.bidarena.wallet.application.WalletQueryService;
 import org.noear.solon.annotation.Controller;
 import org.noear.solon.annotation.Inject;
 import org.noear.solon.annotation.Mapping;
+import org.noear.solon.annotation.Path;
 import org.noear.solon.core.handle.ContextUtil;
 import org.noear.solon.core.handle.MethodType;
 
@@ -37,5 +38,20 @@ public class HttpWalletController {
     public ApiResponse walletLedger() {
         Principal me = CurrentUser.require(ContextUtil.current());
         return ApiResponse.ok(wallets.ledger(me.userId(), PageParams.parse(ContextUtil.current())), ApiTrace.current());
+    }
+
+    /**
+     * 管理员按场次查看全部流水，用于确认"最后成交的是 AI 还是人"。
+     *
+     * <p>鉴权写在方法首行（{@link CurrentUser#requireAdmin}）：普通用户只能看到
+     * {@code /wallets/me/ledger}（自己的流水），别人的主体类型不暴露。
+     * 路由仍然放在 wallet 适配器里，避免 auction 的适配器跨上下文依赖 wallet 的应用服务
+     * （见 {@code ArchitectureTest}）。
+     */
+    @Mapping(value = "/admin/auctions/{auctionId}/ledger", method = MethodType.GET)
+    public ApiResponse auctionLedger(@Path("auctionId") String auctionId) {
+        CurrentUser.requireAdmin(ContextUtil.current());
+        return ApiResponse.ok(wallets.ledgerByAuction(auctionId, PageParams.parse(ContextUtil.current())),
+                ApiTrace.current());
     }
 }

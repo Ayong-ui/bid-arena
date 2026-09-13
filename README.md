@@ -2,7 +2,7 @@
 
 仓库地址：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开启分支保护）
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V4）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及**竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流）与**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）。全量 **187 个测试**（178 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
+这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V5）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**尾段“博弈时间”强制拒绝 Agent 出价**、**成交主体（AI / 真人）可追溯且仅对赢家与管理员可见**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及**竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流，并支持用户在“我的 AI 代理”页**自助签发自己名下的授权**）与**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）和**一份服务器压测脚本**（`tools/stress_test.py`，尾段博弈时间清场 + 持续吞吐）。全量 **206 个测试**（197 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
@@ -94,9 +94,14 @@ docker compose up -d mysql backend
 | POST | `/api/v1/admin/auctions` | 管理员：创建拍卖（201） |
 | POST | `/api/v1/admin/auctions/{id}/start` | 管理员：开始拍卖 |
 | POST | `/api/v1/admin/auctions/{id}/cancel` | 管理员：取消并释放全部冻结 |
+| GET | `/api/v1/admin/auctions/{id}/ledger` | 管理员：该场全部资金流水（含每条的主体 `actorType`：HUMAN/AGENT） |
 | POST | `/api/v1/auth/ws-tickets` | 领一张一次性 WebSocket 入场券（60 秒有效，见下节） |
 | POST | `/api/v1/admin/agent-tokens` | 管理员：为某个用户签发 Agent Token（明文**只在本次响应**出现） |
 | POST | `/api/v1/admin/agent-tokens/{tokenId}/revoke` | 管理员：吊销 Token（幂等；不存在则 404） |
+| GET | `/api/v1/admin/agent-tokens` | 管理员：全部 Agent 授权总览（不含明文） |
+| GET | `/api/v1/me/agent-tokens` | 用户：**自己名下**的 Agent 授权列表（含派生 `status`，不含明文） |
+| POST | `/api/v1/me/agent-tokens` | 用户：为自己签发一份授权（body **没有** `agentUserId`，归属由服务端钉死） |
+| POST | `/api/v1/me/agent-tokens/{tokenId}/revoke` | 用户：吊销自己的 Token（不是自己的一律 404，不泄露存在性） |
 | GET | `/api/v1/agent/auctions/{id}` | Agent（`:8090`）：拍卖快照（需 `auction:read` 且在该 Token 的拍卖范围内） |
 | POST | `/api/v1/agent/auctions/{id}/bids` | Agent（`:8090`）：出价（需 `auction:bid`；body 含 `requestId` 与 `amount`） |
 | GET | `/api/v1/agent/auctions/{id}/result` | Agent（`:8090`）：成交结果（未结算时 404） |
@@ -132,15 +137,21 @@ curl -s -X POST http://localhost:8080/api/v1/auth/ws-tickets \
 为什么分开：Agent 需要长时间无人看管地运行，把用户 JWT 交给它等于把整张用户权限表交出去（D-9）。
 评审可直接看 [AGENT_TOOL_SPEC.md](AGENT_TOOL_SPEC.md)（操作步骤、提示词模板、失败边界）。
 
-三步上手（管理员签发 → Agent 使用 → 随时吊销）：
+三步上手（授权 → Agent 使用 → 随时吊销）。**普通用户不需要找管理员**：登录后在“我的 AI 代理”页点“新建授权”即可，等价于下面的第 1 步（`POST /api/v1/me/agent-tokens`，不传 `agentUserId`）。
 
 ```bash
-# 1. 管理员签发：把明文交出去一次（仅本次响应有；库里只存 sha256 摘要）
+# 1a. 用户自助签发（JWT 即登录令牌；归属就是调用者，请求体里没有 agentUserId）
+curl -s -X POST http://localhost:8080/api/v1/me/agent-tokens \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"sniping-bot","scopes":["auction:read","auction:bid"],\
+       "auctionIds":["1"],"expiresAt":"2030-01-01T00:00:00Z","rateLimitPerMinute":60}'
+# → data.token 即 Agent Token（前缀类似 agt_...；只在这里出现一次）
+
+# 1b. 或由管理员代为签发（多一个 agentUserId）
 curl -s -X POST http://localhost:8080/api/v1/admin/agent-tokens \
   -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"name":"sniping-bot","agentUserId":2,"scopes":["auction:read","auction:bid"],\
        "auctionIds":["1"],"expiresAt":"2030-01-01T00:00:00Z","rateLimitPerMinute":60}'
-# → data.token 即 Agent Token（前缀类似 agt_...；只在这里出现一次）
 
 # 2. Agent 读快照与出价（注意端口是 8090，不是 8080）
 curl -s http://localhost:8090/api/v1/agent/auctions/1 \
@@ -149,10 +160,14 @@ curl -s -X POST http://localhost:8090/api/v1/agent/auctions/1/bids \
   -H "Authorization: Bearer $AGENT_TOKEN" -H 'Content-Type: application/json' \
   -d '{"requestId":"bot-0001","amount":1200}'
 
-# 3. 吊销（幂等；不存在返回 404）
-curl -s -X POST http://localhost:8080/api/v1/admin/agent-tokens/1/revoke \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+# 3. 吊销（幂等；不存在或不是自己的均为 404）
+curl -s -X POST http://localhost:8080/api/v1/me/agent-tokens/1/revoke \
+  -H "Authorization: Bearer $TOKEN"
+# 管理员版同理：POST /api/v1/admin/agent-tokens/1/revoke
 ```
+
+> 库里只存 sha256 摘要，明文**只在签发响应出现一次**；列表接口（含管理员总览）永远不会回明文。
+> 用户只能看到自己的授权，管理员可在前端“我的 AI 代理”页底部看到全局总览。
 
 几个容易踩的点（都有测试与决策记录）：
 
@@ -162,6 +177,7 @@ curl -s -X POST http://localhost:8080/api/v1/admin/agent-tokens/1/revoke \
 - **同一个出价事务**：Agent 出价不是第二条写入路径，它调的就是用户出价用的 `BidService.placeBid`，
   与真人共享 `bid_requests` 幂等表；首次出价会在**同一个事务**里自动补参与记录（D-30）。
 - **端口是真隔离**：`:8090` 上只有 `/api/v1/agent/**`，其它路径（包括 `/api/v1/health`）一律 404 封套（DBG-22）。
+- **尾段“博弈时间”禁止 Agent**：截止前最后 20 秒（`AUCTION_FINAL_GAME_WINDOW_SECONDS`）内，一切 Agent 出价被拒（**403 `HUMAN_ONLY_PERIOD`**），真人仍可出价；判定在出价事务内用数据库时间完成，进入即清场到结算（D-32，有意收紧原文规则 6）。窗口长度通过快照 `finalGameWindowSeconds`（HTTP 与 WS 同构）下发给前端，前端只用它渲染“博弈时间”提示，**不承担判定职责**。
 - **吊销/过期立即失效**；超频返回 **429 `RATE_LIMITED`**。
 
 一键实跑（扮演管理员与两个竞拍 Agent，逐条对比“期望 vs 实际”，任一条不符立即非零退出）：
@@ -196,12 +212,38 @@ python tools/auction_sim.py --keep     # 结束时不取消拍卖，便于在前
 - **幂等键含 `user_id`**（D-31）：同一用户同 `requestId` 并发 20 次 = 1 写 + 19 重放且只冻结一次；
   另一用户复用同一串**不算重放**；
 - **最后五秒狙击**：出价触发 +10 秒延时，`MAX_EXTENSIONS=3` 达上限后**不再延时但出价照常接受**；
+- **尾段“博弈时间”**（P6，D-32）：截止前最后 20 秒（`AUCTION_FINAL_GAME_WINDOW_SECONDS`）拒绝一切 Agent 出价（`HUMAN_ONLY_PERIOD`），真人不受限；模拟脚本用真人账号，因此不受影响，Agent 侧边界由 `BidServiceTest` 与 `AgentApiIntegrationTest` 覆盖；
 - **断线快照**：连上第一帧是权威快照，提交后收到 `BID_ACCEPTED`（领先者为匿名值），换新票重连能对齐到最新价；
 - **结算对账**：`FINISHED`/`TIMEOUT` 后，钱包“总余额减少 = 冻结释放 = 成交价”。
 
 **局限（如实声明）**：公开 API 没有注册端点，种子只有 3 个演示账号，因此“20 个**不同用户**并发”
 无法只靠 HTTP 复现；脚本用“20 条并发出价请求（跨可用账号 + 唯一 `requestId`）”等价模拟并发压力，
 真正 20 个不同 `user_id` 的并发由真实库上的 `BidConcurrencyTest` 覆盖。
+
+## 压测脚本（尾段清场 / 持续吞吐）
+
+`tools/auction_sim.py` 关心“流程对不对”、`tools/agent_sim.py` 关心“Agent 边界对不对”，
+两者并发都很小。真正只在并发下才成立的两件事由 `tools/stress_test.py` 覆盖：
+
+```bash
+# 需要后端已在 8080/8090/18080 上运行（可用开发库）
+python tools/stress_test.py                              # 博弈时间清场，50 并发（默认）
+python tools/stress_test.py -c 300                       # 拉高并发再验一次
+python tools/stress_test.py --mode throughput -c 50 --seconds 10
+```
+
+- `--mode game-window`（默认）：等剩余时间进入尾段窗口后，把 `--concurrency` 条 Agent 出价**同时**
+  打进 `:8090`，断言 **100% 403 `HUMAN_ONLY_PERIOD`**（把测试 Token 限流拉满到 6000，确保看到的是
+  “窗口拒了每一条”而不是“限流先拒了一半”）；紧接着一条真人出价必须被接受，并核对出价记录与
+  管理员流水里**没有留下任何 Agent 痕迹**。
+- `--mode throughput`：在 `--seconds` 秒内用 `--concurrency` 个 worker 做读写混合（3:1），
+  打印 QPS、P50/P95/P99、状态码/错误码分布；出现 5xx 或连接失败即失败。
+
+实测（本机开发库，单场拍卖）：博弈时间 `-c 100` → **100/100 全拒（403）**、11/11 通过；
+吞吐 `-c 50 --seconds 10` → **约 410 QPS，P50≈109ms / P95≈243ms / P99≈315ms，0 个 5xx**。
+409 全部是 `BID_TOO_LOW`（并发抢价必然结果），不是错误。
+
+同样只用标准库；每次运行自建拍卖与 Token，结束后默认取消（`--keep` 可保留）。
 
 ## 设计与决策
 
@@ -224,6 +266,7 @@ python tools/auction_sim.py --keep     # 结束时不取消拍卖，便于在前
 - **模拟脚本已覆盖两侧**。`tools/agent_sim.py` 跑通 Agent 的「签发 → 读 → 出价 → 幂等重放 →
   越权/过期/吊销/限流边界 → 结果」（**44/44**）；`tools/auction_sim.py` 跑通用户侧全链路——
   并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结算对账（**52/52**）。
+  并发清场与吞吐另由 `tools/stress_test.py` 覆盖（博弈时间 `-c 100` 全拒、吞吐约 410 QPS 无 5xx）。
   唯一不能只靠 HTTP 复现的是“20 个**不同用户**并发”：公开 API 没有注册端点、种子只有 3 个演示账号，
   这部分由真实库上的 `BidConcurrencyTest` 覆盖（详见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md) E1）。
 - **Compose 的 `backend` 服务尚未在本机构建过镜像**。`Dockerfile` 与 `docker-compose.yml` 已就位，
@@ -266,7 +309,7 @@ npm run dev        # http://localhost:5173/
 
 ```powershell
 cd frontend
-npm test           # 56 个单测（api client / realtime feed / store / anonymous）
+npm test           # 63 个单测（api client / realtime feed / store / anonymous）
 npm run typecheck  # vue-tsc
 npm run build      # vite build
 ```

@@ -4,6 +4,8 @@ import com.bidarena.agentaccess.application.AgentTokenService;
 import com.bidarena.agentaccess.domain.AgentToken;
 import com.bidarena.api.ApiTrace;
 import com.bidarena.api.CurrentUser;
+import com.bidarena.api.PageParams;
+import com.bidarena.identity.domain.Principal;
 import com.bidarena.shared.ApiResponse;
 import com.bidarena.shared.ApiTime;
 import com.bidarena.shared.BizException;
@@ -54,6 +56,18 @@ public class HttpAgentTokenController {
             String expiresAt,
             Integer rateLimitPerMinute) {}
 
+    /**
+     * 自助签发请求：<b>没有 agentUserId</b>。
+     *
+     * <p>不是省略，而是刻意的：归属恒为当前登录用户，因此"替别人签发"在契约层面就无法表达。
+     */
+    public record CreateMyAgentTokenRequest(
+            String name,
+            List<String> auctionIds,
+            List<String> scopes,
+            String expiresAt,
+            Integer rateLimitPerMinute) {}
+
     /** 签发 / 吊销的响应。{@code token} 只在创建时为非 null。 */
     public record AgentTokenView(String token, String tokenId, String expiresAt) {}
 
@@ -80,6 +94,56 @@ public class HttpAgentTokenController {
         Context ctx = ContextUtil.current();
         CurrentUser.requireAdmin(ctx);
         AgentToken token = tokens.revoke(tokenId);
+        return ApiResponse.ok(
+                new AgentTokenView(null, token.tokenId(), ApiTime.format(token.expiresAt())),
+                ApiTrace.current());
+    }
+
+    /**
+     * 管理员总览全部已签发的 Token。
+     *
+     * <p>存在的理由是审计与排障：没有列表，运营就无法回答"现在还有哪些 Agent 能替我出价"。
+     * 响应<b>不含明文</b>——明文在签发后就不可取回（见 {@link AgentTokenService} 的类注释）。
+     */
+    @Mapping(value = "/admin/agent-tokens", method = MethodType.GET)
+    public ApiResponse listAll() {
+        CurrentUser.requireAdmin(ContextUtil.current());
+        return ApiResponse.ok(tokens.listAll(PageParams.parse(ContextUtil.current())), ApiTrace.current());
+    }
+
+    // ---------------------------------------------------------- 自助授权（本人）
+
+    /** 我授权的 Agent Token 列表；只会返回属于当前用户的那些。 */
+    @Mapping(value = "/me/agent-tokens", method = MethodType.GET)
+    public ApiResponse myTokens() {
+        Principal me = CurrentUser.require(ContextUtil.current());
+        return ApiResponse.ok(
+                tokens.listForAgentUser(me.userId(), PageParams.parse(ContextUtil.current())),
+                ApiTrace.current());
+    }
+
+    /** 为自己签发一枚 Token；归属恒为当前用户。 */
+    @Mapping(value = "/me/agent-tokens", method = MethodType.POST)
+    public ApiResponse createMine(@Body CreateMyAgentTokenRequest request) {
+        Context ctx = ContextUtil.current();
+        Principal me = CurrentUser.require(ctx);
+        if (request == null) {
+            throw new BizException(ErrorCode.VALIDATION_FAILED, "请求体不能为空");
+        }
+        AgentTokenService.Issued issued = tokens.issueForSelf(me.userId(), new AgentTokenService.IssueCommand(
+                request.name(), me.userId(), request.auctionIds(), request.scopes(),
+                parseExpiresAt(request.expiresAt()), request.rateLimitPerMinute()));
+        ctx.status(201);
+        return ApiResponse.ok(
+                new AgentTokenView(issued.token(), issued.tokenId(), ApiTime.format(issued.expiresAt())),
+                ApiTrace.current());
+    }
+
+    /** 吊销自己的 Token；不属于本人时 404。 */
+    @Mapping(value = "/me/agent-tokens/{tokenId}/revoke", method = MethodType.POST)
+    public ApiResponse revokeMine(@Path("tokenId") String tokenId) {
+        Principal me = CurrentUser.require(ContextUtil.current());
+        AgentToken token = tokens.revokeForAgentUser(tokenId, me.userId());
         return ApiResponse.ok(
                 new AgentTokenView(null, token.tokenId(), ApiTime.format(token.expiresAt())),
                 ApiTrace.current());

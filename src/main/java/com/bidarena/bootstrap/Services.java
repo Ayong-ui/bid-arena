@@ -70,8 +70,13 @@ public final class Services {
     private static final long WS_TICKET_TTL_SECONDS_DEFAULT = 60L;
     private static final int WS_TICKET_CAPACITY_DEFAULT = 10_000;
 
+    /**
+     * 尾段"博弈时间"长度（秒）。默认值住在 {@link BidService}，这里只是接线用的兜底。
+     */
+    private static final long FINAL_GAME_WINDOW_SECONDS_DEFAULT = BidService.FINAL_GAME_WINDOW_SECONDS_DEFAULT;
+
     private Services(DataSource ds, String jwtSecret, long jwtTtlSeconds, long wsTicketTtlSeconds,
-            int wsTicketCapacity) {
+            int wsTicketCapacity, long finalGameWindowSeconds) {
         // —— 出站适配器（仓储）——
         this.auctions = new AuctionRepository(ds);
         this.wallets = new WalletRepository(ds);
@@ -91,18 +96,18 @@ public final class Services {
                 java.time.Duration.ofSeconds(wsTicketTtlSeconds), wsTicketCapacity);
 
         // —— 应用服务（事务边界）——
-        this.bids = new BidService(ds, auctions, wallets, broadcaster);
+        this.bids = new BidService(ds, auctions, wallets, broadcaster, finalGameWindowSeconds);
         this.settlement = new SettlementService(ds, auctions, wallets, settlements, broadcaster);
         this.identity = new IdentityService(users, new BCryptPasswordHasher(), tokens);
 
         // —— 只读查询 ——
         this.walletQueries = new WalletQueryService(wallets);
-        this.auctionQueries = new AuctionQueryService(ds, auctions, settlements);
+        this.auctionQueries = new AuctionQueryService(ds, auctions, settlements, finalGameWindowSeconds);
 
         // —— 写用例 ——
         // AuctionCommandService 复用同一个 SettlementService 实例，而不是自己 new 一个：
         // "取消"与"到期结算"必须是同一套资金逻辑，两个实例会让"改了其中一个"变成可能的缺陷。
-        this.auctionCommands = new AuctionCommandService(ds, auctions, settlement, broadcaster);
+        this.auctionCommands = new AuctionCommandService(ds, auctions, settlement, broadcaster, finalGameWindowSeconds);
 
         // 入站适配器放在最后：它依赖查询服务（握手要先读快照），而路由注册在 Application。
         this.auctionSocket = new AuctionSocketHandler(wsTickets, auctionQueries, broadcaster);
@@ -120,7 +125,8 @@ public final class Services {
     public static Services wire(DataSource ds) {
         return new Services(ds, Env.required("JWT_SECRET"), Env.longOr("JWT_TTL_SECONDS", 8 * 3600L),
                 Env.longOr("WS_TICKET_TTL_SECONDS", WS_TICKET_TTL_SECONDS_DEFAULT),
-                Env.intOr("WS_TICKET_CAPACITY", WS_TICKET_CAPACITY_DEFAULT));
+                Env.intOr("WS_TICKET_CAPACITY", WS_TICKET_CAPACITY_DEFAULT),
+                Env.longOr("AUCTION_FINAL_GAME_WINDOW_SECONDS", FINAL_GAME_WINDOW_SECONDS_DEFAULT));
     }
 
     /**
@@ -131,6 +137,6 @@ public final class Services {
      */
     public static Services wire(DataSource ds, String jwtSecret, long jwtTtlSeconds) {
         return new Services(ds, jwtSecret, jwtTtlSeconds, WS_TICKET_TTL_SECONDS_DEFAULT,
-                WS_TICKET_CAPACITY_DEFAULT);
+                WS_TICKET_CAPACITY_DEFAULT, FINAL_GAME_WINDOW_SECONDS_DEFAULT);
     }
 }

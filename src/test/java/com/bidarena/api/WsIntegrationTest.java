@@ -191,6 +191,8 @@ class WsIntegrationTest extends ApiTestHarness {
         assertEquals(auctionId, snapshot.path("payload").path("id").asText());
         assertEquals("RUNNING", snapshot.path("payload").path("status").asText());
         assertEquals(1, snapshot.path("payload").path("participantCount").asInt());
+        // 实时快照也要带上博弈时间窗口：前端把 WS 快照当作权威状态，缺字段会让提示无据可依。
+        assertEquals(20, snapshot.path("payload").path("finalGameWindowSeconds").asInt());
         assertEquals(snapshot.path("seq").asLong(), snapshot.path("payload").path("seq").asLong(),
                 "payload 里的 seq 与外层信封必须一致");
         assertEquals(snapshot.path("seq").asLong(), state.path("payload").path("snapshotSeq").asLong());

@@ -74,7 +74,7 @@ MySQL 是唯一事实来源；**队列不是裁判**，不能把“最大金额�
 
 | 事件 | 广播范围 | payload 关键字段 |
 |---|---|---|
-| `AUCTION_SNAPSHOT` | 参与者 | `id`/`title`/`status`/`startPrice`/`minIncrement`/`currentPrice`/`leader`/`endsAt`/`extensionCount`/`participantCount`/`seq`/`serverTime`（与 HTTP `AuctionSnapshot` 同构，缺 `description`） |
+| `AUCTION_SNAPSHOT` | 参与者 | `id`/`title`/`status`/`startPrice`/`minIncrement`/`currentPrice`/`leader`/`endsAt`/`extensionCount`/`participantCount`/`seq`/`finalGameWindowSeconds`/`serverTime`（与 HTTP `AuctionSnapshot` 同构，缺 `description`；`finalGameWindowSeconds` 是尾段“博弈时间”窗口，前端只用于提示，见 D-32） |
 | `PARTICIPANT_JOINED` | 参与者 | `participant`（匿名标识）、`participantCount` |
 | `BID_ACCEPTED` | 参与者 | `price`、`leader`（匿名）、`endsAt`、`extensionCount` |
 | `BID_REJECTED` | **仅请求者** | `code`、`reason`、`minimum`、`currentPrice`、`amount` |

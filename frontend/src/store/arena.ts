@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
 import { anonymousId, createAnonIdCache } from '../anonymous'
 import { ApiError, type ApiOk } from '../api/client'
-import type { AuctionResult, AuctionSnapshot, AuctionStatus, Bid, CreateAuctionRequest, LedgerEntry, LoginRequest, User, Wallet } from '../api/types'
+import type { AgentTokenSummary, AuctionResult, AuctionSnapshot, AuctionStatus, Bid, CreateAuctionRequest, CreateMyAgentTokenRequest, LedgerEntry, LoginRequest, User, Wallet } from '../api/types'
 import { createServerClock, formatRemaining } from '../realtime/clock'
 import { numberField, stringField, type AuctionEventEnvelope } from '../realtime/events'
 import { AuctionFeed, type SnapshotPayload } from '../realtime/feed'
@@ -27,6 +27,18 @@ export const useArenaStore = defineStore('arena', () => {
   const wallet = ref<Wallet | null>(null)
   const ledger = ref<LedgerEntry[]>([])
   const settlement = ref<AuctionResult | null>(null)
+  const adminLedger = ref<LedgerEntry[]>([])
+  const adminLedgerAuctionId = ref<string | null>(null)
+  const adminLedgerLoading = ref(false)
+  /**
+   * AI 授权（D-34）。`issuedAgentToken` 是唯一会出现明文的地方，而且只存在到用户
+   * 主动关掉那张卡片：服务端不会也不能再给出第二次。
+   */
+  const myAgentTokens = ref<AgentTokenSummary[]>([])
+  const myAgentTokensLoading = ref(false)
+  const allAgentTokens = ref<AgentTokenSummary[]>([])
+  const allAgentTokensLoading = ref(false)
+  const issuedAgentToken = ref<{ token: string; tokenId: string; name: string; expiresAt: string } | null>(null)
   const joinedIds = ref<string[]>([])
   const anonById = shallowRef<Record<string, string>>({})
 
@@ -60,6 +72,25 @@ export const useArenaStore = defineStore('arena', () => {
     return Number.isNaN(end) ? null : end - at
   })
   const remainingLabel = computed(() => (current.value?.endsAt ? formatRemaining(remainingMs.value) : '--:--'))
+  /**
+   * 是否处于尾段“博弈时间”（截止前 `finalGameWindowSeconds` 秒内）。
+   *
+   * <p>纯展示：服务端在出价事务里已经无条件拒掉 Agent，这里既不能、也不该拦住任何人的按钮——
+   * 真人在这段时间**仍然可以**出价，提示的作用只是告诉真人“Agent 已退场，现在是你和其他人的博弈”。
+   * 时间基准用服务端 `endsAt` + 校准过的时钟，与倒计时同源，因此不会出现“倒计时还在走但提示先消失”。
+   */
+  const inFinalGameWindow = computed(() => {
+    const remaining = remainingMs.value
+    const window = current.value?.finalGameWindowSeconds
+    return current.value?.status === 'RUNNING' && remaining !== null && window !== undefined
+        && remaining > 0 && remaining <= window * 1000
+  })
+  /**
+   * 博弈时间窗口（秒）。**只从服务端快照读**，前端不写死（D-27）：
+   * 当前打开的场次优先，否则取列表里任一场——所有场次下发的是同一个值。
+   */
+  const finalGameWindowSeconds = computed(() =>
+    current.value?.finalGameWindowSeconds ?? auctions.value[0]?.finalGameWindowSeconds)
   const canBid = computed(() => current.value?.status === 'RUNNING' && joined.value && !bidInFlight.value && loggedIn.value)
   /** 倒计时读秒用的文案：连接状态直接决定用户该不该相信这个数字。 */
   const feedLabel = computed(() => {
@@ -125,6 +156,10 @@ export const useArenaStore = defineStore('arena', () => {
     anonCache = createAnonIdCache()
     anonById.value = {}
     pendingBid = null
+    // 明文 Token 绝不能跨会话留在内存里：换个人登录时它依然是一枚可用的凭证。
+    issuedAgentToken.value = null
+    myAgentTokens.value = []
+    allAgentTokens.value = []
   }
 
   /** 令牌过期：清会话并说明原因（不静默跳走，用户得知道为什么）。 */
@@ -167,6 +202,96 @@ export const useArenaStore = defineStore('arena', () => {
     } catch (error) {
       if (isUnauthenticated(error)) return handleUnauthenticated()
       setNotice('error', describe(error))
+    }
+  }
+
+  /**
+   * 运营台：按场次拉全量流水（含每条的主体标识）。这是唯一能看到“别人流水”的读路径，
+   * 服务端强制 ADMIN；普通用户调用会拿到 403（契约见 DECISIONS D-33）。
+   */
+  async function loadAuctionLedger(auctionId: string): Promise<void> {
+    adminLedgerLoading.value = true
+    try {
+      const page = await deps.api.auctionLedger(auctionId, 1, 50)
+      adminLedger.value = page.data.items
+      adminLedgerAuctionId.value = auctionId
+    } catch (error) {
+      adminLedger.value = []
+      adminLedgerAuctionId.value = auctionId
+      if (isUnauthenticated(error)) return handleUnauthenticated()
+      setNotice('error', describe(error))
+    } finally {
+      adminLedgerLoading.value = false
+    }
+  }
+
+  // ── AI 授权（D-34） ─────────────────────────────────────────────────────
+
+  /** 我授权的 AI 凭证。只返回自己的，明文永远不在列表里。 */
+  async function loadMyAgentTokens(): Promise<void> {
+    myAgentTokensLoading.value = true
+    try {
+      myAgentTokens.value = (await deps.api.myAgentTokens(1, 50)).data.items
+    } catch (error) {
+      if (isUnauthenticated(error)) return handleUnauthenticated()
+      setNotice('error', describe(error))
+    } finally {
+      myAgentTokensLoading.value = false
+    }
+  }
+
+  /**
+   * 为自己签发一枚。服务端把归属钉死为当前用户（请求体里根本没有 agentUserId），
+   * 因此前端也不需要、更不应该传任何“代表谁”的字段。
+   */
+  async function issueMyAgentToken(input: CreateMyAgentTokenRequest): Promise<boolean> {
+    try {
+      const ok = await deps.api.issueMyAgentToken(input)
+      issuedAgentToken.value = {
+        token: ok.data.token ?? '',
+        tokenId: ok.data.tokenId ?? '',
+        name: input.name ?? '未命名授权',
+        expiresAt: ok.data.expiresAt ?? '',
+      }
+      await loadMyAgentTokens()
+      setNotice('info', '授权已创建，请立刻复制这串 Token（关闭后不再显示）')
+      return true
+    } catch (error) {
+      if (isUnauthenticated(error)) {
+        handleUnauthenticated()
+        return false
+      }
+      setNotice('error', describe(error))
+      return false
+    }
+  }
+
+  async function revokeMyAgentToken(tokenId: string): Promise<void> {
+    try {
+      await deps.api.revokeMyAgentToken(tokenId)
+      if (issuedAgentToken.value?.tokenId === tokenId) issuedAgentToken.value = null
+      await loadMyAgentTokens()
+      setNotice('info', '授权已吊销，持这串 Token 的程序会立即失效')
+    } catch (error) {
+      if (isUnauthenticated(error)) return handleUnauthenticated()
+      setNotice('error', describe(error))
+    }
+  }
+
+  function dismissIssuedAgentToken(): void {
+    issuedAgentToken.value = null
+  }
+
+  /** 运营总览：全部已签发的凭证（仅 ADMIN）。 */
+  async function loadAllAgentTokens(): Promise<void> {
+    allAgentTokensLoading.value = true
+    try {
+      allAgentTokens.value = (await deps.api.agentTokens(1, 50)).data.items
+    } catch (error) {
+      if (isUnauthenticated(error)) return handleUnauthenticated()
+      setNotice('error', describe(error))
+    } finally {
+      allAgentTokensLoading.value = false
     }
   }
 
@@ -474,12 +599,22 @@ export const useArenaStore = defineStore('arena', () => {
     wallet,
     ledger,
     settlement,
+    adminLedger,
+    adminLedgerAuctionId,
+    adminLedgerLoading,
+    myAgentTokens,
+    myAgentTokensLoading,
+    allAgentTokens,
+    allAgentTokensLoading,
+    issuedAgentToken,
     joined,
     joinedIds,
     isMyLead,
     nextBid,
     remainingMs,
     remainingLabel,
+    inFinalGameWindow,
+    finalGameWindowSeconds,
     canBid,
     serverNow,
     // 实时
@@ -503,6 +638,12 @@ export const useArenaStore = defineStore('arena', () => {
     cancelAuction,
     refreshAuctions,
     refreshWallet,
+    loadAuctionLedger,
+    loadMyAgentTokens,
+    issueMyAgentToken,
+    revokeMyAgentToken,
+    dismissIssuedAgentToken,
+    loadAllAgentTokens,
     clearNotice,
     setNotice,
     tick,

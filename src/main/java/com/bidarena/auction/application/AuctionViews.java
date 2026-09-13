@@ -33,9 +33,10 @@ public final class AuctionViews {
             int extensionCount,
             int participantCount,
             long seq,
+            long finalGameWindowSeconds,
             String serverTime) {
 
-        public static Snapshot of(AuctionRow row, Instant serverTime) {
+        public static Snapshot of(AuctionRow row, Instant serverTime, long finalGameWindowSeconds) {
             return new Snapshot(
                     row.id(),
                     row.title(),
@@ -49,6 +50,7 @@ public final class AuctionViews {
                     row.extensionCount(),
                     row.participantCount(),
                     row.seq(),
+                    finalGameWindowSeconds,
                     ApiTime.format(serverTime));
         }
     }
@@ -69,7 +71,15 @@ public final class AuctionViews {
         }
     }
 
-    /** {@code AuctionResult}。{@code status} 取拍卖的当前状态（FINISHED 或 CANCELLED）。 */
+    /**
+     * {@code AuctionResult}。{@code status} 取拍卖的当前状态（FINISHED 或 CANCELLED）。
+     *
+     * <p>{@code winnerType}（{@code HUMAN}/{@code AGENT}）标识这笔成交由谁完成。
+     * 它属于隐私：应用层返回真值，**控制器**只在请求者是赢家本人或管理员时保留，
+     * 其余一律置 {@code null}（见 HttpAuctionController / HttpAgentController）。
+     * 需要按"谁出的价"做业务判断的地方不要读这个字段，它可能被有意抹掉。
+     */
     public record Result(
-            String auctionId, String status, String winner, long finalPrice, String reason, String settledAt) {}
+            String auctionId, String status, String winner, String winnerType, long finalPrice, String reason,
+            String settledAt) {}
 }

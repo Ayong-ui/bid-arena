@@ -148,6 +148,7 @@ function snapshotPayload(seq: number, overrides: Partial<SnapshotPayload> = {}):
     extensionCount: 0,
     participantCount: 1,
     seq,
+    finalGameWindowSeconds: 20,
     serverTime: '2026-01-01T00:00:00.000Z',
     ...overrides,
   }

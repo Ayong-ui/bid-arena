@@ -1,6 +1,7 @@
 package com.bidarena.auction.persistence;
 
 import com.bidarena.auction.domain.AuctionStatus;
+import com.bidarena.shared.ActorType;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.Db;
 import com.bidarena.shared.ErrorCode;
@@ -151,11 +152,26 @@ public class AuctionRepository {
     }
 
     public void insertBid(Connection conn, String auctionId, String userId, long amount, String requestId,
-            long serverSeq, Instant serverTime) throws SQLException {
+            long serverSeq, Instant serverTime, ActorType actorType) throws SQLException {
         Db.update(conn,
-                "INSERT INTO bids (auction_id, user_id, amount, request_id, server_seq, server_time) "
-                        + "VALUES (?, ?, ?, ?, ?, ?)",
-                auctionId, userId, amount, requestId, serverSeq, Db.ts(serverTime));
+                "INSERT INTO bids (auction_id, user_id, actor_type, amount, request_id, server_seq, server_time) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                auctionId, userId, actorType.name(), amount, requestId, serverSeq, Db.ts(serverTime));
+    }
+
+    /**
+     * 某用户在某场最后一笔出价的主体类型。
+     *
+     * <p>结算时用：赢家的 {@code winner_type} 就是这笔的 {@code actor_type}。
+     * 取"最后一笔"而不是参与记录的类型，因为主体是跟着出价走的（见 {@link ActorType}）。
+     * 没有出价记录时返回 {@code null}，由调用方决定是否允许（赢家必有出价）。
+     */
+    public ActorType latestBidActorType(Connection conn, String auctionId, String userId) throws SQLException {
+        String raw = Db.queryOne(conn,
+                "SELECT actor_type FROM bids WHERE auction_id = ? AND user_id = ? "
+                        + "ORDER BY server_seq DESC LIMIT 1",
+                rs -> rs.getString(1), auctionId, userId);
+        return raw == null ? null : ActorType.parse(raw);
     }
 
     /** 读幂等记录并加锁；返回 null 表示该 requestId 从未出现过。 */

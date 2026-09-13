@@ -27,6 +27,7 @@ tags:
   - name: Wallet
   - name: Admin
   - name: Agent
+  - name: AgentTokens
 paths:
   /auth/login:
     post:
@@ -196,7 +197,38 @@ paths:
         '200': {$ref: '#/components/responses/EnvelopeAuction'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
+  /admin/auctions/{auctionId}/ledger:
+    get:
+      tags: [Admin]
+      security: [{bearerAuth: []}]
+      operationId: auctionLedger
+      description: |
+        管理员按场次查看**全部**资金流水，用于确认“最后成交的是 AI 还是人”。
+        每条流水的 `actorType`（HUMAN/AGENT）标识该笔资金动作的主体。
+        普通用户无权访问此路由，只能通过 `/wallets/me/ledger` 看到自己的流水。
+      parameters:
+        - {$ref: '#/components/parameters/AuctionId'}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeLedgerPage'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /admin/agent-tokens:
+    get:
+      tags: [Admin]
+      security: [{bearerAuth: []}]
+      operationId: listAgentTokens
+      description: |
+        管理员总览全部已签发的 Agent Token（**不含明文**），用于审计“现在还有哪些 Agent
+        能替谁出价”。明文只在签发响应里出现一次，之后无法取回。
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAgentTokenPage'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
     post:
       tags: [Admin]
       security: [{bearerAuth: []}]
@@ -227,6 +259,55 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/EnvelopeAgentToken'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /me/agent-tokens:
+    get:
+      tags: [AgentTokens]
+      security: [{bearerAuth: []}]
+      operationId: listMyAgentTokens
+      description: |
+        本人已授权的竞拍 Agent Token 列表（新→旧）。**只返回属于自己的授权，不含明文**：
+        明文只在签发响应的那一刻出现，之后无法取回。`status` 由服务端按当前时刻判定
+        （ACTIVE / EXPIRED / REVOKED），客户端不要自行比时间（同 D-27 的口径）。
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAgentTokenPage'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [AgentTokens]
+      security: [{bearerAuth: []}]
+      operationId: createMyAgentToken
+      description: |
+        为自己签发一枚竞拍 Agent Token（自助授权，见 DECISIONS D-34）。
+        归属恒为当前登录用户——请求体里没有 `agentUserId`，因此“替别人签发”在契约层面无法表达。
+        `auctionIds` 省略即“默认拒绍”（D-29）；明文只在本次响应里出现一次。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateMyAgentTokenRequest'}
+      responses:
+        '201': {$ref: '#/components/responses/EnvelopeAgentToken'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /me/agent-tokens/{tokenId}/revoke:
+    post:
+      tags: [AgentTokens]
+      security: [{bearerAuth: []}]
+      operationId: revokeMyAgentToken
+      description: |
+        吊销自己的 Agent Token。**幂等**（重复吊销仍返回 200）。
+        不属于本人的 tokenId 返回 404，与“不存在”不可区分，避免拿吊销接口探测他人的 tokenId。
+      parameters:
+        - in: path
+          name: tokenId
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAgentToken'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
         '404': {$ref: '#/components/responses/NotFound'}
   /agent/auctions/{auctionId}:
     servers:
@@ -310,7 +391,7 @@ components:
     ApiCode:
       description: |
         业务结果码，所有响应的 code 字段取值。HTTP 状态码与之一一对应：
-        OK=200；VALIDATION_FAILED=400；UNAUTHENTICATED=401；FORBIDDEN=403；
+        OK=200；VALIDATION_FAILED=400；UNAUTHENTICATED=401；FORBIDDEN/HUMAN_ONLY_PERIOD=403；
         NOT_FOUND=404；METHOD_NOT_ALLOWED=405；其余冲突类=409；RATE_LIMITED=429；INTERNAL_ERROR=500。
         客户端应以 code 判定业务结果，不要只依赖 HTTP 状态码。
         两个成功码 OK 与 IDEMPOTENCY_REPLAY 都对应 200。
@@ -324,6 +405,7 @@ components:
         - INVALID_STATE
         - BID_TOO_LOW
         - BID_LATE
+        - HUMAN_ONLY_PERIOD
         - NOT_JOINED
         - INSUFFICIENT_BALANCE
         - IDEMPOTENCY_REPLAY
@@ -354,7 +436,7 @@ components:
     AuctionStatus: {type: string, enum: [DRAFT, RUNNING, SETTLING, FINISHED, CANCELLED]}
     AuctionSnapshot:
       type: object
-      required: [id, title, status, startPrice, minIncrement, currentPrice, extensionCount, participantCount, seq, serverTime]
+      required: [id, title, status, startPrice, minIncrement, currentPrice, extensionCount, participantCount, seq, finalGameWindowSeconds, serverTime]
       properties:
         id: {type: string}
         title: {type: string}
@@ -368,6 +450,13 @@ components:
         extensionCount: {type: integer, minimum: 0}
         participantCount: {type: integer, minimum: 0}
         seq: {type: integer, minimum: 0}
+        finalGameWindowSeconds:
+          type: integer
+          minimum: 0
+          description: |
+            尾段“博弈时间”长度（秒）：截止前这段时间内 Agent 一律不得出价，只有真人可以。
+            由服务端给出而不是让前端硬编码：窗口长度是运营配置（`AUCTION_FINAL_GAME_WINDOW_SECONDS`），
+            前端只用它做“进入博弈时间”的提示，**不承担任何判定职责**——真正的拒绝对话发生在服务端事务内。
         serverTime: {type: string, format: date-time}
     BidRequest:
       type: object
@@ -444,6 +533,41 @@ components:
         expiresAt: {type: string, format: date-time}
         # 省略则用服务端默认值（60/分钟）。上限是 6000：再高就不是限流而是摆设了。
         rateLimitPerMinute: {type: integer, minimum: 1, maximum: 6000, default: 60}
+    CreateMyAgentTokenRequest:
+      type: object
+      required: [name, scopes, expiresAt]
+      properties:
+        name: {type: string, maxLength: 80}
+        # 省略 = 默认拒绍（D-29），与管理员签发一致；没有 agentUserId，归属恒为本人。
+        auctionIds: {type: array, items: {type: string}}
+        scopes: {type: array, items: {type: string, enum: [auction:read, auction:bid]}}
+        expiresAt: {type: string, format: date-time}
+        rateLimitPerMinute: {type: integer, minimum: 1, maximum: 6000, default: 60}
+    AgentTokenSummary:
+      type: object
+      required: [tokenId, name, agentUserId, status, scopes, auctionIds, rateLimitPerMinute, expiresAt, createdAt]
+      properties:
+        tokenId: {type: string}
+        name: {type: string}
+        agentUserId: {type: string}
+        status:
+          type: string
+          enum: [ACTIVE, EXPIRED, REVOKED]
+          description: 由服务端按当前时刻判定，与鉴权路径的 activeAt 同口径
+        scopes: {type: array, items: {type: string, enum: [auction:read, auction:bid]}}
+        auctionIds: {type: array, items: {type: string}}
+        rateLimitPerMinute: {type: integer, minimum: 1}
+        expiresAt: {type: string, format: date-time}
+        revokedAt: {type: string, format: date-time, nullable: true}
+        createdAt: {type: string, format: date-time}
+    AgentTokenPage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AgentTokenSummary'}}
+        page: {type: integer, minimum: 1}
+        size: {type: integer, minimum: 1}
+        total: {type: integer, minimum: 0}
     Wallet:
       type: object
       required: [totalBalance, frozenAmount, availableBalance]
@@ -453,9 +577,15 @@ components:
         availableBalance: {type: integer}
     LedgerEntry:
       type: object
-      required: [id, type, amount, createdAt]
+      required: [id, actorType, type, amount, createdAt]
       properties:
         id: {type: string}
+        actorType:
+          type: string
+          enum: [HUMAN, AGENT]
+          description: |
+            该笔资金动作的主体：HUMAN=真人，AGENT=竞拍 Agent。
+            个人流水只返回本人的记录，因此这个字段不会泄露他人的主体身份。
         type: {type: string, enum: [FREEZE, RELEASE, SETTLE]}
         amount: {type: integer}
         auctionId: {type: string, nullable: true}
@@ -495,6 +625,13 @@ components:
         auctionId: {type: string}
         status: {$ref: '#/components/schemas/AuctionStatus'}
         winner: {type: string, nullable: true}
+        winnerType:
+          type: string
+          enum: [HUMAN, AGENT]
+          nullable: true
+          description: |
+            成交主体：HUMAN=真人，AGENT=竞拍 Agent；未成交时为 null。
+            这是隐私字段——仅当请求者是赢家本人或管理员时才有值，其余一律为 null。
         finalPrice: {type: integer, minimum: 0}
         reason: {type: string, enum: [TIMEOUT, NO_BIDS, CANCELLED]}
         settledAt: {type: string, format: date-time, nullable: true}
@@ -512,6 +649,7 @@ components:
     EnvelopeResult: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AuctionResult'}}}]}}}}
     EnvelopeParticipant: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/Participant'}}}]}}}}
     EnvelopeAgentToken: {description: Created; token is returned once, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AgentToken'}}}]}}}}
+    EnvelopeAgentTokenPage: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AgentTokenPage'}}}]}}}}
     BadRequest: {description: Invalid request, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
     Unauthorized: {description: Authentication required, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
     Forbidden: {description: Permission denied, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}

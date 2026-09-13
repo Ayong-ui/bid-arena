@@ -228,6 +228,87 @@ class BidServiceTest {
         Invariants.assertAllHolds(ds, AUCTION);
     }
 
+    // ---------------------------- 博弈时间（尾段清场 Agent） ----------------------------
+
+    @Test
+    @DisplayName("博弈时间：最后 20 秒内 Agent 出价被系统拒绝，且不留任何痕迹")
+    void agentBidInsideFinalGameWindowIsRejected() {
+        givenUser("u_agent", 1000);
+        Fixtures.setEndsAtIn(ds, AUCTION, 15);
+
+        BizException e = assertThrows(BizException.class,
+                () -> bidService.placeBid(AUCTION, "u_agent", 110, "agent-in-window", "AGENT"));
+
+        assertEquals(ErrorCode.HUMAN_ONLY_PERIOD, e.code());
+        assertEquals(100L, Fixtures.currentPrice(ds, AUCTION), "被拒的 Agent 出价不得改动价格");
+        assertEquals(0L, Fixtures.frozen(ds, "u_agent"), "被拒的 Agent 出价不得动钱");
+        assertEquals(0, Fixtures.count(ds, "SELECT COUNT(*) FROM bids WHERE auction_id = ?", AUCTION),
+                "被拒的 Agent 出价不得留下出价记录");
+        assertEquals(0, Fixtures.count(ds,
+                "SELECT COUNT(*) FROM auction_participants WHERE auction_id = ? AND user_id = 'u_agent'",
+                AUCTION), "被拒的 Agent 不得被自动加入");
+
+        // 同一 requestId 在更晚（仍在窗口内）重试，必须返回同一个拒绝，而不是变成别的结论。
+        BizException replay = assertThrows(BizException.class,
+                () -> bidService.placeBid(AUCTION, "u_agent", 500, "agent-in-window", "AGENT"));
+        assertEquals(ErrorCode.HUMAN_ONLY_PERIOD, replay.code(), "同一 requestId 必须返回首次的结论");
+        Invariants.assertAllHolds(ds, AUCTION);
+    }
+
+    @Test
+    @DisplayName("博弈时间：距截止 20 秒之外 Agent 仍可出价，并记为 AGENT 主体")
+    void agentBidOutsideFinalGameWindowIsAccepted() {
+        givenUser("u_agent", 1000);
+        Fixtures.setEndsAtIn(ds, AUCTION, 25);
+
+        BidResult result = bidService.placeBid(AUCTION, "u_agent", 110, "agent-outside", "AGENT");
+
+        assertTrue(result.accepted());
+        assertEquals(110L, Fixtures.currentPrice(ds, AUCTION));
+        assertEquals("AGENT", Fixtures.latestBidActorType(ds, AUCTION, "u_agent"),
+                "Agent 出价必须留下 AGENT 标识，供结算写入 winner_type");
+        assertEquals("AGENT", Fixtures.ledgerActorType(ds, "u_agent", AUCTION, "FREEZE"),
+                "冻结流水也必须带 AGENT 标识，否则个人流水看不出主体");
+        Invariants.assertAllHolds(ds, AUCTION);
+    }
+
+    @Test
+    @DisplayName("博弈时间：最后 20 秒内真人仍可出价，并记为 HUMAN 主体")
+    void humanBidInsideFinalGameWindowIsAccepted() {
+        givenUser("u_human", 1000);
+        givenJoined("u_human");
+        Fixtures.setEndsAtIn(ds, AUCTION, 15);
+
+        BidResult result = bidService.placeBid(AUCTION, "u_human", 110, "human-in-window");
+
+        assertTrue(result.accepted());
+        assertEquals(110L, Fixtures.currentPrice(ds, AUCTION));
+        assertEquals("HUMAN", Fixtures.latestBidActorType(ds, AUCTION, "u_human"));
+        Invariants.assertAllHolds(ds, AUCTION);
+    }
+
+    @Test
+    @DisplayName("博弈时间一旦进入就出不去：真人延时后 Agent 仍在清场范围内")
+    void agentStaysLockedOutAfterHumanExtension() {
+        givenUser("u_human", 1000);
+        givenUser("u_agent", 1000);
+        givenJoined("u_human");
+        Fixtures.setEndsAtIn(ds, AUCTION, 2);
+
+        // 真人在最后 5 秒内出价，触发 +10 秒延时；延时后剩余时间 ≤ 15 秒，仍在 20 秒窗口内。
+        bidService.placeBid(AUCTION, "u_human", 110, "human-extend");
+        long remaining = secondsUntilDeadline();
+        assertTrue(remaining <= 20,
+                "延时后剩余时间必须仍落在博弈窗口内，实际 " + remaining + " 秒（否则 Agent 会被放出）");
+
+        BizException e = assertThrows(BizException.class,
+                () -> bidService.placeBid(AUCTION, "u_agent", 200, "agent-after-extension", "AGENT"));
+
+        assertEquals(ErrorCode.HUMAN_ONLY_PERIOD, e.code());
+        assertEquals("u_human", Fixtures.leader(ds, AUCTION), "领先者不得被越位的 Agent 换掉");
+        Invariants.assertAllHolds(ds, AUCTION);
+    }
+
     // ---------------------------- 拒绝的幂等 ----------------------------
 
     @Test

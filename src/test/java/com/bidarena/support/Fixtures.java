@@ -153,6 +153,23 @@ public final class Fixtures {
         return count(ds, "SELECT COUNT(*) FROM settlements WHERE auction_id = ?", auctionId);
     }
 
+    /** 成交主体类型（HUMAN/AGENT）；未结算或未成交返回 null。 */
+    public static String settlementWinnerType(DataSource ds, String auctionId) {
+        return scalarString(ds, "SELECT winner_type FROM settlements WHERE auction_id = ?", auctionId);
+    }
+
+    /** 某用户在某场最后一笔出价的主体类型；无出价返回 null。 */
+    public static String latestBidActorType(DataSource ds, String auctionId, String userId) {
+        return scalarString(ds, "SELECT actor_type FROM bids WHERE auction_id = ? AND user_id = ? "
+                + "ORDER BY server_seq DESC LIMIT 1", auctionId, userId);
+    }
+
+    /** 某用户在某场某类型流水的主体类型（取最新一条）；无流水返回 null。 */
+    public static String ledgerActorType(DataSource ds, String userId, String auctionId, String entryType) {
+        return scalarString(ds, "SELECT actor_type FROM ledger_entries WHERE user_id = ? AND auction_id = ? "
+                + "AND entry_type = ? ORDER BY id DESC LIMIT 1", userId, auctionId, entryType);
+    }
+
     public static long currentPrice(DataSource ds, String auctionId) {
         return scalar(ds, "SELECT current_price FROM auctions WHERE id = ?", auctionId);
     }

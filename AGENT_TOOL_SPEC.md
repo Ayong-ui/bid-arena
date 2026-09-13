@@ -17,19 +17,28 @@
 
 ## 2. Token 的形态与边界
 
-Token 由**管理员**签发（`POST /api/v1/admin/agent-tokens`，走 8080 的用户侧 JWT 鉴权），字段见
-[`CreateAgentTokenRequest`](docs/openapi.yaml)：
+Token 有**两条签发路径**（D-34）：
+
+- **用户自助**：`POST /api/v1/me/agent-tokens`（走用户自己的 JWT）。请求体是 [`CreateMyAgentTokenRequest`](docs/openapi.yaml)，
+  **没有** `agentUserId` —— 归属由服务层钉死为调用者自己，“替别人签发”在类型上不可表达；前端“我的 AI 代理”页就是这条路。
+- **管理员代签**：`POST /api/v1/admin/agent-tokens`（ADMIN），请求体是 [`CreateAgentTokenRequest`](docs/openapi.yaml)，多一个 `agentUserId`。
+
+字段含义与约束：
 
 | 字段 | 含义 | 约束 |
 |---|---|---|
 | `name` | 便于人识别的名字 | ≤ 80 字符 |
-| `agentUserId` | Token 归属的 Agent 用户 | 资金与冻结记在该用户名下 |
-| `auctionIds` | 允许访问的拍卖范围 | 缺席或空表示由实现决定（P5 需明确并测试） |
-| `scopes` | `auction:read` / `auction:bid` | 最小权限；只读 Agent 不应拿到 `auction:bid` |
-| `expiresAt` | 过期时间 | 过期即失效 |
+| `agentUserId` | Token 归属的 Agent 用户 | 资金与冻结记在该用户名下；**仅管理员路径有**，自助路径恒为调用者 |
+| `auctionIds` | 允许访问的拍卖范围 | **缺席或空 = 空集合 = 默认拒绍**（D-29）；不会退化成“全部允许” |
+| `scopes` | `auction:read` / `auction:bid` | 最小权限；自助路径两档都允许（花的是用户自己的钱，时机由 D-32 兜住） |
+| `expiresAt` | 过期时间 | 必须晚于当前时刻；过期即失效 |
+| `rateLimitPerMinute` | 每分钟请求上限 | 默认 60，上限 6000 |
 
 **数据库只保存 Token 摘要**；明文仅在创建响应里返回一次（`AgentToken.token`），之后无法再取回。
-明文不得出现在 Git、前端包、日志或录屏中。吊销走 `POST /api/v1/admin/agent-tokens/{tokenId}/revoke`。
+列表接口（含管理员的 `GET /admin/agent-tokens` 总览）**从不返回明文**；前端也只在一次性展示卡里显示它，
+并在退出登录时清空缓存。明文不得出现在 Git、日志或录屏中。
+吊销：`POST /api/v1/me/agent-tokens/{tokenId}/revoke`（只能销自己的，否则 404，不泄露存在性）或
+`POST /api/v1/admin/agent-tokens/{tokenId}/revoke`（ADMIN）。
 
 Agent API 使用**独立凭据与独立端口**（`:8090`），与用户侧的 JWT 不混用，见 `DECISIONS.md` D-9。
 
@@ -38,8 +47,9 @@ Agent API 使用**独立凭据与独立端口**（`:8090`），与用户侧的 J
 > 不想手敲命令的话，[`tools/agent_sim.py`](tools/agent_sim.py) 把下面 1~6 步连同全部失败边界
 > 都跑了一遍，并打印“期望 vs 实际”清单；任一条对不上就以非零退出。
 
-1. **管理员登录**（用户侧，`:8080`）拿到 JWT。
-2. **签发 Token**：`POST /api/v1/admin/agent-tokens`，记录响应里的 `token`（只出现这一次）。
+1. **登录**（用户侧，`:8080`）拿到 JWT：自己要用就用普通账号；代签就用管理员账号。
+2. **签发 Token**：用户自己签走 `POST /api/v1/me/agent-tokens`，管理员代签走 `POST /api/v1/admin/agent-tokens`；
+   记录响应里的 `token`（只出现这一次）。不会敲命令就走前端“我的 AI 代理”页。
 3. **把 Token 交给 Coding Agent**：通过环境变量传入，例如 `AUCTION_AGENT_TOKEN`，
    **不要**写进命令历史、脚本或仓库（`CONTRIBUTING.md` §8.3）。
 4. Agent **查询状态**：`GET http://localhost:8090/api/v1/agent/auctions/{auctionId}`。
@@ -47,8 +57,9 @@ Agent API 使用**独立凭据与独立端口**（`:8090`），与用户侧的 J
    并带 `Idempotency-Key` 头；重试必须沿用同一个 `requestId`（服务端幂等）。
 6. Agent **读取结果**：`GET .../auctions/{auctionId}/result`（未结算时 404）。
 
-> 本文件“契约”与“实现”的一致性由 `AgentApiIntegrationTest`（23 个用例）守住：
-> 范围、权限、过期、吊销、限流、端口隔离、幂等重放、错误码都在真库真端口上断言。
+> 本文件“契约”与“实现”的一致性由 `AgentApiIntegrationTest`（29 个用例）守住：
+> 范围、权限、过期、吊销、限流、端口隔离、幂等重放、错误码、尾段博弈时间拒绝 Agent，
+> 以及自助授权的归属/不泄露存在性/总览不含明文，都在真库真端口上断言。
 
 ## 4. 给 Coding Agent 的提示词模板
 
@@ -95,5 +106,6 @@ Auction ID：{{AUCTION_ID}}
 - [x] 频率限制生效并返回 429（`AgentRateLimiter`；变异 G8/G9/G10 被杀）。
 - [x] Agent 出价与真人出价走同一套事务与幂等语义（复用 `BidService`，事务内自动加入，D-30；变异 G11 被杀）。
 - [x] 所有断言用脱敏后的 Token 值，报告与日志里搜不到明文（`SeededDemoCredentialsTest` 的思路同样覆盖凭据不落仓库）。
+- [x] 用户可以**自助**签发/吊销自己名下的授权；请求体无 `agentUserId`，他人 Token 吊销返回 404，列表与总览都无明文（D-34）。
 
 > 以上验收项与 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) 的 D1、E1 对应，已在 P5 完成后勾选并登记证据（实现位置 `src/main/java/com/bidarena/agentaccess/`，测试 `src/test/java/com/bidarena/agentaccess/` 与 `AgentApiIntegrationTest`，变异 `tools/agent_mutation_check.py`）。

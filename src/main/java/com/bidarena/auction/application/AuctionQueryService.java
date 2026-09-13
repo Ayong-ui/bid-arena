@@ -34,11 +34,14 @@ public class AuctionQueryService {
     private final DataSource dataSource;
     private final AuctionRepository auctions;
     private final SettlementRepository settlements;
+    private final long finalGameWindowSeconds;
 
-    public AuctionQueryService(DataSource dataSource, AuctionRepository auctions, SettlementRepository settlements) {
+    public AuctionQueryService(DataSource dataSource, AuctionRepository auctions, SettlementRepository settlements,
+            long finalGameWindowSeconds) {
         this.dataSource = dataSource;
         this.auctions = auctions;
         this.settlements = settlements;
+        this.finalGameWindowSeconds = finalGameWindowSeconds;
     }
 
     public AuctionViews.Snapshot snapshot(String auctionId) {
@@ -46,13 +49,13 @@ public class AuctionQueryService {
         if (row == null) {
             throw new BizException(ErrorCode.NOT_FOUND, "拍卖不存在", Map.of("auctionId", auctionId));
         }
-        return AuctionViews.Snapshot.of(row, serverTime());
+        return AuctionViews.Snapshot.of(row, serverTime(), finalGameWindowSeconds);
     }
 
     public PageQuery.Page<AuctionViews.Snapshot> auctions(AuctionStatus status, PageQuery page) {
         Instant now = serverTime();
         List<AuctionViews.Snapshot> items = auctions.list(status, page.limit(), page.offset()).stream()
-                .map(row -> AuctionViews.Snapshot.of(row, now))
+                .map(row -> AuctionViews.Snapshot.of(row, now, finalGameWindowSeconds))
                 .toList();
         return new PageQuery.Page<>(items, page.page(), page.size(), auctions.count(status));
     }
@@ -83,6 +86,7 @@ public class AuctionQueryService {
                 settlement.auctionId(),
                 auction.status().name(),
                 settlement.winnerId(),
+                settlement.winnerType() == null ? null : settlement.winnerType().name(),
                 settlement.finalPrice(),
                 settlement.reason().name(),
                 ApiTime.format(settlement.createdAt()));

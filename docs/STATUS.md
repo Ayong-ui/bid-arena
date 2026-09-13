@@ -13,46 +13,46 @@
 | P2 | HTTP API + 鉴权 + RBAC + 统一响应 | ✅ | 14 个接口 + JWT/BCrypt + 默认拒绝鉴权 + RBAC + 统一封套与错误码 + CORS 白名单；31 个 P2 用例（HTTP 19 / 身份 10 / 种子口令 2），全量 63/63 绿（`mvn clean verify`） |
 | P3 | WebSocket + seq/快照恢复 | ✅ | 事件契约见 [`docs/REALTIME_AND_COMMAND_FLOW.md`](REALTIME_AND_COMMAND_FLOW.md)；`POST /auth/ws-tickets` 一次性票（60s、单次、有容量上限）+ `/ws/auctions/{auctionId}` + 7 类事件（含可见范围）+ 提交后发布（A8）；P3 新增 53 个用例，全量 **116/116** 绿（`mvn clean verify`） |
 | P3.5 | 架构守卫：出站适配器独立成 `persistence` 包 + ArchUnit 九条规则（D-6 验证） | ✅ | 出站 JDBC 仓储独立成 `<ctx>.persistence`、视图归 `<ctx>.application`、`ApiTime`/`PageQuery` 归 `shared`（D-24、D-25）；`ArchitectureTest` 九条规则全绿，`tools/arch_mutation_check.py` 注入九种违规 **9/9 KILLED**；全量 **125/125** 绿 |
-| P4 | 前端接入真实 HTTP/WS，替换 Mock | ✅ | 类型由契约生成（D-26）；类型化 HTTP 客户端 + 实时订阅状态机 + Pinia store 接上真实服务，界面不再本地算钱/倒计时（D-27/D-28）。**56 个单测** + **3 个真后端联调**（HTTP/WS）+ **16 个变异 16/16 KILLED**；`npm run typecheck` 与 `vite build` 通过 |
+| P4 | 前端接入真实 HTTP/WS，替换 Mock | ✅ | 类型由契约生成（D-26）；类型化 HTTP 客户端 + 实时订阅状态机 + Pinia store 接上真实服务，界面不再本地算钱/倒计时（D-27/D-28）。**59 个单测**（P6 后累计 63） + **3 个真后端联调**（HTTP/WS）+ **16 个变异 16/16 KILLED**；`npm run typecheck` 与 `vite build` 通过 |
 | P5 | Agent API（:8090）+ 模拟脚本 + Compose/E2E | ✅ | 独立端口（`AgentApiPlugin`，只暴露 `/api/v1/agent/**`）+ 独立 Token（签发/范围/权限/过期/吊销/限流）+ 复用同一出价事务并事务内自动加入（D-30）；P5 新增 **62 个用例**，全量 **187/187** 绿；`tools/agent_mutation_check.py` **14/14 KILLED**；端到端模拟 `tools/agent_sim.py`；后端 Dockerfile + Compose `backend` 服务（配置已校验，镜像未在本机构建，见 §3） |
-| P6 | 交付收尾：README 边界、录屏、测试证据 | 🟨 | E1 全链路模拟 `tools/auction_sim.py` 已交付并实跑 **52/52**（并发同/邻价、幂等重试、拒绝场景、最后五秒狙击、断线快照、结束核对）；README 已补 Agent/E2E 路径与更新后的未完成边界；录屏（G7）与 `AI_USAGE.md` 本人填写段（G1）仍待作者完成 |
+| P6 | 交付收尾：README 边界、录屏、测试证据 | 🟨 | E1 全链路模拟 `tools/auction_sim.py` 已交付并实跑 **52/52**（并发同/邻价、幂等重试、拒绝场景、最后五秒狙击、断线快照、结束核对）；另交付尾段“博弈时间”（D-32，最后 20 秒强制拒绝 Agent 出价）与成交主体标识/隐私遮蔽（D-33），并交付压力/手动测试工具 `tools/stress_test.py`；再把 Agent 授权从运营动作改为用户自助（D-34）：后端新增 `/me/agent-tokens` 三端点 + `/admin/agent-tokens` 总览，前端把“智能体接入”整页换成**“我的 AI 代理”**（授权列表 / 新建 / 一次性明文 / 接入指引 / 运营总览）；后端 **206/206** 绿，前端 **63** 单测绿；README 已补 Agent/E2E 路径与更新后的未完成边界；录屏（G7）与 `AI_USAGE.md` 本人填写段（G1）仍待作者完成 |
 
 ## 2. 必交文档状态
 
 | 文档 | 要求 | 状态 |
 |---|---|---|
 | `README.md` | 快速启动完整路径、演示账号、未完成边界 | 🟨 已补「竞拍 Agent API（:8090）」与 E2E 模拟脚本路径、Compose 后端服务；未完成边界已按 P5 更新 |
-| `DESIGN.md` | 架构边界、出价事务、结算、恢复 | ✅ 已同步 §1.6（V1~V4、Agent 边界、187 证据与“尚未实现”）、§2.2~§2.4（分层与依赖规则）、§8（验证重点）；P5 的 Agent 边界（独立端口/独立凭据/复用出价事务）已补入 |
-| `DECISIONS.md` | ≥3 项决策（背景/候选/选择/代价/验证） | ✅ 已写 D-1~D-31（含背景/候选/选择/代价/验证结果）；D-9 的验证结果已随 P5 补全；P5 新增 D-29（范围缺省即拒绝）、D-30（复用同一出价事务）；E1 阶段新增 D-31（幂等键颗粒度含 `user_id`） |
+| `DESIGN.md` | 架构边界、出价事务、结算、恢复 | ✅ 已同步 §1.6（V1~V5、Agent 边界、尾段博弈时间与成交主体、206 证据与“尚未实现”）、§2.2~§2.4（分层与依赖规则）、§4（流水主体）、§8（验证重点）；P5 的 Agent 边界与 P6 的博弈时间/主体标识已补入 |
+| `DECISIONS.md` | ≥3 项决策（背景/候选/选择/代价/验证） | ✅ 已写 D-1~D-34（含背景/候选/选择/代价/验证结果）；D-9 的验证结果已随 P5 补全；P5 新增 D-29（范围缺省即拒绝）、D-30（复用同一出价事务）；E1 阶段新增 D-31（幂等键颗粒度含 `user_id`）；P6 新增 D-32（尾段博弈时间清场 Agent，有意偏离原文规则 6）、D-33（成交主体标识与隐私遮蔽）、D-34（Agent 授权自助化） |
 | `AI_USAGE.md` | AI 分工、本人决定、未采用方案、真实错误 | 🟨 骨架已建（`AI_USAGE.md`）：结构、素材索引与“不得预填”约定就位，`【本人填写】` 段落待作者本人补齐 |
 | `DEBUG_LOG.md` | ≥2 个真实问题（现象/日志/定位/修复/验证） | ✅ 已写 29 条真实问题（DBG-8~12 来自 P2；DBG-13~17 来自 P3；DBG-18~20 来自架构守卫；DBG-21 来自 P4 前端变异 F14 存活；DBG-22~26 来自 P5：Solon 单例启动、提前拒绝后的连接错位、base64url 填充位、增量编译旧字节码、E2E 脚本自己的断言用错凭证；DBG-27~28 来自 E1 全链路模拟：断言比契约强、幂等键含 `user_id`；DBG-29 手工测试时发现前端仍声称 Agent API 未实现） |
 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 查询与出价 | ✅ 已从“骨架/尚不可用”更新为 P5 已实现并验证：操作步骤、提示词模板、失败边界、验收清单已勾选并登记证据（对应 `tools/agent_sim.py`） |
-| `docs/openapi.yaml` | 覆盖原文要求的能力 | ✅ 已修正；P2 已按实现回填 `ErrorCode`、分页、`Bid`、`LedgerEntry.requestId`；P3 补上 `WsTicket.wsPath/wsPort` 与 `/auth/ws-tickets` 的 429；P4 前端类型已由 `npm run gen:api` 从本文件生成（`frontend/src/api/schema.d.ts`，D-26） |
+| `docs/openapi.yaml` | 覆盖原文要求的能力 | ✅ 已修正；P2 已按实现回填 `ErrorCode`、分页、`Bid`、`LedgerEntry.requestId`；P3 补上 `WsTicket.wsPath/wsPort` 与 `/auth/ws-tickets` 的 429；P4 前端类型已由 `npm run gen:api` 从本文件生成（`frontend/src/api/schema.d.ts`，D-26）；P6 补上 `HUMAN_ONLY_PERIOD`、`AuctionResult.winnerType`、`LedgerEntry.actorType`、`AuctionSnapshot.finalGameWindowSeconds` 与 `/admin/auctions/{auctionId}/ledger` |
 
 ## 3. 契约与基础设施状态
 
 | 项 | 状态 | 缺口 |
 |---|---|---|
-| `docs/openapi.yaml` | ✅ | 已补齐 Agent result、Token 吊销、Agent server、`agentUserId`、`AuctionResult`；P3 补上 `WsTicket.wsPath/wsPort` 与 429（共 20 个操作，其中 15 个已实现）；前端类型已由 `npm run gen:api` 生成（`frontend/src/api/schema.d.ts`，D-26） |
+| `docs/openapi.yaml` | ✅ | 已补齐 Agent result、Token 吊销、Agent server、`agentUserId`、`AuctionResult`；P3 补上 `WsTicket.wsPath/wsPort` 与 429；P6 再补 `/admin/auctions/{id}/ledger`、`HUMAN_ONLY_PERIOD`、`ActorType` 与 `/me/agent-tokens`（get/post）、`/me/agent-tokens/{tokenId}/revoke`、`/admin/agent-tokens`（共 25 个操作，其中 20 个已实现）；前端类型已由 `npm run gen:api` 生成（`frontend/src/api/schema.d.ts`，D-26） |
 | `docs/REALTIME_AND_COMMAND_FLOW.md` | ✅ | 无缺口。内容：命令行路径与一致性、事件信封（含 `seq` 归属）、事件类型与可见范围、匿名标识、WS 接入与握手、序号恢复、广播失败边界、可观测性（共 8 节） |
-| `db/migration/` | ✅ | V1~V3 已在空库上完整执行并验证；含 `users` / `wallets` / `ledger_entries` 与 `auctions` 新列、`auction_participants.frozen_amount` |
+| `db/migration/` | ✅ | V1~V5 已在空库上完整执行并验证；含 `users` / `wallets` / `ledger_entries` 与 `auctions` 新列、`auction_participants.frozen_amount`；V5 补 `bids.actor_type` / `settlements.winner_type` / `ledger_entries.actor_type`（主体标识与按场次流水索引） |
 | `pom.xml` | ✅ | 服务器/WebSocket/序列化/连接池/MySQL/Flyway/鉴权/ArchUnit/测试依赖齐备，已验证可启动；`db/migration` 经 `<resources>` 映射为 `classpath:db/migration`；已排除 `solon-web` 传递进来的 snack3，保证序列化器唯一（DBG-11） |
 | `src/main/resources/` | ✅ | `app.yml` 只留 `server.port: ${SERVER_PORT:8080}` 与 `server.websocket.port: ${WS_PORT:18080}`；数据源/迁移/JWT/CORS/结算参数/WS 票参数统一经 `bootstrap/Env` 读环境变量，端口覆盖方式与陷阱见 DECISIONS D-17、DEBUG_LOG DBG-10 |
-| `.env.example` | ✅ | 已补 `DB_URL` / `DB_USER` / `DB_PASSWORD` / `JWT_SECRET` / `CORS_ORIGINS` / 端口（含 `WS_PORT`）/ `SETTLE_SCAN_INTERVAL_MS` / `SETTLE_BATCH_SIZE` / `WS_TICKET_TTL_SECONDS` / `WS_TICKET_CAPACITY`，并对时区、认证插件、为何票要短加注释 |
+| `.env.example` | ✅ | 已补 `DB_URL` / `DB_USER` / `DB_PASSWORD` / `JWT_SECRET` / `CORS_ORIGINS` / 端口（含 `WS_PORT`）/ `SETTLE_SCAN_INTERVAL_MS` / `SETTLE_BATCH_SIZE` / `WS_TICKET_TTL_SECONDS` / `WS_TICKET_CAPACITY` / `AUCTION_FINAL_GAME_WINDOW_SECONDS`，并对时区、认证插件、为何票要短、为何博弈时间取 20 秒加注释 |
 | `docker-compose.yml` | 🟨 | 已含 `mysql`（含 healthcheck）与 P5 新增的 `backend` 服务（依赖 mysql 健康、注入 DB/JWT/三个端口）；`docker compose config` 已校验通过。**镜像未在本机构建**：按本章 C-6 不对 VM 容器做重建操作，构建命令已写入 README |
 | Dockerfile | 🟨 | 后端：多阶段构建（Maven + JDK17 → JRE，非 root，`java -cp app.jar:libs/*`，无 fat jar 故显式拷依赖）；已配 `.dockerignore`。未在本机构建验证 |
 | 种子数据 | ✅ | 3 个演示账号（BCrypt 实测可登录）+ 各 1000 积分钱包 + 1 件 `DRAFT` 演示拍品（`ends_at` 为 NULL，不自动倒计时） |
 | 开发库容器 | ✅ | VM 上 `bid-arena-mysql-1`（MySQL 8.4.9，`0.0.0.0:3307->3306`），未动其他 18 个容器 |
 | 架构守卫 | ✅ | `src/test/java/com/bidarena/architecture/ArchitectureTest.java`：九条分层/跨上下文/无环规则（`DoNotIncludeTests`，不连库、秒级）；`tools/arch_mutation_check.py` 逐条注入真实违规反向确认，**9/9 KILLED**（`mvn` 需能离线跑） |
-| Agent 接入 | ✅ | `agentaccess` 上下文：`AgentToken`/`AgentScopes`（domain）、`AgentTokenService`/`AgentAuctionService`/`AgentRateLimiter`（application）、`AgentAuthFilter`/`HttpAgentController`/`HttpAgentTokenController`（adapter）、`AgentTokenRepository`（persistence）；`bootstrap/AgentApiPlugin` 在 `:8090` 只暴露 `/api/v1/agent/**`；迁移 `V4__agent_access.sql` |
+| Agent 接入 | ✅ | `agentaccess` 上下文：`AgentToken`/`AgentScopes`（domain）、`AgentTokenService`/`AgentAuctionService`/`AgentRateLimiter`（application）、`AgentAuthFilter`/`HttpAgentController`/`HttpAgentTokenController`（adapter）、`AgentTokenRepository`/`TokenSummaryRow`（persistence）；`bootstrap/AgentApiPlugin` 在 `:8090` 只暴露 `/api/v1/agent/**`；授权接口既有管理员签发/吊销，也有用户自助的 `/me/agent-tokens`（列表/签发/吊销，归属由服务层钉死，D-34）；迁移 `V4__agent_access.sql` |
 | 模拟脚本 | ✅ | `tools/agent_sim.py`：只用标准库，扮演管理员与竞拍 Agent，走真实 `:8080`/`:8090`：登录→创建并开拍→签发读+出价/只读/短命/限流四种 Token→Agent 读状态→Agent 出价→幂等重放→真人加价→Agent 夺回→读结果→逐条验证 403/401/429/404/端口隔离，最后打印“期望 vs 实际”清单（任一条不符则非零退出）。`tools/auction_sim.py`：全链路模拟（20 条并发同/邻价、幂等重试、拒绝场景、最后五秒狙击、WebSocket 断线快照、结束核对），**52/52 实跑通过**；内含最小 RFC 6455 客户端，不引第三方依赖 |
-| 前端接入 | ✅ | `frontend/`：契约生成类型（D-26）+ 类型化 HTTP 客户端（统一封套/错误码/幂等头/超时）+ 实时订阅状态机（去重、缺口拉快照、退避重连；D-28）+ Pinia store（服务端为唯一事实来源；D-27）；**56 单测**（api/realtime/store/anonymous）+ **16 变异 16/16 KILLED**；`npm run typecheck` 与 `vite build` 通过；真后端联调 **3/3**（`npm run test:live`） |
-| 一键测试命令 | ✅ | 后端：指定 `BID_ARENA_TEST_DB_*` 后 `mvn clean verify`（实测 **187/187** 绿：真库集成 58〔HTTP 19 + WS 14 + Agent 23 + 拒绝后连接复用 2，共用同一个自启动服务实例〕+ 架构守卫 9 + 其余领域/身份/结算/事件/WS 广播/票/匿名/Agent 单元 120）；Agent 凭据变异 `python tools/agent_mutation_check.py`（**14/14 KILLED**）；架构变异 `python tools/arch_mutation_check.py`（9/9 KILLED）。端到端：后端在 8080/8090/18080 跑起来后 `python tools/agent_sim.py`（**44/44**）与 `python tools/auction_sim.py`（**52/52**），均非零退出即失败。前端：`cd frontend && npm test`（56 绿）与 `npm run typecheck`；变异 `python tools/mutation_check.py`（16/16 KILLED）；真后端联调 `npm run test:live`（3 绿） |
+| 前端接入 | ✅ | `frontend/`：契约生成类型（D-26）+ 类型化 HTTP 客户端（统一封套/错误码/幂等头/超时）+ 实时订阅状态机（去重、缺口拉快照、退避重连；D-28）+ Pinia store（服务端为唯一事实来源；D-27）；界面含拍卖大厅/详情、钱包流水（含 AI/真人徽章）、运营台与**“我的 AI 代理”**（自助授权，D-34）；**63 单测**（api/realtime/store/anonymous）+ **16 变异 16/16 KILLED**；`npm run typecheck` 与 `vite build` 通过；真后端联调 **3/3**（`npm run test:live`） |
+| 一键测试命令 | ✅ | 后端：指定 `BID_ARENA_TEST_DB_*` 后 `mvn clean verify`（实测 **206/206** 绿：真库集成 66〔HTTP 21 + WS 14 + Agent 29 + 拒绝后连接复用 2，共用同一个自启动服务实例〕+ 架构守卫 9 + 其余领域/身份/结算/事件/WS 广播/票/匿名/Agent 单元 131）；Agent 凭据变异 `python tools/agent_mutation_check.py`（**14/14 KILLED**）；架构变异 `python tools/arch_mutation_check.py`（9/9 KILLED）。端到端：后端在 8080/8090/18080 跑起来后 `python tools/agent_sim.py`（**44/44**）与 `python tools/auction_sim.py`（**52/52**），均非零退出即失败。前端：`cd frontend && npm test`（63 绿）与 `npm run typecheck`；变异 `python tools/mutation_check.py`（16/16 KILLED）；真后端联调 `npm run test:live`（3 绿）。手动/压力：后端跑起来后 `python tools/stress_test.py --mode game-window -c 100`（100/100 均为 `403`/`HUMAN_ONLY_PERIOD`，**11/11** checks passed）与 `python tools/stress_test.py --mode throughput -c 50 --seconds 10`（实测 ~412 QPS、无 5xx） |
 | 远程仓库 | ✅ | <https://github.com/Ayong-ui/bid-arena>（公开；`main` 已开分支保护：禁强推、禁删除） |
 
 ## 4. 决策状态
 
-全部决策已定稿并写入 [`DECISIONS.md`](../DECISIONS.md)（D-1~D-31 含背景/候选/选择/代价/验证结果，附「未采用方案汇总」）。D-14~D-17 是 P2 期间新增的：错误码与 HTTP 状态码的分工、鉴权默认拒绝、CORS 白名单、测试期配置覆盖；D-18~D-23 是 P3 期间新增的：实时通道的鉴权方式、`seq` 的归属与语义、广播失败边界、匿名标识、客户端消息一律忽略、测试基座的“一 JVM 一实例”；D-24~D-25 是架构守卫期间新增的：出站适配器独立成 `persistence` 包、分页参数与 HTTP 解析分离；D-26~D-28 是 P4 期间新增的：前端类型从契约生成、前端不得自己算钱与倒计时、客户端 `seq` 缺口恢复；D-29~D-30 是 P5 期间新增的：Token 范围缺省即拒绝、Agent 出价复用同一事务并自动加入；D-31 是全链路模拟期间补登的：幂等键颗粒度是 `(auctionId, userId, requestId)`。
+全部决策已定稿并写入 [`DECISIONS.md`](../DECISIONS.md)（D-1~D-34 含背景/候选/选择/代价/验证结果，附「未采用方案汇总」）。D-14~D-17 是 P2 期间新增的：错误码与 HTTP 状态码的分工、鉴权默认拒绝、CORS 白名单、测试期配置覆盖；D-18~D-23 是 P3 期间新增的：实时通道的鉴权方式、`seq` 的归属与语义、广播失败边界、匿名标识、客户端消息一律忽略、测试基座的“一 JVM 一实例”；D-24~D-25 是架构守卫期间新增的：出站适配器独立成 `persistence` 包、分页参数与 HTTP 解析分离；D-26~D-28 是 P4 期间新增的：前端类型从契约生成、前端不得自己算钱与倒计时、客户端 `seq` 缺口恢复；D-29~D-30 是 P5 期间新增的：Token 范围缺省即拒绝、Agent 出价复用同一事务并自动加入；D-31 是全链路模拟期间补登的：幂等键颗粒度是 `(auctionId, userId, requestId)`；D-32~D-34 是 P6 期间新增的：尾段“博弈时间”清场 Agent（有意偏离原文规则 6）、成交主体标识与隐私遮蔽、Agent 授权自助化。
 
 | # | 决策 | 结论 | 验证 |
 |---|---|---|---|
@@ -87,6 +87,9 @@
 | D-29 | Agent Token 的 `auctionIds` 缺省语义 | 缺省 = 空集合 = 默认拒绝（不是“全部允许”） | ✅ `AgentTokenTest`/`AgentTokenServiceTest` + `AgentApiIntegrationTest` 空范围 403；变异 G3/G12 被杀 |
 | D-30 | Agent 出价路径 | 复用同一出价事务，事务内自动补参与记录（`AGENT`），不新开写入路径 | ✅ `AgentApiIntegrationTest`（自动加入 + 与真人共用幂等）；变异 G11 被杀 |
 | D-31 | 幂等键颗粒度 | `(auctionId, userId, requestId)`：重试去重只在本调用方内生效，跨用户不互吞 | ✅ `tools/auction_sim.py`：同一用户 20 并发重试 + 顺序重试 = 1 写 + 19 重放，冻结增量 = 成交价；另一用户复用同串 = 新出价 |
+| D-32 | 尾段“博弈时间” | 最后 20 秒（`AUCTION_FINAL_GAME_WINDOW_SECONDS`）强制拒绝一切 Agent 出价，真人不限；事务内用数据库时间判定，进入即锁到结算 | ✅ `BidServiceTest` 四例 + `AgentApiIntegrationTest` 端到端 403；窗口经快照下发给前端（`AuctionSnapshot.finalGameWindowSeconds`，`HttpApiIntegrationTest`/`WsIntegrationTest` 断言），前端据此渲染博弈时间提示；有意偏离原文规则 6 已留痕 |
+| D-33 | 成交主体标识与隐私 | `bids.actor_type` → `settlements.winner_type` 快照 → `ledger_entries.actor_type`；`winnerType` 仅赢家/管理员可见，个人流水只含本人，新增管理员按场次流水端点 | ✅ `SettlementServiceTest` 两例 + `HttpApiIntegrationTest` 隐私遮蔽与权限两例 |
+| D-34 | Agent 授权自助化 | 新增 `/me/agent-tokens`（列表/签发/吊销）与 `/admin/agent-tokens`（仅 ADMIN）；请求体不含 `agentUserId`，归属由 `issueForSelf` 钉死；他人 Token 吊销返回 404；列表永不含明文，`status` 由服务端按 `activeAt` 同口径下发 | ✅ `AgentTokenServiceTest` 五例 + `AgentApiIntegrationTest` 五例 + 前端 `store/arena.test.ts` 四例 |
 
 ## 5. 已确认决定
 

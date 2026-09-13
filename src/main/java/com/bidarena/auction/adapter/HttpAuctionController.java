@@ -8,9 +8,11 @@ import com.bidarena.api.PageParams;
 import com.bidarena.shared.PageQuery;
 import com.bidarena.auction.application.AuctionCommandService;
 import com.bidarena.auction.application.AuctionQueryService;
+import com.bidarena.auction.application.AuctionViews;
 import com.bidarena.auction.application.BidService;
 import com.bidarena.auction.domain.AuctionStatus;
 import com.bidarena.identity.domain.Principal;
+import com.bidarena.identity.domain.UserRole;
 import com.bidarena.shared.ApiResponse;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.ErrorCode;
@@ -108,7 +110,16 @@ public class HttpAuctionController {
 
     @Mapping(value = "/auctions/{auctionId}/result", method = MethodType.GET)
     public ApiResponse auctionResult(@Path("auctionId") String auctionId) {
-        return ApiResponse.ok(query.result(auctionId), ApiTrace.current());
+        // winnerType 是隐私：只有赢家本人与管理员看得到，别人拿到的恒为 null。
+        // 过滤放在适配器而不是查询服务：应用层要返回真值给需要判断的内部调用，
+        // 而"谁能看"是入站视角的问题。
+        Principal me = CurrentUser.require(ContextUtil.current());
+        AuctionViews.Result result = query.result(auctionId);
+        if (me.role() != UserRole.ADMIN && !me.userId().equals(result.winner())) {
+            result = new AuctionViews.Result(result.auctionId(), result.status(), result.winner(), null,
+                    result.finalPrice(), result.reason(), result.settledAt());
+        }
+        return ApiResponse.ok(result, ApiTrace.current());
     }
 
     private static AuctionStatus statusParam(Context ctx) {

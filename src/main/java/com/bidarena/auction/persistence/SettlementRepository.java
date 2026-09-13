@@ -1,6 +1,7 @@
 package com.bidarena.auction.persistence;
 
 import com.bidarena.auction.domain.SettlementReason;
+import com.bidarena.shared.ActorType;
 import com.bidarena.shared.Db;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -19,7 +20,8 @@ public class SettlementRepository {
 
     /** {@code finalPrice} 为 0 表示没有成交发生（{@code winnerId} 必为 null）。 */
     public record SettlementRow(
-            String auctionId, String winnerId, long finalPrice, SettlementReason reason, Instant createdAt) {}
+            String auctionId, String winnerId, ActorType winnerType, long finalPrice,
+            SettlementReason reason, Instant createdAt) {}
 
     private final DataSource dataSource;
 
@@ -30,7 +32,7 @@ public class SettlementRepository {
     /** 事务内读取并加锁；返回 null 表示尚未结算。 */
     public SettlementRow lock(Connection conn, String auctionId) throws SQLException {
         return Db.queryOne(conn,
-                "SELECT auction_id, winner_id, final_price, reason, created_at FROM settlements "
+                "SELECT auction_id, winner_id, winner_type, final_price, reason, created_at FROM settlements "
                         + "WHERE auction_id = ? FOR UPDATE",
                 SettlementRepository::map, auctionId);
     }
@@ -42,24 +44,25 @@ public class SettlementRepository {
      * 这是必须暴露的事实，绝不能被静默吞掉。正常的重复触发在 {@link #lock} 那一步
      * 就已经返回了，走不到这里。
      */
-    public void insert(Connection conn, String auctionId, String winnerId, long finalPrice,
+    public void insert(Connection conn, String auctionId, String winnerId, ActorType winnerType, long finalPrice,
             SettlementReason reason, Instant createdAt) throws SQLException {
         Db.update(conn,
-                "INSERT INTO settlements (auction_id, winner_id, final_price, reason, created_at) "
-                        + "VALUES (?, ?, ?, ?, ?)",
-                auctionId, winnerId, finalPrice, reason.name(), Db.ts(createdAt));
+                "INSERT INTO settlements (auction_id, winner_id, winner_type, final_price, reason, created_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?)",
+                auctionId, winnerId, winnerType == null ? null : winnerType.name(), finalPrice,
+                reason.name(), Db.ts(createdAt));
     }
 
     public SettlementRow load(String auctionId) {
         return Db.read(dataSource, conn -> Db.queryOne(conn,
-                "SELECT auction_id, winner_id, final_price, reason, created_at FROM settlements "
+                "SELECT auction_id, winner_id, winner_type, final_price, reason, created_at FROM settlements "
                         + "WHERE auction_id = ?",
                 SettlementRepository::map, auctionId));
     }
 
     public List<SettlementRow> list(int limit, int offset) {
         return Db.read(dataSource, conn -> Db.queryList(conn,
-                "SELECT auction_id, winner_id, final_price, reason, created_at FROM settlements "
+                "SELECT auction_id, winner_id, winner_type, final_price, reason, created_at FROM settlements "
                         + "ORDER BY created_at DESC, auction_id DESC LIMIT ? OFFSET ?",
                 SettlementRepository::map, limit, offset));
     }
@@ -68,6 +71,7 @@ public class SettlementRepository {
         return new SettlementRow(
                 rs.getString("auction_id"),
                 rs.getString("winner_id"),
+                rs.getString("winner_type") == null ? null : ActorType.parse(rs.getString("winner_type")),
                 rs.getLong("final_price"),
                 SettlementReason.valueOf(rs.getString("reason")),
                 Db.instant(rs, "created_at"));

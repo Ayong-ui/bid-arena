@@ -227,6 +227,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/auctions/{auctionId}/ledger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description 管理员按场次查看**全部**资金流水，用于确认“最后成交的是 AI 还是人”。
+         *     每条流水的 `actorType`（HUMAN/AGENT）标识该笔资金动作的主体。
+         *     普通用户无权访问此路由，只能通过 `/wallets/me/ledger` 看到自己的流水。
+         */
+        get: operations["auctionLedger"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/agent-tokens": {
         parameters: {
             query?: never;
@@ -234,7 +255,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * @description 管理员总览全部已签发的 Agent Token（**不含明文**），用于审计“现在还有哪些 Agent
+         *     能替谁出价”。明文只在签发响应里出现一次，之后无法取回。
+         */
+        get: operations["listAgentTokens"];
         put?: never;
         post: operations["createAgentToken"];
         delete?: never;
@@ -252,7 +277,59 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * @description 吊销一枚 Agent Token。**幂等**：重复吊销同一枚仍然返回 200（首次吊销的时间戳不变），
+         *     因为“让它变成已吊销”是一个可以安全重试的指令；未知 tokenId 才是 404。
+         *
+         *     响应里的 `token` 恒为 null（吊销后自然拿不回明文），保留该字段只为与签发响应同形。
+         */
         post: operations["revokeAgentToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/agent-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description 本人已授权的竞拍 Agent Token 列表（新→旧）。**只返回属于自己的授权，不含明文**：
+         *     明文只在签发响应的那一刻出现，之后无法取回。`status` 由服务端按当前时刻判定
+         *     （ACTIVE / EXPIRED / REVOKED），客户端不要自行比时间（同 D-27 的口径）。
+         */
+        get: operations["listMyAgentTokens"];
+        put?: never;
+        /**
+         * @description 为自己签发一枚竞拍 Agent Token（自助授权，见 DECISIONS D-34）。
+         *     归属恒为当前登录用户——请求体里没有 `agentUserId`，因此“替别人签发”在契约层面无法表达。
+         *     `auctionIds` 省略即“默认拒绍”（D-29）；明文只在本次响应里出现一次。
+         */
+        post: operations["createMyAgentToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/agent-tokens/{tokenId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description 吊销自己的 Agent Token。**幂等**（重复吊销仍返回 200）。
+         *     不属于本人的 tokenId 返回 404，与“不存在”不可区分，避免拿吊销接口探测他人的 tokenId。
+         */
+        post: operations["revokeMyAgentToken"];
         delete?: never;
         options?: never;
         head?: never;
@@ -266,6 +343,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * @description 读取竞拍快照。**这把接口同时也在 8080 上可用**；8090 只是额外的一个最小暴露面，
+         *     它上面除了 /agent/** 之外的一切路径都返回 404 封套（连 /health 也没有）。
+         *
+         *     Agent 凭证的三个失败码分工：401 = 不认识/已过期/已吊销（不区分原因，避免试探）；
+         *     403 = 凭证有效但越权（缺权限，或这场拍卖不在 auctionIds 里）；429 = 超出该 Token 的频率上限。
+         */
         get: operations["agentAuction"];
         put?: never;
         post?: never;
@@ -320,13 +404,13 @@ export interface components {
         };
         /**
          * @description 业务结果码，所有响应的 code 字段取值。HTTP 状态码与之一一对应：
-         *     OK=200；VALIDATION_FAILED=400；UNAUTHENTICATED=401；FORBIDDEN=403；
+         *     OK=200；VALIDATION_FAILED=400；UNAUTHENTICATED=401；FORBIDDEN/HUMAN_ONLY_PERIOD=403；
          *     NOT_FOUND=404；METHOD_NOT_ALLOWED=405；其余冲突类=409；RATE_LIMITED=429；INTERNAL_ERROR=500。
          *     客户端应以 code 判定业务结果，不要只依赖 HTTP 状态码。
          *     两个成功码 OK 与 IDEMPOTENCY_REPLAY 都对应 200。
          * @enum {string}
          */
-        ApiCode: "OK" | "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "INVALID_STATE" | "BID_TOO_LOW" | "BID_LATE" | "NOT_JOINED" | "INSUFFICIENT_BALANCE" | "IDEMPOTENCY_REPLAY" | "CONFLICT" | "METHOD_NOT_ALLOWED" | "RATE_LIMITED" | "INTERNAL_ERROR";
+        ApiCode: "OK" | "VALIDATION_FAILED" | "UNAUTHENTICATED" | "FORBIDDEN" | "NOT_FOUND" | "INVALID_STATE" | "BID_TOO_LOW" | "BID_LATE" | "HUMAN_ONLY_PERIOD" | "NOT_JOINED" | "INSUFFICIENT_BALANCE" | "IDEMPOTENCY_REPLAY" | "CONFLICT" | "METHOD_NOT_ALLOWED" | "RATE_LIMITED" | "INTERNAL_ERROR";
         LoginRequest: {
             /** Format: email */
             email: string;
@@ -361,6 +445,12 @@ export interface components {
             extensionCount: number;
             participantCount: number;
             seq: number;
+            /**
+             * @description 尾段“博弈时间”长度（秒）：截止前这段时间内 Agent 一律不得出价，只有真人可以。
+             *     由服务端给出而不是让前端硬编码：窗口长度是运营配置（`AUCTION_FINAL_GAME_WINDOW_SECONDS`），
+             *     前端只用它做“进入博弈时间”的提示，**不承担任何判定职责**——真正的拒绝对话发生在服务端事务内。
+             */
+            finalGameWindowSeconds: number;
             /** Format: date-time */
             serverTime: string;
         };
@@ -420,6 +510,42 @@ export interface components {
             scopes: ("auction:read" | "auction:bid")[];
             /** Format: date-time */
             expiresAt: string;
+            /** @default 60 */
+            rateLimitPerMinute: number;
+        };
+        CreateMyAgentTokenRequest: {
+            name: string;
+            auctionIds?: string[];
+            scopes: ("auction:read" | "auction:bid")[];
+            /** Format: date-time */
+            expiresAt: string;
+            /** @default 60 */
+            rateLimitPerMinute: number;
+        };
+        AgentTokenSummary: {
+            tokenId: string;
+            name: string;
+            agentUserId: string;
+            /**
+             * @description 由服务端按当前时刻判定，与鉴权路径的 activeAt 同口径
+             * @enum {string}
+             */
+            status: "ACTIVE" | "EXPIRED" | "REVOKED";
+            scopes: ("auction:read" | "auction:bid")[];
+            auctionIds: string[];
+            rateLimitPerMinute: number;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            revokedAt?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        AgentTokenPage: {
+            items: components["schemas"]["AgentTokenSummary"][];
+            page: number;
+            size: number;
+            total: number;
         };
         Wallet: {
             totalBalance: number;
@@ -428,6 +554,12 @@ export interface components {
         };
         LedgerEntry: {
             id: string;
+            /**
+             * @description 该笔资金动作的主体：HUMAN=真人，AGENT=竞拍 Agent。
+             *     个人流水只返回本人的记录，因此这个字段不会泄露他人的主体身份。
+             * @enum {string}
+             */
+            actorType: "HUMAN" | "AGENT";
             /** @enum {string} */
             type: "FREEZE" | "RELEASE" | "SETTLE";
             amount: number;
@@ -469,6 +601,12 @@ export interface components {
             auctionId: string;
             status: components["schemas"]["AuctionStatus"];
             winner?: string | null;
+            /**
+             * @description 成交主体：HUMAN=真人，AGENT=竞拍 Agent；未成交时为 null。
+             *     这是隐私字段——仅当请求者是赢家本人或管理员时才有值，其余一律为 null。
+             * @enum {string|null}
+             */
+            winnerType?: "HUMAN" | "AGENT" | null;
             finalPrice: number;
             /** @enum {string} */
             reason: "TIMEOUT" | "NO_BIDS" | "CANCELLED";
@@ -612,6 +750,17 @@ export interface components {
             content: {
                 "application/json": components["schemas"]["Envelope"] & {
                     data?: components["schemas"]["AgentToken"];
+                };
+            };
+        };
+        /** @description OK */
+        EnvelopeAgentTokenPage: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Envelope"] & {
+                    data?: components["schemas"]["AgentTokenPage"];
                 };
             };
         };
@@ -921,6 +1070,42 @@ export interface operations {
             409: components["responses"]["Conflict"];
         };
     };
+    auctionLedger: {
+        parameters: {
+            query?: {
+                page?: components["parameters"]["Page"];
+                size?: components["parameters"]["Size"];
+            };
+            header?: never;
+            path: {
+                auctionId: components["parameters"]["AuctionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["EnvelopeLedgerPage"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    listAgentTokens: {
+        parameters: {
+            query?: {
+                page?: components["parameters"]["Page"];
+                size?: components["parameters"]["Size"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["EnvelopeAgentTokenPage"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
     createAgentToken: {
         parameters: {
             query?: never;
@@ -954,6 +1139,56 @@ export interface operations {
             404: components["responses"]["NotFound"];
         };
     };
+    listMyAgentTokens: {
+        parameters: {
+            query?: {
+                page?: components["parameters"]["Page"];
+                size?: components["parameters"]["Size"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["EnvelopeAgentTokenPage"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    createMyAgentToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateMyAgentTokenRequest"];
+            };
+        };
+        responses: {
+            201: components["responses"]["EnvelopeAgentToken"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    revokeMyAgentToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tokenId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["EnvelopeAgentToken"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
     agentAuction: {
         parameters: {
             query?: never;
@@ -968,6 +1203,7 @@ export interface operations {
             200: components["responses"]["EnvelopeAuction"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            429: components["responses"]["RateLimited"];
         };
     };
     agentBid: {
@@ -993,6 +1229,8 @@ export interface operations {
         };
         responses: {
             200: components["responses"]["EnvelopeBidResult"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             409: components["responses"]["Conflict"];
             429: components["responses"]["RateLimited"];
         };

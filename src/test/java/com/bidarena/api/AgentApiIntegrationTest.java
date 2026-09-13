@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.bidarena.support.ApiTestHarness;
 import com.bidarena.support.Fixtures;
+import com.fasterxml.jackson.databind.JsonNode;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
@@ -196,6 +197,30 @@ class AgentApiIntegrationTest extends ApiTestHarness {
         assertEquals(409, resp.code(), resp.raw());
         assertCode("BID_TOO_LOW", resp);
         assertEquals("100", resp.data("currentPrice"));
+    }
+
+    @Test
+    @DisplayName("博弈时间：最后 20 秒内 Agent 出价被系统拒绝，同一窗口内真人仍可出价")
+    void agentBidInFinalGameWindowIsRejected() {
+        String auctionId = createRunningAuction("博弈时间", 100, 10, 600);
+        String token = issueToken(auctionId, List.of("auction:read", "auction:bid"));
+        Fixtures.setEndsAtIn(ds, auctionId, 15);
+
+        Resp rejected = agentCall("POST", "/api/v1/agent/auctions/" + auctionId + "/bids", token,
+                json("requestId", "final-window", "amount", 110));
+
+        assertEquals(403, rejected.code(), rejected.raw());
+        assertCode("HUMAN_ONLY_PERIOD", rejected);
+        assertEquals(0, Fixtures.count(ds, "SELECT COUNT(*) FROM bids WHERE auction_id = ?", auctionId),
+                "被清场的 Agent 不得留下出价记录");
+        assertEquals(0, Fixtures.frozen(ds, AGENT_OWNER), "被清场的 Agent 不得动钱");
+
+        // 同一窗口内真人可以出价：博弈时间清的是 Agent，不是人（见 DECISIONS D-32）。
+        join(auctionId, bidderTokenB());
+        Resp human = placeBid(auctionId, bidderTokenB(), "human-final-window", 110);
+        assertEquals(200, human.code(), human.raw());
+        assertEquals(110, Fixtures.currentPrice(ds, auctionId));
+        assertEquals("HUMAN", Fixtures.latestBidActorType(ds, auctionId, BIDDER_B_ID));
     }
 
     @Test
@@ -428,7 +453,7 @@ class AgentApiIntegrationTest extends ApiTestHarness {
     @DisplayName("Agent 端口只提供 Agent 接口：健康检查与用户接口都是 404 封套")
     void agentPortExposesOnlyAgentApi() {
         for (String path : List.of("/api/v1/health", "/api/v1/auctions", "/api/v1/admin/agent-tokens",
-                "/api/v1/auth/login", "/api/v1/agent", "/")) {
+                "/api/v1/me/agent-tokens", "/api/v1/auth/login", "/api/v1/agent", "/")) {
             Resp resp = agentCall("GET", path, null, null);
             assertEquals(404, resp.code(), path + " -> " + resp.raw());
             assertCode("NOT_FOUND", resp);
@@ -447,7 +472,167 @@ class AgentApiIntegrationTest extends ApiTestHarness {
         assertCode("OK", resp);
     }
 
+    // ---------------------------------------------------------------- 自助授权（D-34）
+
+    @Test
+    @DisplayName("自助签发：归属恒为本人，可立即用于 Agent 端口，并出现在自己的列表里")
+    void selfServiceIssuesTokenOwnedByCaller() {
+        String auctionId = createRunningAuction("自助授权", 100, 10, 600);
+
+        Resp issued = call("POST", "/api/v1/me/agent-tokens", bidderToken(),
+                myTokenRequestJson("我的出价 Agent", List.of(auctionId),
+                        List.of("auction:read", "auction:bid"), Instant.now().plusSeconds(3600), null));
+
+        assertEquals(201, issued.code(), issued.raw());
+        assertCode("OK", issued);
+        String token = issued.body().at("/data/token").asText();
+        String tokenId = issued.body().at("/data/tokenId").asText();
+        assertFalse(token.isEmpty(), issued.raw());
+
+        // 1) 立刻可用：同一枚 Token 在 Agent 端口上能读到快照。
+        Resp read = agentCall("GET", "/api/v1/agent/auctions/" + auctionId, token, null);
+        assertEquals(200, read.code(), read.raw());
+        assertCode("OK", read);
+
+        // 2) 归属是调用方本人——请求体里根本没有 agentUserId，替别人签发在契约层面无法表达。
+        Resp mine = call("GET", "/api/v1/me/agent-tokens", bidderToken(), null);
+        assertEquals(200, mine.code(), mine.raw());
+        assertCode("OK", mine);
+        assertEquals(1, mine.body().at("/data/total").asInt(), mine.raw());
+        assertEquals(BIDDER_A_ID, mine.body().at("/data/items/0/agentUserId").asText(), mine.raw());
+        assertEquals(tokenId, mine.body().at("/data/items/0/tokenId").asText());
+        assertEquals("ACTIVE", mine.body().at("/data/items/0/status").asText(), mine.raw());
+        assertEquals(auctionId, mine.body().at("/data/items/0/auctionIds/0").asText(), mine.raw());
+        assertEquals(2, mine.body().at("/data/items/0/scopes").size(), mine.raw());
+        assertTrue(mine.body().at("/data/items/0/token").isMissingNode(),
+                "列表绝不能回显明文 Token：" + mine.raw());
+    }
+
+    @Test
+    @DisplayName("自助列表只含本人：别人的授权既看不到也吊销不了（404），且失败无副作用")
+    void selfServiceStaysScopedToCaller() {
+        String auctionId = createRunningAuction("隐私边界", 100, 10, 600);
+        Resp issued = call("POST", "/api/v1/me/agent-tokens", bidderToken(),
+                myTokenRequestJson("甲的 Agent", List.of(auctionId), List.of("auction:read"),
+                        Instant.now().plusSeconds(3600), null));
+        String tokenId = issued.body().at("/data/tokenId").asText();
+        String token = issued.body().at("/data/token").asText();
+
+        // 乙看不到甲的这一枚（乙自己一枚也没有）。
+        Resp otherList = call("GET", "/api/v1/me/agent-tokens", bidderTokenB(), null);
+        assertEquals(200, otherList.code(), otherList.raw());
+        assertEquals(0, otherList.body().at("/data/total").asInt(), otherList.raw());
+
+        // 乙也吊销不了：404，与“不存在”不可区分，不能用它探测别人的 tokenId。
+        Resp revoke = call("POST", "/api/v1/me/agent-tokens/" + tokenId + "/revoke", bidderTokenB(), null);
+        assertEquals(404, revoke.code(), revoke.raw());
+        assertCode("NOT_FOUND", revoke);
+
+        // 甲的 Token 仍然有效——失败的吊销尝试不得有任何副作用。
+        assertEquals(200, agentCall("GET", "/api/v1/agent/auctions/" + auctionId, token, null).code());
+    }
+
+    @Test
+    @DisplayName("自助吊销自己的 Token：立刻 401，并在列表里变成 REVOKED，重复吊销幂等")
+    void selfServiceRevokesOwnToken() {
+        String auctionId = createRunningAuction("自助吊销", 100, 10, 600);
+        Resp issued = call("POST", "/api/v1/me/agent-tokens", bidderToken(),
+                myTokenRequestJson("待吊销", List.of(auctionId), List.of("auction:read"),
+                        Instant.now().plusSeconds(3600), null));
+        String tokenId = issued.body().at("/data/tokenId").asText();
+        String token = issued.body().at("/data/token").asText();
+
+        Resp revoked = call("POST", "/api/v1/me/agent-tokens/" + tokenId + "/revoke", bidderToken(), null);
+        assertEquals(200, revoked.code(), revoked.raw());
+        assertCode("OK", revoked);
+        assertTrue(revoked.body().path("data").path("token").isMissingNode()
+                        || revoked.body().at("/data/token").isNull(),
+                "吊销响应不得回显明文 Token：" + revoked.raw());
+
+        assertEquals(401, agentCall("GET", "/api/v1/agent/auctions/" + auctionId, token, null).code());
+
+        Resp mine = call("GET", "/api/v1/me/agent-tokens", bidderToken(), null);
+        assertEquals("REVOKED", mine.body().at("/data/items/0/status").asText(), mine.raw());
+        assertFalse(mine.body().at("/data/items/0/revokedAt").isMissingNode(), mine.raw());
+
+        // 幂等：再吊销一次仍是 200。
+        assertEquals(200, call("POST", "/api/v1/me/agent-tokens/" + tokenId + "/revoke",
+                bidderToken(), null).code());
+    }
+
+    @Test
+    @DisplayName("管理总览：管理员能看到全部授权且无明文；普通用户 403，匿名 401")
+    void adminOverviewRequiresAdminAndOmitsPlaintext() {
+        String auctionId = createRunningAuction("总览", 100, 10, 600);
+        Resp issued = call("POST", "/api/v1/me/agent-tokens", bidderToken(),
+                myTokenRequestJson("甲", List.of(auctionId), List.of("auction:read"),
+                        Instant.now().plusSeconds(3600), null));
+        String tokenId = issued.body().at("/data/tokenId").asText();
+
+        Resp asBidder = call("GET", "/api/v1/admin/agent-tokens", bidderToken(), null);
+        assertEquals(403, asBidder.code(), asBidder.raw());
+        assertCode("FORBIDDEN", asBidder);
+
+        Resp anonymous = call("GET", "/api/v1/admin/agent-tokens", null, null);
+        assertEquals(401, anonymous.code(), anonymous.raw());
+        assertCode("UNAUTHENTICATED", anonymous);
+
+        Resp asAdmin = call("GET", "/api/v1/admin/agent-tokens", adminToken(), null);
+        assertEquals(200, asAdmin.code(), asAdmin.raw());
+        assertCode("OK", asAdmin);
+        assertEquals(1, asAdmin.body().at("/data/total").asInt(), asAdmin.raw());
+        JsonNode item = asAdmin.body().at("/data/items/0");
+        assertEquals(tokenId, item.path("tokenId").asText(), asAdmin.raw());
+        assertEquals(BIDDER_A_ID, item.path("agentUserId").asText(), asAdmin.raw());
+        assertTrue(item.path("token").isMissingNode(), "总览不得含明文：" + item);
+    }
+
+    @Test
+    @DisplayName("自助接口需要登录：匿名 401；过期时间非法是 400")
+    void selfServiceRequiresAuthAndValidates() {
+        String auctionId = createRunningAuction("自助校验", 100, 10, 600);
+
+        Resp anonymous = call("POST", "/api/v1/me/agent-tokens", null,
+                myTokenRequestJson("匿名", List.of(auctionId), List.of("auction:read"),
+                        Instant.now().plusSeconds(600), null));
+        assertEquals(401, anonymous.code(), anonymous.raw());
+        assertCode("UNAUTHENTICATED", anonymous);
+
+        Resp anonList = call("GET", "/api/v1/me/agent-tokens", null, null);
+        assertEquals(401, anonList.code(), anonList.raw());
+
+        Resp expired = call("POST", "/api/v1/me/agent-tokens", bidderToken(),
+                myTokenRequestJson("过期", List.of(auctionId), List.of("auction:read"),
+                        Instant.now().minusSeconds(60), null));
+        assertEquals(400, expired.code(), expired.raw());
+        assertCode("VALIDATION_FAILED", expired);
+
+        Resp blankName = call("POST", "/api/v1/me/agent-tokens", bidderToken(),
+                myTokenRequestJson(" ", List.of(auctionId), List.of("auction:read"),
+                        Instant.now().plusSeconds(600), null));
+        assertEquals(400, blankName.code(), blankName.raw());
+        assertCode("VALIDATION_FAILED", blankName);
+
+        assertEquals(0, Fixtures.count(ds, "SELECT COUNT(*) FROM agent_tokens"),
+                "被拒的自助签发不得留下记录");
+    }
+
     // ---------------------------------------------------------------- 工具
+
+    private static String myTokenRequestJson(String name, List<String> auctionIds, List<String> scopes,
+            Instant expiresAt, Integer rateLimit) {
+        StringBuilder sb = new StringBuilder("{");
+        sb.append("\"name\":\"").append(name).append("\",");
+        if (auctionIds != null) {
+            sb.append("\"auctionIds\":").append(jsonArray(auctionIds)).append(',');
+        }
+        sb.append("\"scopes\":").append(jsonArray(scopes)).append(',');
+        sb.append("\"expiresAt\":\"").append(expiresAt).append('"');
+        if (rateLimit != null) {
+            sb.append(",\"rateLimitPerMinute\":").append(rateLimit);
+        }
+        return sb.append('}').toString();
+    }
 
     private String issueToken(String auctionId, List<String> scopes) {
         return issueToken(auctionId, scopes, Instant.now().plusSeconds(3600), null);

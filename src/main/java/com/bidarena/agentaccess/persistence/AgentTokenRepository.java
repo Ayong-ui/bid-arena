@@ -9,9 +9,15 @@ import com.bidarena.shared.ErrorCode;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.stream.Collectors;
 import javax.sql.DataSource;
 
 /**
@@ -82,11 +88,85 @@ public class AgentTokenRepository {
         return affected != null && affected > 0;
     }
 
+    // ---------------------------------------------------------------- 列表（管理视图）
+
+    /**
+     * 一枚 Token 的管理摘要。
+     *
+     * <p>为什么不复用 {@link AgentToken}：那个类型是<b>授权判定</b>用的，缺少
+     * {@code createdAt}（审计需要）与"已吊销时刻"的可空语义；把管理字段塞进它，
+     * 会让鉴权路径上的对象携带一批与判定无关的字段，日后很难说清哪些字段被谁读过。
+     */
+    public record TokenSummaryRow(String tokenId, String name, String agentUserId, Set<String> scopes,
+            Set<String> auctionIds, int rateLimitPerMinute, Instant expiresAt, Instant revokedAt,
+            Instant createdAt) {}
+
+    /** 某用户名下的 Token，按签发时间倒序（新的在前）。 */
+    public List<TokenSummaryRow> pageByAgentUser(String agentUserId, int limit, int offset) {
+        return summaries("agent_user_id = ?", List.of(agentUserId), limit, offset);
+    }
+
+    public long countByAgentUser(String agentUserId) {
+        Long total = Db.read(dataSource, conn -> Db.queryOne(conn,
+                "SELECT COUNT(*) FROM agent_tokens WHERE agent_user_id = ?", rs -> rs.getLong(1), agentUserId));
+        return total == null ? 0 : total;
+    }
+
+    /** 全部 Token（管理员视图），按签发时间倒序。 */
+    public List<TokenSummaryRow> pageAll(int limit, int offset) {
+        return summaries("", List.of(), limit, offset);
+    }
+
+    public long countAll() {
+        Long total = Db.read(dataSource, conn -> Db.queryOne(conn,
+                "SELECT COUNT(*) FROM agent_tokens", rs -> rs.getLong(1)));
+        return total == null ? 0 : total;
+    }
+
+    /**
+     * 一次查一页 Token，再用一条 {@code IN} 批量补齐拍卖范围。
+     *
+     * <p>刻意不做"每枚 Token 各查一次范围"：列表页最多 100 行，那会是 100 次往返。
+     * 两条查询就能拿全，且不改变任何语义。
+     */
+    private List<TokenSummaryRow> summaries(String where, List<Object> whereArgs, int limit, int offset) {
+        return Db.read(dataSource, conn -> {
+            List<Object> params = new ArrayList<>(whereArgs);
+            params.add(limit);
+            params.add(offset);
+            String sql = "SELECT token_id, name, agent_user_id, scopes, rate_limit_per_minute, "
+                    + "expires_at, revoked_at, created_at FROM agent_tokens "
+                    + (where.isEmpty() ? "" : "WHERE " + where + " ")
+                    + "ORDER BY id DESC LIMIT ? OFFSET ?";
+            List<Row> rows = Db.queryList(conn, sql, AgentTokenRepository::mapRow, params.toArray());
+            if (rows.isEmpty()) {
+                return List.of();
+            }
+            List<String> tokenIds = rows.stream().map(Row::tokenId).toList();
+            Map<String, Set<String>> auctionIdsByToken = new HashMap<>();
+            Db.queryList(conn,
+                    "SELECT token_id, auction_id FROM agent_token_auctions WHERE token_id IN ("
+                            + Db.placeholders(tokenIds.size()) + ") ORDER BY auction_id",
+                    rs -> Map.entry(rs.getString(1), rs.getString(2)), tokenIds.toArray())
+                    .forEach(entry -> auctionIdsByToken
+                            .computeIfAbsent(entry.getKey(), key -> new LinkedHashSet<>())
+                            .add(entry.getValue()));
+            List<TokenSummaryRow> summaries = new ArrayList<>(rows.size());
+            for (Row row : rows) {
+                summaries.add(new TokenSummaryRow(row.tokenId(), row.name(), row.agentUserId(),
+                        scopeWires(parseScopes(row.scopes())),
+                        Set.copyOf(auctionIdsByToken.getOrDefault(row.tokenId(), Set.of())),
+                        row.rateLimitPerMinute(), row.expiresAt(), row.revokedAt(), row.createdAt()));
+            }
+            return summaries;
+        });
+    }
+
     // ---------------------------------------------------------------- 映射
 
     private static AgentToken load(java.sql.Connection conn, String where, Object arg) throws SQLException {
         Row row = Db.queryOne(conn,
-                "SELECT token_id, name, agent_user_id, scopes, rate_limit_per_minute, expires_at, revoked_at "
+                "SELECT token_id, name, agent_user_id, scopes, rate_limit_per_minute, expires_at, revoked_at, created_at "
                         + "FROM agent_tokens WHERE " + where,
                 AgentTokenRepository::mapRow, arg);
         if (row == null) {
@@ -102,14 +182,19 @@ public class AgentTokenRepository {
     private static Row mapRow(ResultSet rs) throws SQLException {
         return new Row(rs.getString("token_id"), rs.getString("name"), rs.getString("agent_user_id"),
                 rs.getString("scopes"), rs.getInt("rate_limit_per_minute"),
-                Db.instant(rs, "expires_at"), Db.instant(rs, "revoked_at"));
+                Db.instant(rs, "expires_at"), Db.instant(rs, "revoked_at"), Db.instant(rs, "created_at"));
     }
 
     private record Row(String tokenId, String name, String agentUserId, String scopes,
-            int rateLimitPerMinute, Instant expiresAt, Instant revokedAt) {}
+            int rateLimitPerMinute, Instant expiresAt, Instant revokedAt, Instant createdAt) {}
 
     static String wireScopes(Set<AgentScope> scopes) {
         return AgentScopes.wire(scopes);
+    }
+
+    /** 权限集合 → 有序的契约字面量集合，供管理视图输出。 */
+    private static Set<String> scopeWires(Set<AgentScope> scopes) {
+        return scopes.stream().map(AgentScope::wire).collect(Collectors.toCollection(TreeSet::new));
     }
 
     /**

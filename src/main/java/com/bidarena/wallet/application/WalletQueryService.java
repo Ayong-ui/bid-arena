@@ -41,4 +41,17 @@ public class WalletQueryService {
         return new PageQuery.Page<>(
                 rows.stream().map(WalletViews.LedgerEntry::of).toList(), page.page(), page.size(), total);
     }
+
+    /**
+     * 某场拍卖的全部流水（管理员视图）。
+     *
+     * <p>与个人流水共用同一个投影，只是把筛选维度从 {@code user_id} 换成 {@code auction_id}。
+     * 这是运营核对"最后成交的是 AI 还是人"的入口：{@code actorType} 就落在每一条流水上。
+     */
+    public PageQuery.Page<WalletViews.LedgerEntry> ledgerByAuction(String auctionId, PageQuery page) {
+        List<LedgerRow> rows = wallets.pageLedgerByAuction(auctionId, page.limit(), page.offset());
+        long total = wallets.countLedgerByAuction(auctionId);
+        return new PageQuery.Page<>(
+                rows.stream().map(WalletViews.LedgerEntry::of).toList(), page.page(), page.size(), total);
+    }
 }

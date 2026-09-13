@@ -240,6 +240,8 @@ class HttpApiIntegrationTest extends ApiTestHarness {
         assertEquals(120, snapshot.body().at("/data/currentPrice").asLong());
         assertEquals("usr_bidder_a", snapshot.body().at("/data/leader").asText());
         assertEquals(1, snapshot.body().at("/data/participantCount").asInt());
+        // 博弈时间窗口由服务端下发，前端据此提示（值来自接线时的配置，测试用默认 20）。
+        assertEquals(20, snapshot.body().at("/data/finalGameWindowSeconds").asLong());
     }
 
     @Test
@@ -369,6 +371,53 @@ class HttpApiIntegrationTest extends ApiTestHarness {
         Resp wallet = call("GET", "/api/v1/wallets/me", token, null);
         assertEquals(850, wallet.body().at("/data/totalBalance").asLong());
         assertEquals(0, wallet.body().at("/data/frozenAmount").asLong());
+    }
+
+    @Test
+    @DisplayName("成交主体是隐私：赢家与管理员可见 winnerType，落败者拿到 null")
+    void winnerTypeVisibleOnlyToWinnerAndAdmin() {
+        String auctionId = createRunningAuction("主体隐私", 100, 10, 600);
+        join(auctionId, bidderTokenB());
+        assertCode("OK", call("POST", "/api/v1/auctions/" + auctionId + "/bids", bidderTokenB(),
+                json("requestId", "privacy-human-1", "amount", 110)));
+        // A 以 Agent 身份超越并赢下。用服务直接出价，是为了只验证"读结果时的隐私遮蔽"这一件事。
+        Fixtures.bidService(ds).placeBid(auctionId, BIDDER_A_ID, 150, "privacy-agent-1", "AGENT");
+
+        Fixtures.expireAuction(ds, auctionId);
+        Fixtures.scheduler(ds, 50).tick();
+
+        Resp asWinner = call("GET", "/api/v1/auctions/" + auctionId + "/result", bidderToken(), null);
+        assertEquals("AGENT", asWinner.body().at("/data/winnerType").asText(), asWinner.raw());
+
+        Resp asAdmin = call("GET", "/api/v1/auctions/" + auctionId + "/result", adminToken(), null);
+        assertEquals("AGENT", asAdmin.body().at("/data/winnerType").asText(), asAdmin.raw());
+
+        Resp asLoser = call("GET", "/api/v1/auctions/" + auctionId + "/result", bidderTokenB(), null);
+        assertTrue(asLoser.body().path("data").path("winnerType").isMissingNode()
+                        || asLoser.body().at("/data/winnerType").isNull(),
+                "非赢家不应看到成交主体：" + asLoser.raw());
+    }
+
+    @Test
+    @DisplayName("管理员按场次查流水：可见 actorType；普通用户 403")
+    void adminAuctionLedgerRequiresAdminAndShowsActorType() {
+        String auctionId = createRunningAuction("管理员流水", 100, 10, 600);
+        Fixtures.bidService(ds).placeBid(auctionId, BIDDER_A_ID, 150, "ledger-agent-1", "AGENT");
+        Fixtures.expireAuction(ds, auctionId);
+        Fixtures.scheduler(ds, 50).tick();
+
+        Resp asBidder = call("GET", "/api/v1/admin/auctions/" + auctionId + "/ledger", bidderToken(), null);
+        assertEquals(403, asBidder.code(), asBidder.raw());
+        assertCode("FORBIDDEN", asBidder);
+
+        Resp asAdmin = call("GET", "/api/v1/admin/auctions/" + auctionId + "/ledger", adminToken(), null);
+        assertEquals(200, asAdmin.code(), asAdmin.raw());
+        assertEquals(2, asAdmin.body().at("/data/total").asLong(), asAdmin.raw());
+        // 倒序：id 最大的是结算扣款，其次是冻结。两者都应带 Agent 主体。
+        assertEquals("SETTLE", asAdmin.body().at("/data/items/0/type").asText(), asAdmin.raw());
+        assertEquals("AGENT", asAdmin.body().at("/data/items/0/actorType").asText(), asAdmin.raw());
+        assertEquals("FREEZE", asAdmin.body().at("/data/items/1/type").asText(), asAdmin.raw());
+        assertEquals("AGENT", asAdmin.body().at("/data/items/1/actorType").asText(), asAdmin.raw());
     }
 
     @Test
