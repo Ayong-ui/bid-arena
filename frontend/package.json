@@ -8,6 +8,7 @@
     "build": "vite build",
     "typecheck": "vue-tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
+    "test:live": "vitest run --no-file-parallelism src/api/live.test.ts src/realtime/live.test.ts",
     "mutate": "python tools/mutation_check.py",
     "gen:api": "openapi-typescript ../docs/openapi.yaml -o src/api/schema.d.ts"
   },
