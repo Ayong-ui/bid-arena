@@ -1,8 +1,9 @@
 package com.bidarena.support;
 
-import com.bidarena.auction.adapter.AuctionRepository;
 import com.bidarena.auction.application.BidService;
-import com.bidarena.wallet.adapter.WalletRepository;
+import com.bidarena.auction.application.SettlementScheduler;
+import com.bidarena.auction.application.SettlementService;
+import com.bidarena.bootstrap.Services;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -25,9 +26,27 @@ public final class Fixtures {
 
     private Fixtures() {}
 
-    /** 按生产接线方式装配被测服务，避免测试自己拼一套注入关系而与线上不一致。 */
+    /**
+     * 按生产接线方式装配被测服务。
+     *
+     * <p>刻意调用生产用的组合根 {@link Services#wire} 而不是在这里自己 {@code new} 一遍：
+     * 测试里的依赖关系与线上完全一致，才不会出现"线上忘了接线而测试全绿"。
+     */
     public static BidService bidService(DataSource ds) {
-        return new BidService(ds, new AuctionRepository(ds), new WalletRepository(ds));
+        return Services.wire(ds).bids;
+    }
+
+    /** 同上，结算服务。 */
+    public static SettlementService settlementService(DataSource ds) {
+        return Services.wire(ds).settlement;
+    }
+
+    /**
+     * 一个尚未启动的扫描器。测试用 {@link SettlementScheduler#tick()} 逐轮驱动，
+     * 而不是真等定时器——否则测试要么慢，要么靠 sleep 猜时间，两者都不可靠。
+     */
+    public static SettlementScheduler scheduler(DataSource ds, int batchSize) {
+        return new SettlementScheduler(settlementService(ds), 60_000L, batchSize);
     }
 
     /** 建一个可用余额为 {@code balance} 的用户。 */
@@ -68,10 +87,35 @@ public final class Fixtures {
                 auctionId, userId);
     }
 
+    /** 把拍卖推到"已过期但尚未结算"：截止时间设为数据库当前时间减 1 秒。 */
+    public static void expireAuction(DataSource ds, String auctionId) {
+        exec(ds, "UPDATE auctions SET ends_at = DATE_ADD(NOW(6), INTERVAL -1 SECOND) WHERE id = ?", auctionId);
+    }
+
     // ---------------------------- 断言用的读 ----------------------------
 
     public static String leader(DataSource ds, String auctionId) {
         return scalarString(ds, "SELECT leader_id FROM auctions WHERE id = ?", auctionId);
+    }
+
+    public static String status(DataSource ds, String auctionId) {
+        return scalarString(ds, "SELECT status FROM auctions WHERE id = ?", auctionId);
+    }
+
+    public static long totalBalance(DataSource ds, String userId) {
+        return scalar(ds, "SELECT total_balance FROM wallets WHERE user_id = ?", userId);
+    }
+
+    /** 成交记录，用 {@code "winner|finalPrice|reason"} 一行表示；未结算返回 null。 */
+    public static String settlement(DataSource ds, String auctionId) {
+        return scalarString(ds,
+                "SELECT CONCAT(COALESCE(winner_id, '-'), '|', final_price, '|', reason) "
+                        + "FROM settlements WHERE auction_id = ?",
+                auctionId);
+    }
+
+    public static int settlementCount(DataSource ds, String auctionId) {
+        return count(ds, "SELECT COUNT(*) FROM settlements WHERE auction_id = ?", auctionId);
     }
 
     public static long currentPrice(DataSource ds, String auctionId) {

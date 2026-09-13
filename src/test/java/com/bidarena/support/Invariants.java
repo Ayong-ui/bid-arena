@@ -47,6 +47,8 @@ public final class Invariants {
         failures.addAll(bidChainStrictlyIncreasing(ds, auctionId));
         failures.addAll(oneBidPerRequest(ds));
         failures.addAll(bidRowsMatchSuccessfulRequests(ds, auctionId));
+        failures.addAll(settlementIsConsistent(ds));
+        failures.addAll(oneSettlementPerAuction(ds));
 
         if (!failures.isEmpty()) {
             StringBuilder sb = new StringBuilder("不变量校验失败，共 " + failures.size() + " 项：\n");
@@ -101,22 +103,30 @@ public final class Invariants {
      *
      * <p>这是最强的一条：它同时约束了"新领先者冻结多少"与"旧领先者释放多少"。
      * 任一侧算错，本场的冻结总额就不再等于价格，立刻暴露。
+     *
+     * <p>已结束的拍卖（{@code SETTLING}/{@code FINISHED}/{@code CANCELLED}）则要求本场冻结**归零**：
+     * 结算的职责就是把冻结清干。若只写 {@code leader != null ⇒ 等于价格}，
+     * 结算完成后领先者仍然挂着，这条不变量反而会误报——所以它必须跟着状态一起看。
      */
     public static List<Failure> auctionFrozenEqualsPrice(DataSource ds, String auctionId) {
         return query(ds,
-                "SELECT a.leader_id, a.current_price, COALESCE(SUM(p.frozen_amount), 0) "
+                "SELECT a.status, a.leader_id, a.current_price, COALESCE(SUM(p.frozen_amount), 0) "
                         + "FROM auctions a LEFT JOIN auction_participants p ON p.auction_id = a.id "
-                        + "WHERE a.id = ? GROUP BY a.leader_id, a.current_price",
+                        + "WHERE a.id = ? GROUP BY a.status, a.leader_id, a.current_price",
                 rs -> {
-                    String leader = rs.getString(1);
-                    long price = rs.getLong(2);
-                    long frozen = rs.getLong(3);
-                    long expected = leader == null ? 0L : price;
+                    String status = rs.getString(1);
+                    String leader = rs.getString(2);
+                    long price = rs.getLong(3);
+                    long frozen = rs.getLong(4);
+                    boolean finished = "SETTLING".equals(status) || "FINISHED".equals(status)
+                            || "CANCELLED".equals(status);
+                    long expected = finished || leader == null ? 0L : price;
                     if (frozen == expected) {
                         return null;
                     }
                     return new Failure("INV-1 本场冻结等于最高价",
-                            "leader=" + leader + " 当前价=" + price + " 本场冻结合计=" + frozen);
+                            "status=" + status + " leader=" + leader + " 当前价=" + price
+                                    + " 本场冻结合计=" + frozen + " 期望=" + expected);
                 },
                 auctionId);
     }
@@ -226,6 +236,81 @@ public final class Invariants {
     }
 
     // ------------------------------------------------------------------
+
+    /**
+     * INV-4：一场拍卖至多一条成交记录，且成交记录必须能被流水解释。
+     *
+     * <p>这条覆盖了原文里"重复定时任务 / 重复请求 / 服务重启 / 两个实例同时触发
+     * 都不能重复扣款、重复生成成交记录或重复记流水"的全部可观测后果。
+     * 它比"查一下结算行数是不是 1"更强的地方在于：
+     * <ul>
+     *   <li>{@code settle_rows = 1} 同时否定了"漏扣"（0 行）与"重复扣款"（2 行）；</li>
+     *   <li>{@code settle_sum} 与 {@code final_price} 相等，否定"扣两次钱记一条流水"；</li>
+     *   <li>{@code settle_user} 与赢家一致，否定"扣错人"；</li>
+     *   <li>{@code frozen_left = 0} 否定"结算了但冻结没清"——钱会永久悬着，是资金系统最隐蔽的缺陷。</li>
+     * </ul>
+     * 无赢家的场次（{@code NO_BIDS} / {@code CANCELLED}）则要求成交价为 0 且没有任何 SETTLE 流水，
+     * 即原文的"不得产生扣款"。
+     */
+    public static List<Failure> settlementIsConsistent(DataSource ds) {
+        return query(ds,
+                "SELECT s.auction_id, s.winner_id, s.final_price, s.reason, "
+                        + "  (SELECT COUNT(*) FROM ledger_entries l WHERE l.auction_id = s.auction_id "
+                        + "     AND l.entry_type = 'SETTLE') AS settle_rows, "
+                        + "  (SELECT COALESCE(SUM(l.amount), 0) FROM ledger_entries l WHERE l.auction_id = s.auction_id "
+                        + "     AND l.entry_type = 'SETTLE') AS settle_sum, "
+                        + "  (SELECT l.user_id FROM ledger_entries l WHERE l.auction_id = s.auction_id "
+                        + "     AND l.entry_type = 'SETTLE' LIMIT 1) AS settle_user, "
+                        + "  (SELECT COALESCE(SUM(p.frozen_amount), 0) FROM auction_participants p "
+                        + "     WHERE p.auction_id = s.auction_id) AS frozen_left "
+                        + "FROM settlements s",
+                rs -> {
+                    String auctionId = rs.getString("auction_id");
+                    String winner = rs.getString("winner_id");
+                    long finalPrice = rs.getLong("final_price");
+                    String reason = rs.getString("reason");
+                    int settleRows = rs.getInt("settle_rows");
+                    long settleSum = rs.getLong("settle_sum");
+                    String settleUser = rs.getString("settle_user");
+                    long frozenLeft = rs.getLong("frozen_left");
+
+                    if (frozenLeft != 0) {
+                        return new Failure("INV-4 结算后冻结归零",
+                                "auction=" + auctionId + " 本场残留冻结=" + frozenLeft);
+                    }
+                    if (settleRows > 1) {
+                        return new Failure("INV-4 不得重复扣款",
+                                "auction=" + auctionId + " SETTLE 流水条数=" + settleRows);
+                    }
+                    if (winner == null) {
+                        if (finalPrice != 0 || settleRows != 0) {
+                            return new Failure("INV-4 无赢家不得扣款",
+                                    "auction=" + auctionId + " reason=" + reason + " 成交价=" + finalPrice
+                                            + " SETTLE 流水条数=" + settleRows);
+                        }
+                        return null;
+                    }
+                    if (!"TIMEOUT".equals(reason)) {
+                        return new Failure("INV-4 有赢家必有成交原因",
+                                "auction=" + auctionId + " winner=" + winner + " reason=" + reason);
+                    }
+                    if (settleRows != 1 || settleSum != finalPrice || !winner.equals(settleUser)) {
+                        return new Failure("INV-4 扣款金额与赢家可解释",
+                                "auction=" + auctionId + " winner=" + winner + " 成交价=" + finalPrice
+                                        + " SETTLE 条数=" + settleRows + " 合计=" + settleSum
+                                        + " 扣款用户=" + settleUser);
+                    }
+                    return null;
+                });
+    }
+
+    /** INV-4：一场拍卖不得有多条成交记录（主键应已阻止，此处再确认一次）。 */
+    public static List<Failure> oneSettlementPerAuction(DataSource ds) {
+        return query(ds,
+                "SELECT auction_id, COUNT(*) FROM settlements GROUP BY auction_id HAVING COUNT(*) > 1",
+                rs -> new Failure("INV-4 唯一结算",
+                        "auction=" + rs.getString(1) + " 成交记录条数=" + rs.getInt(2)));
+    }
 
     @FunctionalInterface
     private interface FailureMapper {
