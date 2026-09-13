@@ -31,6 +31,18 @@
       <groupId>org.noear</groupId>
       <artifactId>solon-web</artifactId>
       <version>${solon.version}</version>
+      <!--
+        排除 Solon 自带的 snack3 序列化器。solon-web 默认会带进来一个，
+        而它会和下面显式声明的 Jackson 同时注册；两个都在时由插件加载顺序决定谁生效，
+        结果是"项目说用 Jackson，实际跑的是 snack3"。snack3 对 @Body 的解析更严格，
+        会直接抛 Format error（DEBUG_LOG DBG-11）。这里把只有一个序列化器这件事钉死。
+      -->
+      <exclusions>
+        <exclusion>
+          <groupId>org.noear</groupId>
+          <artifactId>solon-serialization-snack3</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.noear</groupId>
