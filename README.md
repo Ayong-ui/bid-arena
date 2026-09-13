@@ -2,7 +2,7 @@
 
 仓库地址：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开启分支保护）
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V3）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**，以及 **HTTP API + JWT 鉴权 + RBAC + 统一响应封套**（含 63 个真实 MySQL 集成测试，覆盖 INV-1~4 与 C 组接口验收项）。尚未完成：WebSocket 推送与 `seq` 恢复、前端接真实接口、Agent API。
+这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V3）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**，以及 **WebSocket 实时事件与 `seq` 缺口恢复**（含 116 个真实 MySQL 集成测试，覆盖 INV-1~4 与 A/C 组相关验收项）。尚未完成：前端接真实 HTTP/WS、Agent API、模拟脚本与 Compose/E2E。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
@@ -38,7 +38,7 @@ mvn clean verify
 
 - 用 `clean` 而不是 `mvn test`：迁移脚本位于仓库根目录 `db/migration/`，增量构建可能让应用跑到旧副本（见 `DEBUG_LOG.md` DBG-2）。
 - 测试会自动建表、执行 Flyway 迁移，并在每个用例前清空业务表；库名不得与开发库相同，否则拒绝启动。
-- HTTP 集成测试会**自己启动一个完整的服务实例**（随机空闲端口，不会是 8080），并在结束时停掉；因此跑测试不需要先手动起后端。
+- HTTP 与 WebSocket 集成测试**共用同一个自启动的服务实例**（随机空闲端口，不会是 8080），整轮测试结束时停掉；因此跑测试不需要先手动起后端。
 - 断言消息含中文；Windows 控制台若乱码，执行 `chcp 65001`，或直接看 `target/surefire-reports/` 下的报告。
 
 当前断言内容与未验证部分见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
@@ -81,8 +81,32 @@ npm run dev
 | POST | `/api/v1/admin/auctions` | 管理员：创建拍卖（201） |
 | POST | `/api/v1/admin/auctions/{id}/start` | 管理员：开始拍卖 |
 | POST | `/api/v1/admin/auctions/{id}/cancel` | 管理员：取消并释放全部冻结 |
+| POST | `/api/v1/auth/ws-tickets` | 领一张一次性 WebSocket 入场券（60 秒有效，见下节） |
 
 演示账号（种子数据，与原文一致）：`admin@example.com / Admin123456!`、`bidder_a@example.com / Test123456!`、`bidder_b@example.com / Test123456!`。
+
+### 已实现的实时通道（WebSocket）
+
+事件信封（`auctionId` / `seq` / `serverTime` / `type` / `payload`）、七种事件类型、可见范围、序号语义与客户端重同步规则见 [docs/REALTIME_AND_COMMAND_FLOW.md](docs/REALTIME_AND_COMMAND_FLOW.md)，自动化验证汇总见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md) 的 A8/C3/C4/C5。
+
+两步接入（也可直接用任意 WS 客户端）：
+
+```bash
+# 1. 用已登录的 JWT 换一张一次性票（不要去猜 WS 端口，响应会告诉你）
+curl -s -X POST http://localhost:8080/api/v1/auth/ws-tickets \
+  -H "Authorization: Bearer $TOKEN"
+# → {"code":"OK","data":{"ticket":"...","expiresAt":"...","wsPath":"/ws/auctions/{auctionId}","wsPort":18080}}
+
+# 2. 连上去（把 {auctionId} 换成真 ID，把 ticket 填进去）
+#    ws://localhost:18080/ws/auctions/{auctionId}?ticket=<ticket>
+```
+
+连接成功后先收到一帧权威快照（`type=AUCTION_SNAPSHOT`，带当前 `seq`），再收到 `CONNECTION_STATE`。之后：
+
+- 只有**参与者**（或 ADMIN）能收到该场事件；未加入会收到 `NOT_JOINED` 并断开。
+- 事件里的用户标识是匿名值（`anon-` + SHA-256 前 8 位），不是原始 `user_id`；详见 D-21。
+- `seq` 是“已提交状态变更的版本号”：一次命令 +1，被拒的出价不推，一次提交的多个事件共用一个 `seq`。发现缺口就重取 `GET /api/v1/auctions/{id}`，不要猜测。
+- **发往服务端的消息会被忽略**：命令入口只有 HTTP（D-22）。
 
 ## 设计与决策
 

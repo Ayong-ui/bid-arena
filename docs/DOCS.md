@@ -34,7 +34,7 @@
 | 文件 | 权威范围 | 状态 |
 |---|---|---|
 | `DESIGN.md` | 架构边界、出价事务与结算方案、并发与失败恢复（原文必交） | ✅ 保留 |
-| `DECISIONS.md` | 技术选型与取舍：背景、候选、选择、代价、验证（原文必交） | ✅ 已写 D-1~D-9（验证结果随实现补全） |
+| `DECISIONS.md` | 技术选型与取舍：背景、候选、选择、代价、验证（原文必交） | ✅ 已写 D-1~D-23（未验证项标 ⏳，不预填结论） |
 | `docs/DOMAIN_DESIGN.md` | 领域边界、聚合、不变量、两个一致性边界 | ✅ 已重写 |
 | `docs/FUNDING_AND_CONCURRENCY.md` | 差额冻结、锁顺序、幂等、结算/取消的失败分支 | ✅ 已重写 |
 | `docs/PRODUCT_PROTOTYPE.md` | 页面地图、组件、交互原型 | ✅ 已创建 |
@@ -43,9 +43,9 @@
 
 | 文件 | 权威范围 | 状态 |
 |---|---|---|
-| `README.md` | 快速启动完整路径、演示账号、**未完成边界** | 🔁 待更新 |
+| `README.md` | 快速启动完整路径、演示账号、**未完成边界** | ✅ 已更新（含 HTTP 接口表、WS 接入两步、一键验证与未完成范围） |
 | `AI_USAGE.md` | AI 分工比例、本人设计决定、未采用方案、真实错误（原文必交） | ➕ 待创建 |
-| `DEBUG_LOG.md` | 开发期间真实问题的现象/日志/定位/修复/验证（原文必交） | ➕ 待创建 |
+| `DEBUG_LOG.md` | 开发期间真实问题的现象/日志/定位/修复/验证（原文必交） | ✅ 已写 DBG-1~DBG-17 |
 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 让 Coding Agent 查询与出价（原文必交） | ➕ 待创建 |
 
 ### 第 4 层｜工程控制（防偏差机制）
@@ -126,6 +126,7 @@
 - ✅ ledger 归属：保留独立 `GET /wallets/me/ledger`；`/wallets/me` 只返回余额，冲突随联调文档删除而消除。
 - ✅ Agent 路径补充独立 server（`:8090`）；`CreateAgentTokenRequest` 补 `agentUserId`；新增 `AuctionResult` schema。
 - ⏳ `SETTLING` 在前端类型中的体现：待 P4 由 openapi 生成前端类型时解决。
+- ✅ P3：`WsTicket` 补 `wsPath` / `wsPort`（让客户端不必猜 WS 端口与路径），`POST /auth/ws-tickets` 补 `429`（票容量上限）。事件结构仍只在 `REALTIME_AND_COMMAND_FLOW.md` 定义，本文件只固定入口。
 
 ## 7. 文档更新时机
 

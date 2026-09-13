@@ -21,15 +21,20 @@
 由真实 MySQL 集成测试调用（`BidConcurrencyTest` 5 个、`BidServiceTest` 11 个、
 `SettlementConcurrencyTest` 5 个、`SettlementServiceTest` 11 个）。
 
-P2 追加 31 个用例，全量共 **63 个**，运行方式见 [`README.md` 一键验证](../README.md)：
+P2 追加 31 个用例；P3 再追加 53 个，全量共 **116 个**，运行方式见 [`README.md` 一键验证](../README.md)：
 
 | 测试类 | 数量 | 覆盖 |
 |---|---:|---|
 | `HttpApiIntegrationTest` | 19 | 封套与错误码全路径（200/201/400/401/403/404/405/409）、鉴权与默认拒绝、RBAC、CORS 预检、出价全链路（加入 → 出价 → 幂等重放 → 钱包冻结 → 流水 → 快照 → 结算 → 结果）、取消释放、分页与过滤边界 |
+| `WsIntegrationTest` | 14 | 真连 WS：握手首帧快照 + `connected=true`、票一次性 / 伪造 / 缺失被拒、未加入与不存在拍卖的错误码可区分、ADMIN 旁观、出价广播给全场且只推进一个 `seq`、拒绝事件只到本人、延时与出价共享 `seq`、订阅者 `seq` 无缺口、重连快照补齐、客户端消息被忽略、取消终局广播 |
+| `EventPublishingTest` | 11 | 真库真事务下的事件语义：`BID_ACCEPTED` 与库内状态一致、延时共享 `seq`、拒绝不推进 `seq` 且只单播、重放不广播、**A8 广播故障不回滚已提交事务**（含资金落账断言）、首次加入才推 `seq`、开拍快照、结算/无人出价终局、全流程事件无原始 `user_id` |
+| `WsEventBroadcasterTest` | 14 | 广播器的选择与计数：只发同场订阅者、同人两连接都收、单播不泄漏、fail-closed 拒绝单播事件扇出、退订幂等、单连接失败隔离、异步失败计数、死连接摘除、帧格式与匿名标识、`null` 字段缺席 |
+| `WsTicketServiceTest` | 10 | 可控时钟下的票：签发/核销、一次性、过期（含到期时刻边界）、未知票、不可枚举、容量上限与顺手清理、无身份不可签发、角色随票传递 |
+| `AnonymousIdTest` | 4 | 确定性、跨用户唯一且不含原值、`null` 安全、固定向量（`anon-2952873c`，跨端契约） |
 | `IdentityServiceTest` | 10 | 登录签发/校验令牌、角色与过期、篡改/错密钥/空令牌拒绝、三种失败返回同一响应、弱密钥快速失败、`toString` 不泄露哈希 |
 | `SeededDemoCredentialsTest` | 2 | 从迁移脚本里按行解析种子账号，用 BCrypt 实测三个演示口令可登录、错口令不可登录，且明文口令不出现在仓库文件中 |
 
-HTTP 集成测试**自己启动一个完整的服务实例**（随机空闲端口、独立于 8080），因此它同时验证了“组合根接线是否可用”，而不只是控制器逻辑。
+HTTP 集成测试与 WS 集成测试**共用同一个自启动的服务实例**（随机空闲端口、独立于 8080），因此它们同时验证了“组合根接线是否可用”与“实时通道真的接上了同一个对象图”，而不只是控制器逻辑。
 
 **测试有效性经过变异测试反向确认**，不以“全绿”为证据：
 
@@ -41,13 +46,20 @@ HTTP 集成测试**自己启动一个完整的服务实例**（随机空闲端�
 | 赢家当普通出价者处理（只释放不扣款） | 赢家必须被扣款 | 11 个用例失败 |
 | `settleWinner` 结算时钱包冻结不减 | 两层冻结一致 | 11 个用例失败（含 4 个内部错误） |
 | 一致性检查从 `!=` 放宽成 `>`（少扣也放行） | 少扣必须被拒绝 | 1 个用例失败，正是 `oneFailingAuctionDoesNotBlockTheRestOfTheBatch` |
+| payload 允许 `null` 值（去掉 `AuctionEvents.put` 的空值跳过） | 字段缺席语义 | 6 个用例失败（含“无人出价时没有 winner 字段”） |
+| 重复 `join` 也推进 `seq` | 只有首次加入是状态变更 | `EventPublishingTest.firstJoinBumpsSeqOnlyOnce` 失败 |
+| 广播失败不再被吞掉（去掉 A8 边界） | 已提交事务不受广播影响 | `EventPublishingTest.broadcastFailureDoesNotRollbackCommittedBid` 失败 |
+| 票可重复核销（`remove` 改 `get`） | 一次性票 | `WsTicketServiceTest.singleUse`、`WsIntegrationTest.ticketIsSingleUse` 失败 |
+| `BID_REJECTED` 声明为可扇出 | 失败原因是隐私 | `WsEventBroadcasterTest.refusesToBroadcastUnicastEvents`、`WsIntegrationTest.rejectionIsUnicastOnly` 失败 |
+| 匿名标识改成随机值 | 确定性（前端要能认出自己） | 10 个用例失败（匿名标识与事件内容断言） |
 
 还原后复跑全绿。**绿而不会红，等于没测**——此规则已写入 [`CONTRIBUTING.md` §4 完成定义](../CONTRIBUTING.md)。
 
 ### 尚未验证的部分
 
 以下内容**当前没有任何测试**，属于已知缺口而非已完成：
-WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与模拟脚本（E1/E4/F1）、ArchUnit 包边界规则（D-6 的未验证项）、录屏与现场核验（H 组）。
+Agent 凭据（D1）、前端与模拟脚本（E1/E4/F1）、前端 store 的缺口恢复实现（C5 的客户端一半，服务端一半已在 P3 完成）、
+ArchUnit 包边界规则（D-6 的未验证项）、录屏与现场核验（H 组）。
 
 ## A. 拍卖与资金规则（原文 第 2 页）
 
@@ -60,7 +72,7 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 | A5 | 规则 5 冻结余额 | 释放旧领先者、同用户只加差额、失败不改资金、非负、流水可解释、无半完成 | `BidService` + `WalletRepository` + `ledger_entries` | `previousLeaderIsReleasedOnTransfer`、`bidBelowMinimumIsRejected`，均由 `Invariants` 逐条校验 | ✅ |
 | A6 | 规则 6 最后五秒延时 | 基准为最新截止、最多三次、超限仍成功、与出价同一边界 | `auction.application.BidService` | `bidWithinLastFiveSecondsExtendsDeadlineAtMostThreeTimes`、`bidOutsideWindowDoesNotExtend` | ✅ |
 | A7 | 规则 7 唯一结算 | 赢家扣款、他人释放、无人出价无扣款、自动结算、重启继续、重复触发不重复 | `auction.application.SettlementService` + `SettlementScheduler` | `SettlementServiceTest` 11 个（含 `expiredAuctionDeductsWinnerAndReleasesOthers`、`auctionWithoutAnyBidEndsWithNoWinnerAndNoDeduction`、`schedulerResumesExpiredButUnsettledAuctionsAfterRestart`）、`SettlementConcurrencyTest` 5 个 | ✅ |
-| A8 | 规则 8 通知边界 | 广播失败不回滚、快照可重同步 | 事件发布层（未实现） | 集成测试 + 断线测试 | ⬜ |
+| A8 | 规则 8 通知边界 | 广播失败不回滚、快照可重同步 | `auction/domain/AuctionEventPublisher`（端口）+ `auction/adapter/WsEventBroadcaster` + 各命令服务的事务后发布；`WsTicketService` | `EventPublishingTest.broadcastFailureDoesNotRollbackCommittedBid`（发布器每次都抛异常，断言出价、领先者、冻结、流水四样都落库）、`WsIntegrationTest.reconnectSnapshotCatchesUp`、`handshakeSendsSnapshotThenConnectionState`（权威快照可重取） | ✅ |
 
 ## B. 数据模型（原文 第 2~3 页）
 
@@ -79,17 +91,17 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| C1 | 接口清单 | 覆盖原文列出的 HTTP 路径（含 `/bids` 查询） | `identity/adapter/HttpAuthController`、`auction/adapter/HttpAuctionController`、`auction/adapter/HttpAdminController`、`wallet/adapter/HttpWalletController`、`HealthController`（共 14 个端点） | `HttpApiIntegrationTest` 逐个端点调用（含未实现路径的 404 行为）；契约 `docs/openapi.yaml` | ✅ |
+| C1 | 接口清单 | 覆盖原文列出的 HTTP 路径（含 `/bids` 查询） | `identity/adapter/HttpAuthController`（登录、当前用户、WS 票）、`auction/adapter/HttpAuctionController`、`auction/adapter/HttpAdminController`、`wallet/adapter/HttpWalletController`、`HealthController`（共 15 个端点；契约里另有 5 个 Agent 端点在 P5） | `HttpApiIntegrationTest` 逐个端点调用（含未实现路径的 404 行为）；`WsIntegrationTest` 真连 WS；契约 `docs/openapi.yaml` | ✅ |
 | C2 | 出价请求 | 至少含 `requestId` 与 `amount` | `HttpAuctionController.BidRequest` + `openapi.yaml` | `HttpApiIntegrationTest.bidFlowWithIdempotentReplay`（首次 200 `OK` / 重放 200 `IDEMPOTENCY_REPLAY` 且 `seq` 不变）、`bidGuards`（未加入 409 `NOT_JOINED`、加价不足 409 `BID_TOO_LOW`、金额 0 → 400）、`idempotencyKeyResolution`（缺 `requestId` 400；header 与 body 不一致 400） | ✅ |
-| C3 | 确认事件字段 | 含 `auctionId` / 单调 `seq` / `serverTime` / `type` | 事件 DTO | WS 测试 | ⬜ |
-| C4 | 推荐事件类型 | 快照、加入、接受、拒绝（仅本人）、延时、结束、连接状态 | 事件发布层 | WS 测试 | ⬜ |
-| C5 | seq 缺口处理 | 发现缺口时重新获取权威快照，不猜测 | 前端 store | 前端 Store 测试 + 集成 | ⬜ |
+| C3 | 确认事件字段 | 含 `auctionId` / 单调 `seq` / `serverTime` / `type` | `auction/domain/AuctionEvent`（信封）+ `AuctionEvents`（payload 工厂） | `WsIntegrationTest.handshakeSendsSnapshotThenConnectionState`、`bidIsBroadcastToAllParticipantsOnce`、`seqIsGaplessForSubscriber`；`WsEventBroadcasterTest.frameShapeHidesRawUserId` 断言四字段在顶层且 `seq` 与 payload 内一致 | ✅ |
+| C4 | 推荐事件类型 | 快照、加入、接受、拒绝（仅本人）、延时、结束、连接状态 | `auction/domain/AuctionEventType`（7 类 + 可见范围） | `WsIntegrationTest` 逐类断言（`handshakeSendsSnapshotThenConnectionState`、`bidIsBroadcastToAllParticipantsOnce`、`rejectionIsUnicastOnly`、`extensionSharesSeq`、`cancelBroadcastsFinish`）；范围契约见 `WsEventBroadcasterTest.scopeContract` | ✅ |
+| C5 | seq 缺口处理 | 发现缺口时重新获取权威快照，不猜测 | 服务端：`GET /auctions/{id}` 快照 + 事件 `seq` 单调且无缺口；客户端规则见 `docs/REALTIME_AND_COMMAND_FLOW.md` §6 | 服务端侧已验：`WsIntegrationTest.seqIsGaplessForSubscriber`（版本号只允许相等或 +1）、`reconnectSnapshotCatchesUp`（重连快照严格更新）；客户端 store 待 P4 | 🟨 |
 
 ## D. 竞拍 Agent Token（原文 第 3 页）
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| D1 | Agent Token | 字段齐全、只存摘要、明文仅一次、最小权限、独立凭据 | `db/migration` + `agent_tokens` 表已就位；**认证与签发未实现** | ⏳ 表结构已就位；`/auth/ws-tickets` 与 Agent Token 签发属 P3/P5 | 🟨 |
+| D1 | Agent Token | 字段齐全、只存摘要、明文仅一次、最小权限、独立凭据 | `db/migration` + `agent_tokens` 表已就位；**认证与签发未实现** | ⏳ 表结构已就位；Agent Token 签发与认证属 P5。用户侧的“一次性凭据”已在 P3 落地（`/auth/ws-tickets` 属会话票据而非 Agent 凭据，两者不混用） | 🟨 |
 
 ## E. 模拟脚本与自动化测试（原文 第 3~4 页）
 
@@ -97,7 +109,7 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 |---|---|---|---|---|---|
 | E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `scripts/` 模拟脚本 | 脚本输出断言与摘要 | ⬜ |
 | E2 | 自动化测试 | 覆盖原文列出的全部测试点 | `src/test` | `mvn test` 报告 | ⬜ |
-| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：63 个用例全部跑在真实 MySQL 8.4 上（含 HTTP 集成测试自行启动服务实例） | ✅ |
+| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：116 个用例全部跑在真实 MySQL 8.4 上（HTTP/WS 集成测试共用同一个自启动服务实例） | ✅ |
 | E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend` 测试 | 测试报告 | ⬜ |
 
 ## F. 快速启动与初始数据（原文 第 4 页）

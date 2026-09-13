@@ -695,3 +695,241 @@ System.clearProperty("JWT_SECRET");
 **工程结论**
 
 "这个文件不会提交"是一句降低标准的自我安慰：只要口令出现过，它就会出现在备份、截图、CI 归档里。把凭证交给进程时，也要想清楚谁会把它**记下来**——这次记下来的是测试框架，而测试框架的职责恰好就是"留下证据"。
+
+## DBG-13：同一 JVM 里第二次启动 Solon，服务绑在了旧端口上
+
+**现象**
+
+P3 给测试加了一组 WebSocket 用例（`WsIntegrationTest`），和已有的 HTTP 用例共用一个"起服务"的基座。单独跑任一个类都绿，全量跑时第二个类直接报：
+
+```
+java.lang.IllegalStateException: 服务在 10 秒内没有在端口 40244 上就绪
+	at com.bidarena.support.ApiTestHarness.awaitHealthy(ApiTestHarness.java:345)
+	at com.bidarena.support.ApiTestHarness.startServerOnce(ApiTestHarness.java:137)
+	at com.bidarena.support.ApiTestHarness.bootForClass(ApiTestHarness.java:86)
+```
+
+**定位**
+
+第一版基座用"引用计数"决定何时起停：第一个用它的测试类启动、最后一个用完时停掉。于是全量跑的顺序是"起 → 停 → 再起"。看第二次启动的日志：
+
+```
+Running com.bidarena.api.WsIntegrationTest
+App: Start loading
+Started ServerConnector@{HTTP/1.1}{http://localhost:46267}     ← 上一轮的 HTTP 端口
+Connector:main: websocket: Started ServerConnector{...}{ws://localhost:40541}   ← 上一轮的 WS 端口
+App: End loading elapsed=133ms
+```
+
+而这一次 `freePort()` 给测试记录的新 HTTP 端口是 **40244**。也就是说：**服务起来了，但绑在上一轮的端口上**，`awaitHealthy()` 轮询新端口自然一直连不上。
+
+原因是 Solon 的配置是进程级单例：第一次 `Solon.start` 时 `Solon.cfg()` 已经把 yml 与环境读进内存，第二次 `System.setProperty("server.port", ...)` 就不再起作用（这正是 D-17 那条"系统属性覆盖 yml 真实键"的另一面：覆盖只在**首次加载**时发生）。
+
+还有一个次要教训：基座里本来就有 `assertEquals(port, Solon.cfg().serverPort())` 这条"配置生效"断言，但它排在 `awaitHealthy()` **之后**，于是先等到超时，断言没机会说话。把断言放得离启动越近越好。
+
+**修复**
+
+不再"停掉再起"，改成**一个测试 JVM 只起一个实例**，停服挂在 JUnit 的根上下文存储上（`ExtensionContext.Store.CloseableResource`，整轮测试结束时关闭）：
+
+```java
+@RegisterExtension
+public static final TestServerExtension SERVER_EXTENSION = new TestServerExtension();
+
+public static final class TestServerExtension implements BeforeAllCallback {
+    @Override public void beforeAll(ExtensionContext context) {
+        context.getRoot().getStore(NAMESPACE)
+               .getOrComputeIfAbsent(SERVER_KEY, key -> new ServerResource(), ServerResource.class);
+    }
+}
+```
+
+`ServerResource.close()` 里只做 `Solon.stopBlock(false, 0)`（不能用 `Solon.stop()`：它最后会 `System.exit`，见 DBG-8）。
+
+**验证**
+
+- 全量 116/116 绿；启动日志里 `App: Start loading` 只出现 **1 次**，结尾有 `App: End stop`，fork 正常退出（没有因为服务线程活着而卡住）。
+- 顺带修好的：HTTP 与 WS 用例现在跑在**同一个实例**上，"WS 与 HTTP 读写同一张对象图"从此被测试真正覆盖，而不是靠两套各自正确的假象。
+- 每个测试类结束后仍然清掉带凭证的系统属性（DBG-12），扫描 `target/surefire-reports/*.xml` 无 `DB_PASSWORD`。
+
+**工程结论**
+
+"重启一个已停掉的框架实例"这类动作，在进程级单例的框架里并不成立；而它的失败现象（连不上新端口）指向的是"服务没起来"，很容易被误判成端口占用或启动太慢。测试基础设施的每一次"起停"都在隐式依赖框架的生命周期语义，因此宁可让生命周期更简单（一次），也不要让它看起来更"干净"（每类一次）。
+
+## DBG-14：`Map.copyOf` 不接受 null——"无人出价"把一次结算变成了 NPE
+
+**现象**
+
+P3 的事件代码（`AuctionEvent` + `AuctionEvents` 工厂）写完后，单类测试都通过，全量一跑却是 11 处红：
+
+```
+[ERROR] HttpApiIntegrationTest.bidFlowWithIdempotentReplay:117  ...
+[ERROR] SettlementConcurrencyTest  Tests run: 5, Errors: 3
+[ERROR] SettlementServiceTest      Tests run: 11, Errors: 3
+```
+
+报错是 NPE，但栈顶离业务很远：
+
+```
+java.lang.NullPointerException
+	at java.util.Objects.requireNonNull
+	at java.util.ImmutableCollections$MapN.<init>
+	at java.util.Map.ofEntries
+	at java.util.Map.copyOf
+	at com.bidarena.auction.domain.AuctionEvent.<init>(AuctionEvent.java:34)
+	at com.bidarena.auction.application.AuctionEvents.auctionFinished(AuctionEvents.java:119)
+	at com.bidarena.auction.application.SettlementService.publishFinished(SettlementService.java:207)
+	at com.bidarena.auction.application.SettlementService.settleIfDue(SettlementService.java:98)
+```
+
+**定位**
+
+`AuctionEvent` 的紧凑构造器用 `Map.copyOf(payload)` 固化不可变 payload，而 `Map.copyOf` **拒绝 null 值**（也拒绝 null 键）。payload 里有两处会自然地产生 null：
+
+1. `AnonymousId.of(null)` 返回 `null`——"到期但无人出价"的终局事件没有赢家；
+2. `endsAt` 在草稿拍卖上本来就是 `null`。
+
+于是"字段缺席"这个很正常的业务情形，在发布那一刻变成了异常。**更危险的是它发生的位置**：事件是在事务**提交之后**发布的（D-20），所以库里该结束的已经结束了，调用方却拿到一个 500——正是 A8 想要避免的那种"库变了、接口报错"的形态。幸运的是这次异常发生在测试里而不是演示时。
+
+**修复**
+
+不改变"null = 字段缺席"的契约（这与 HTTP 封套的约定一致），而是在工厂里统一用会跳过 null 的 `put`：
+
+```java
+private static void put(Map<String, Object> payload, String key, Object value) {
+    if (value != null) {
+        payload.put(key, value);
+    }
+}
+```
+
+**验证**
+
+- 修复后 `SettlementServiceTest`、`SettlementConcurrencyTest`、`HttpApiIntegrationTest` 全绿，全量 116/116。
+- 语义被固定下来：`EventPublishingTest.finishedWithoutBidsOmitsWinner` 与 `WsIntegrationTest.cancelBroadcastsFinish` 断言"该字段**不存在**"，而不是 `field: null`。
+- 变异反向确认：把 `put` 的判空去掉（放行 null），6 个用例立刻失败。
+
+**工程结论**
+
+`Map.copyOf` / `List.copyOf` 这类"收窄值域"的 API 会把"忘了判空"从"少一个字段"升级成"运行中崩溃"，而且崩溃点离根因很远（`NullPointerException` 出现在 `AuctionEvent.<init>`，根因却在"无人出价"这个业务分支）。用它们的时候，最好同时提供一个只会写入非空值的入口，让"缺席"成为默认行为而不是每次都要记得的特例。
+
+## DBG-15：`Future` 上没有 `whenComplete`——异步发送失败差点变成观测盲区
+
+**现象**
+
+给广播器加"异步发送失败也要计数"时编译不过：
+
+```
+[ERROR] WsEventBroadcaster.java:[125,31] 找不到符号
+  符号: 方法 whenComplete(...)
+  位置: 接口 java.util.concurrent.Future<java.lang.Void>
+```
+
+**定位**
+
+`WebSocket.send(String)` 的返回类型是 `java.util.concurrent.Future<Void>`，而 `whenComplete` 定义在 `CompletableFuture` 上。用 `javap` 看 Solon 的实现（`org.noira.solon.net.websocket.WebSocketImpl` 一系）确认：它内部 `try/catch` 后 `completeExceptionally`，返回的**实际对象**是已完成的 `CompletableFuture`。
+
+**修复**
+
+保留异步感知能力，但不假设接口的所有实现都是 `CompletableFuture`：
+
+```java
+if (future instanceof CompletableFuture<?> completable) {
+    completable.whenComplete((ignored, error) -> { if (error != null) failedCount.incrementAndGet(); });
+}
+```
+
+**验证**
+
+`WsEventBroadcasterTest.asyncFailureIsCounted`（假连接让 `send` 返回异常完成的 Future）断言 `failed() == 1`；另一条 `sendFailureIsIsolated` 覆盖同步抛异常的情形，并断言失败连接被摘除、同场其它连接不受影响。
+
+**工程结论**
+
+接口类型比实现类型窄时，能用但不能依赖。对"发送是否成功"这种**必须可观测**的事实，同步异常与异步失败要各有一条路径，否则线上只会看到"广播看起来发了、客户端没收到"。
+
+## DBG-16：JUnit 不给 `@BeforeAll` 注入 `ExtensionContext`
+
+**现象**
+
+为了实现 D-23（停服挂在根上下文存储上），我在 `@BeforeAll` 方法上直接要了上下文：
+
+```java
+@BeforeAll static void bootForClass(ExtensionContext context) { ... }
+```
+
+结果每个用到基座的测试类都报：
+
+```
+org.junit.jupiter.api.extension.ParameterResolutionException:
+No ParameterResolver registered for parameter
+[org.junit.jupiter.api.extension.ExtensionContext arg0] in method
+[static void com.bidarena.support.ApiTestHarness.bootForClass(org.junit.jupiter.api.extension.ExtensionContext)].
+```
+
+**定位**
+
+JUnit 5 的 `@BeforeAll`/`@BeforeEach` 方法参数支持 `TestInfo`、`TestReporter` 以及注册过的自定义 `ParameterResolver`，但**不**直接注入 `ExtensionContext`（它只在扩展回调里被传进来）。
+
+**修复**
+
+改成"扩展"这个天然拿得到上下文的入口，并用 `@RegisterExtension` 静态字段注册（静态字段会被子类继承，因此两个测试类共享同一个实例）：
+
+```java
+@RegisterExtension
+public static final TestServerExtension SERVER_EXTENSION = new TestServerExtension();
+
+public static final class TestServerExtension implements BeforeAllCallback {
+    @Override public void beforeAll(ExtensionContext context) { /* 存进根上下文 */ }
+}
+```
+
+`BeforeAllCallback` 先于 `@BeforeAll` 方法执行，因此原来的"启动后断言端口"仍然能放在 `@BeforeAll` 里。
+
+**验证**
+
+全量 116/116 绿（见 DBG-13 的验证一节）。
+
+**工程结论**
+
+"生命周期钩子需要上下文"时，扩展回调是标准入口，而注解方法只是给"不需要上下文"的清理/准备用的。这不算框架限制，而是分工：注解方法属于测试类，扩展属于测试运行时。
+
+## DBG-17：`seq` 无缺口断言自己写错了——用 `-1` 当初值，第一次比较就失败
+
+**现象**
+
+`WsIntegrationTest.seqIsGaplessForSubscriber` 的断言失败，但打印出来的版本号序列看起来完全正常：
+
+```
+版本号出现缺口（客户端会因此触发重同步）：[2, 2, 2, 3, 4, 5] ==> expected: <true> but was: <false>
+```
+
+`[2, 2, 2, 3, 4, 5]` 里"2"重复是因为开拍(1)、加入(2)之后连接，快照是 2，随后加入第二人(3)、出价(4)、取消(5)：既没倒退也没缺口。
+
+**定位**
+
+```
+long previous = -1;
+for (long seq : observed) {
+    assertTrue(seq >= previous, ...);
+    assertTrue(seq <= previous + 1, ...);   // 第一次比较：2 <= 0 → 失败
+    previous = seq;
+}
+```
+
+哨兵初值 `-1` 让"相邻两帧最多 +1"这条约束作用在**第一个元素与一个假想的 0 号版本**之间。断言方向是对的，上下文是错的。
+
+**修复**
+
+用真实首元素做初值，并从第二个元素开始比较：
+
+```java
+long previous = observed.get(0);
+for (int i = 1; i < observed.size(); i++) { ... }
+```
+
+**验证**
+
+修复后该用例通过，全量 116/116 绿；把"重复 join 也推 seq"的变异注回去，它仍然会红（说明这条断言不是因为改松了才通过）。
+
+**工程结论**
+
+"看起来对的数据被判违规"几乎总是断言自己有问题，而不是被测代码。给循环写哨兵初值时，要么用真实数据的第一项，要么显式区分"首元素"这一次迭代——否则边界约束会悄悄作用在一个不存在的元素上。
