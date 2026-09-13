@@ -123,6 +123,22 @@ curl -s -X POST http://localhost:8080/api/v1/auth/ws-tickets \
 
 文档明确区分目标架构与当前实现状态；前端已经接入真实 HTTP/WebSocket（见下文「前端」），不再有本地 Mock 事实来源。资金的正确性由真实 MySQL 集成测试与变异测试验证。
 
+## 未完成边界（如实声明）
+
+目前**还不能**做到的事，以及对应的原因：
+
+- **竞拍 Agent API（`:8090`）尚未实现**。`docs/openapi.yaml` 与 [AGENT_TOOL_SPEC.md](AGENT_TOOL_SPEC.md) 已定义
+  Token 形态与三个 Agent 端点，但实现属 P5，现在把 Token 交出去调不出结果。
+- **模拟脚本与一键 E2E 还没做**。20 人并发、相同 `requestId` 重试、最后 5 秒狙击与结算核对，目前由
+  后端集成测试等价覆盖（真实 MySQL），但还没有可直接执行的 `npm run simulate:auction`。
+- **Compose 目前只起 MySQL**，不含前后端一键拉起。
+- **[AI_USAGE.md](AI_USAGE.md) 仍是骨架**：结构与素材索引就位，但分工比例、本人设计决定等
+  `【本人填写】` 段落需由作者本人补齐，不代填。
+- **没有线上地址、没有演示录屏**（两段式现场核验的素材）。
+
+已实现的边界：用户侧 HTTP 15 个端点 + WebSocket 实时通道（P2/P3）、前端真实接入（P4）、架构守卫 9 条。
+完整的逐项状态与证据见 [docs/STATUS.md](docs/STATUS.md) 与 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
+
 ## 公开仓库约定
 
 原始评测 PDF、`.env`、依赖目录、构建产物和本地运行数据不会提交。需求原文和业务分析以 Markdown 形式保留，便于审阅和版本追踪。提交前执行 `git status --short`，确认没有 Token、密码或个人配置。

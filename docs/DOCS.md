@@ -44,9 +44,9 @@
 | 文件 | 权威范围 | 状态 |
 |---|---|---|
 | `README.md` | 快速启动完整路径、演示账号、**未完成边界** | ✅ 已更新（含 HTTP 接口表、WS 接入两步、一键验证与未完成范围） |
-| `AI_USAGE.md` | AI 分工比例、本人设计决定、未采用方案、真实错误（原文必交） | ➕ 待创建 |
-| `DEBUG_LOG.md` | 开发期间真实问题的现象/日志/定位/修复/验证（原文必交） | ✅ 已写 DBG-1~DBG-20 |
-| `AGENT_TOOL_SPEC.md` | 评审如何用 Token 让 Coding Agent 查询与出价（原文必交） | ➕ 待创建 |
+| `AI_USAGE.md` | AI 分工比例、本人设计决定、未采用方案、真实错误（原文必交） | 🟨 骨架已建（结构 + 素材索引）；`【本人填写】` 段落待作者本人补齐 |
+| `DEBUG_LOG.md` | 开发期间真实问题的现象/日志/定位/修复/验证（原文必交） | ✅ 已写 DBG-1~DBG-21 |
+| `AGENT_TOOL_SPEC.md` | 评审如何用 Token 让 Coding Agent 查询与出价（原文必交） | 🟨 骨架已建（按 `openapi.yaml` 写 Token 形态/步骤/提示词/边界）；实现属 P5 |
 
 ### 第 4 层｜工程控制（防偏差机制）
 
@@ -126,7 +126,7 @@
 - ✅ 补 `POST /admin/agent-tokens/{tokenId}/revoke`（吊销生效）。
 - ✅ ledger 归属：保留独立 `GET /wallets/me/ledger`；`/wallets/me` 只返回余额，冲突随联调文档删除而消除。
 - ✅ Agent 路径补充独立 server（`:8090`）；`CreateAgentTokenRequest` 补 `agentUserId`；新增 `AuctionResult` schema。
-- ⏳ `SETTLING` 在前端类型中的体现：待 P4 由 openapi 生成前端类型时解决。
+- ✅ `SETTLING` 已体现在 `AuctionStatus` 枚举中，并随 `npm run gen:api` 进入前端类型（`schema.d.ts` 的 `AuctionStatus` 含 `SETTLING`，D-26），缺枚举会在编译期报错。
 - ✅ P3：`WsTicket` 补 `wsPath` / `wsPort`（让客户端不必猜 WS 端口与路径），`POST /auth/ws-tickets` 补 `429`（票容量上限）。事件结构仍只在 `REALTIME_AND_COMMAND_FLOW.md` 定义，本文件只固定入口。
 - ✅ 架构守卫（P3.5）：契约未变，只改了 Java 包结构（出站仓储 → `<ctx>.persistence`、视图 → `<ctx>.application`、`ApiTime`/`PageQuery` → `shared`、查询串解析 → `api.PageParams`），对 HTTP/WS wire format 零影响（`HttpApiIntegrationTest` / `WsIntegrationTest` 未改一行仍绿）。
 

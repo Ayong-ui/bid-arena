@@ -176,11 +176,11 @@ Agent 凭据（D1）、模拟脚本与一键 E2E（E1/F1）、录屏与现场核
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| G1 | `AI_USAGE.md` | 分工、本人决定、未采用方案、真实错误、无法独立解释的代码 | `AI_USAGE.md` | 文档评审 | ⬜ |
+| G1 | `AI_USAGE.md` | 分工、本人决定、未采用方案、真实错误、无法独立解释的代码 | `AI_USAGE.md` | 文档评审 | 🟨 骨架就位（结构 + 素材索引）；`【本人填写】` 段落待作者补齐 |
 | G2 | `DESIGN.md` | 边界、事务、结算、并发、恢复、丢消息策略 | `DESIGN.md` | 文档评审 | ⬜ |
-| G3 | `DECISIONS.md` | ≥3 项决策含代价与验证 | `DECISIONS.md` | 文档评审 | ⬜ |
-| G4 | `DEBUG_LOG.md` | ≥2 个真实问题，禁止编造 | `DEBUG_LOG.md` | 与提交/日志对应 | ⬜ |
-| G5 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 操作 Agent | `AGENT_TOOL_SPEC.md` | 文档评审 | ⬜ |
+| G3 | `DECISIONS.md` | ≥3 项决策含代价与验证 | `DECISIONS.md` | 文档评审 | 🟨 已写 D-1~D-28（含候选/代价）；D-9 的验证结果待 P5 |
+| G4 | `DEBUG_LOG.md` | ≥2 个真实问题，禁止编造 | `DEBUG_LOG.md` | 与提交/日志对应 | ✅ 已写 21 条（DBG-1~DBG-21） |
+| G5 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 操作 Agent | `AGENT_TOOL_SPEC.md` | 文档评审 | 🟨 骨架就位（契约一致）；实现属 P5，尚不可用 |
 | G6 | Git 历史 | 有意义、非机械拆分、说明行为变化 | 提交历史 | `git log` | ⬜ |
 | G7 | 录屏 | 3~5 分钟覆盖关键流程 | 交付物 | 人工核验 | ⬜ |
 

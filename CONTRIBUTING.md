@@ -143,7 +143,7 @@ python tools/arch_mutation_check.py   # 架构规则的反向确认（期望 9/9
 | 迁移 + 种子 | 自动执行，不手工建表/插账号 | `db/migration/` | ✅ 空库执行实测 |
 | 一键测试命令 | 可复制执行 | `README.md`（后端 `mvn clean verify`；前端 `npm test` / `npm run typecheck` / `npm run test:live`） | ✅ |
 | 模拟脚本 | 支持多机器人参数与随机种子 | `scripts/` | ⬜ |
-| 必交文档 | `DESIGN.md` / `DECISIONS.md` / `AI_USAGE.md` / `DEBUG_LOG.md` / `AGENT_TOOL_SPEC.md` | 仓库根目录 | 🟨（`DEBUG_LOG.md` 已完成） |
+| 必交文档 | `DESIGN.md` / `DECISIONS.md` / `AI_USAGE.md` / `DEBUG_LOG.md` / `AGENT_TOOL_SPEC.md` | 仓库根目录 | 🟨（`DEBUG_LOG.md` 已完成；`AI_USAGE.md` / `AGENT_TOOL_SPEC.md` 骨架就位，内容待补） |
 | OpenAPI | 覆盖原文要求的全部能力 | `docs/openapi.yaml` | 🟨 |
 | README | 快速启动完整路径 + 演示账号 + 未完成边界 | `README.md` | 🟨 |
 

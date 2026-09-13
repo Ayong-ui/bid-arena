@@ -23,17 +23,17 @@
 |---|---|---|
 | `README.md` | 快速启动完整路径、演示账号、未完成边界 | 🟨 前端接入章节已重写（真实 HTTP/WS、演示路径、联调命令）；P5 的 Agent/E2E 路径待补 |
 | `DESIGN.md` | 架构边界、出价事务、结算、恢复 | 🟨 存在；§1.6（实现边界）、§2.2~§2.4（分层与依赖规则）、§8（验证重点）已按实现同步，其余章节待随 P4/P5 补齐 |
-| `DECISIONS.md` | ≥3 项决策（背景/候选/选择/代价/验证） | 🟨 已写 D-1~D-25；D-9 的验证结果待 P5 补全 |
-| `AI_USAGE.md` | AI 分工、本人决定、未采用方案、真实错误 | ⬜ 未创建 |
-| `DEBUG_LOG.md` | ≥2 个真实问题（现象/日志/定位/修复/验证） | ✅ 已写 20 条真实问题（DBG-8~12 来自 P2：test/fork、CORS 受限头、配置覆盖、序列化器夺权、口令进测试报告；DBG-13~17 来自 P3；DBG-18~20 来自架构守卫：文档规则与包结构对不上、`noClasses().should(自定义条件)` 被反转导致规则永不失败、共享服务下偶发握手超时） |
-| `AGENT_TOOL_SPEC.md` | 评审如何用 Token 查询与出价 | ⬜ 未创建 |
+| `DECISIONS.md` | ≥3 项决策（背景/候选/选择/代价/验证） | 🟨 已写 D-1~D-28；D-9 的验证结果待 P5 补全 |
+| `AI_USAGE.md` | AI 分工、本人决定、未采用方案、真实错误 | 🟨 骨架已建（`AI_USAGE.md`）：结构、素材索引与“不得预填”约定就位，`【本人填写】` 段落待作者本人补齐 |
+| `DEBUG_LOG.md` | ≥2 个真实问题（现象/日志/定位/修复/验证） | ✅ 已写 21 条真实问题（DBG-8~12 来自 P2；DBG-13~17 来自 P3；DBG-18~20 来自架构守卫；DBG-21 来自 P4 前端变异 F14 存活） |
+| `AGENT_TOOL_SPEC.md` | 评审如何用 Token 查询与出价 | 🟨 骨架已建（`AGENT_TOOL_SPEC.md`）：按契约写明 Token 形态、操作步骤、提示词模板与失败边界；实现属 P5，尚不可用 |
 | `docs/openapi.yaml` | 覆盖原文要求的能力 | ✅ 已修正；P2 已按实现回填 `ErrorCode`、分页、`Bid`、`LedgerEntry.requestId`；P3 补上 `WsTicket.wsPath/wsPort` 与 `/auth/ws-tickets` 的 429；P4 前端类型已由 `npm run gen:api` 从本文件生成（`frontend/src/api/schema.d.ts`，D-26） |
 
 ## 3. 契约与基础设施状态
 
 | 项 | 状态 | 缺口 |
 |---|---|---|
-| `docs/openapi.yaml` | ✅ | 已补齐 Agent result、Token 吊销、Agent server、`agentUserId`、`AuctionResult`；P3 补上 `WsTicket.wsPath/wsPort` 与 429（共 20 个操作，其中 15 个已实现）；前端类型待 P4 生成 |
+| `docs/openapi.yaml` | ✅ | 已补齐 Agent result、Token 吊销、Agent server、`agentUserId`、`AuctionResult`；P3 补上 `WsTicket.wsPath/wsPort` 与 429（共 20 个操作，其中 15 个已实现）；前端类型已由 `npm run gen:api` 生成（`frontend/src/api/schema.d.ts`，D-26） |
 | `docs/REALTIME_AND_COMMAND_FLOW.md` | ✅ | 无缺口。内容：命令行路径与一致性、事件信封（含 `seq` 归属）、事件类型与可见范围、匿名标识、WS 接入与握手、序号恢复、广播失败边界、可观测性（共 8 节） |
 | `db/migration/` | ✅ | V1~V3 已在空库上完整执行并验证；含 `users` / `wallets` / `ledger_entries` 与 `auctions` 新列、`auction_participants.frozen_amount` |
 | `pom.xml` | ✅ | 服务器/WebSocket/序列化/连接池/MySQL/Flyway/鉴权/ArchUnit/测试依赖齐备，已验证可启动；`db/migration` 经 `<resources>` 映射为 `classpath:db/migration`；已排除 `solon-web` 传递进来的 snack3，保证序列化器唯一（DBG-11） |
@@ -143,7 +143,10 @@
    - ✅ store 与界面：Pinia store 接管会话/数据/命令，`App.vue` 不再本地算钱与倒计时（D-27）；`arena.test.ts` 18 用例。
    - ✅ 反向确认：前端变异脚本扩到 **16 条**，全部 KILLED；其中 F14 存活暴露了一条“声称验证幂等键、实际没验证”的测试（DBG-21，已修）。
    - ✅ 真后端联调：后端跑在 8080/18080 时，`npm run test:live` 的 HTTP/WS 3 个用例全绿。
-5. 建 `AI_USAGE.md` / `AGENT_TOOL_SPEC.md` 骨架（内容是边开发边填，不得预填）。
+5. **文档骨架 — 已完成**：
+   - ✅ `AI_USAGE.md`：结构（工具与模型、人机分工、本人决定、未采用方案、真实错误、不可独立解释的代码）+ 素材索引（指向 `DECISIONS.md` / `DEBUG_LOG.md`）就位；`【本人填写】` 段落待作者本人补齐（不得预填）。
+   - ✅ `AGENT_TOOL_SPEC.md`：按 `docs/openapi.yaml` 的 `Agent` 端点写明 Token 形态、评审操作步骤、给 Coding Agent 的提示词模板与失败边界；实现属 P5，文档已标注“尚不可用”。
+6. **P5 — 待开始**：Agent API（`:8090`）+ Token 签发/范围/权限/过期/吊销 + 模拟脚本 + Compose/E2E（对应验收项 D1、E1、F1）。
 
 ## 8. 更新规则
 
