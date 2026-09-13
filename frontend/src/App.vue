@@ -438,22 +438,30 @@ function settledLabel(code: string): string {
               <p class="kicker">AGENT API</p>
               <h1>智能体接入</h1>
               <p class="muted">
-                本页面的数据<b>不来自</b> Agent 接口：Agent API（<code>:8090</code>、Agent Token、限流）属于后续里程碑，
-                当前尚未实现，因此这里不会显示任何伪造的调用记录。
+                Agent API 已在<b>独立端口 <code>:8090</code></b> 实现，使用独立于用户 JWT 的 Agent Token（库里只存 sha256 摘要，
+                明文只在签发响应出现一次），范围 / 权限 / 过期 / 吊销 / 限流五项在鉴权阶段生效。
+                本页<b>不伪造</b>调用记录：要看真实链路请用 <code>tools/agent_sim.py</code>，操作步骤见 <code>AGENT_TOOL_SPEC.md</code>。
               </p>
             </div>
           </div>
           <section class="table-panel">
-            <div class="panel-heading"><h3>契约中已定义、但尚未实现的接口</h3><span>P5 交付</span></div>
-            <div v-for="item in [
-              'GET /agent/auctions —— 列出可参与的拍卖（agent:read）',
-              'GET /agent/auctions/{auctionId} —— 读取快照（agent:read）',
-              'GET /agent/auctions/{auctionId}/bids —— 读取出价记录（agent:read）',
-              'POST /agent/auctions/{auctionId}/bids —— 由智能体出价（agent:bid）',
-              'GET /agent/wallet —— 智能体钱包（agent:read）',
-            ]" :key="item" class="admin-row">
-              <div><b>{{ item }}</b><small>当前返回 404：路由尚未挂载</small></div>
+            <div class="panel-heading"><h3>已实现的接口</h3><span>P5 交付</span></div>
+            <div
+              v-for="item in [
+                { path: 'POST :8080 /admin/agent-tokens', note: '签发（明文只返回这一次）· admin' },
+                { path: 'POST :8080 /admin/agent-tokens/{tokenId}/revoke', note: '吊销 · admin' },
+                { path: 'GET :8090 /agent/auctions/{auctionId}', note: '读取快照 · auction:read' },
+                { path: 'POST :8090 /agent/auctions/{auctionId}/bids', note: '出价 · auction:bid' },
+                { path: 'GET :8090 /agent/auctions/{auctionId}/result', note: '读取结果 · auction:read' },
+              ]"
+              :key="item.path"
+              class="admin-row"
+            >
+              <div><b>{{ item.path }}</b><small>{{ item.note }}</small></div>
             </div>
+            <p class="muted" style="padding: 12px 16px">
+              <code>:8090</code> 上只挂载 <code>/api/v1/agent/**</code>，其余路径（含 <code>/api/v1/health</code>）一律 404。
+            </p>
           </section>
         </template>
       </div>

@@ -1495,3 +1495,93 @@ report.check("另一用户复用同一 requestId 视为新出价（键含 user_i
 撞串时“各算各的”比“互相吞掉”正确得多：幂等是为了**同一调用方的重试**去重，
 而不是全局去重。这条语义必须写进文档和断言，否则前端会以为“重试安全”等于“全站唯一”。
 另：断言里的“恰好一半”这种比例异常，往往就是“把两个域当成了一个域”的信号。
+
+---
+
+## DBG-29：界面还在说 Agent API“尚未实现”，实际 P5 已经交付
+
+**现象**
+
+准备手工测试时点开前端「智能体接入」页，看到的是这段：
+
+> 本页面的数据**不来自** Agent 接口：Agent API（`:8090`、Agent Token、限流）属于后续里程碑，
+> 当前尚未实现，因此这里不会显示任何伪造的调用记录。
+>
+> **契约中已定义、但尚未实现的接口**
+> - `GET /agent/auctions` —— 列出可参与的拍卖（agent:read）　*当前返回 404：路由尚未挂载*
+> - `GET /agent/auctions/{auctionId}/bids` —— 读取出价记录（agent:read）　*当前返回 404：路由尚未挂载*
+> - `GET /agent/wallet` —— 智能体钱包（agent:read）　*当前返回 404：路由尚未挂载*
+
+而 P5 已经交付并验证过 Agent API；这条“尚未实现”是**交付完之后没回头改的文案**。
+
+**定位**
+
+1. 文案写死在前端模板里（`frontend/src/App.vue` 的 `view === 'agent'` 分支），不随实现推进更新；
+   P5 只改了 README/DESIGN/STATUS/TRACEABILITY 这些 Markdown，没有回归检查这条**代码里的陈述**。
+2. 列出的三个端点**连契约里都不存在**：
+
+```
+$ grep 'agent' docs/openapi.yaml | ...
+/agent/auctions/{auctionId}
+/agent/auctions/{auctionId}/bids
+/agent/auctions/{auctionId}/result
+```
+
+即“依据契约列出来”也是假的——`GET /agent/auctions`、`/bids`（GET）、`/wallet` 早在 P2 修订契约时就去掉了。
+3. 实际路由是：
+
+```
+HttpAgentController:      @Mapping("/api/v1/agent")
+  GET  /auctions/{auctionId}
+  POST /auctions/{auctionId}/bids
+  GET  /auctions/{auctionId}/result
+HttpAgentTokenController: @Mapping("/api/v1")
+  POST /admin/agent-tokens
+  POST /admin/agent-tokens/{tokenId}/revoke
+```
+
+**修复**
+
+把该页改成如实陈述：`/api/v1/agent/**` 已在 `:8090` 实现、凭据与五项约束、不伪造调用记录，
+并列出**五个已实现**的端点（含各自的端口与所需权限），同时保留一句“`:8090` 只挂载
+`/api/v1/agent/**`，其余路径 404”。
+
+**修复时又踩了一次同一个坑**：改写文案时凭印象把权限项写成 `agent:read` / `agent:bid`，
+而实际是 `auction:read` / `auction:bid`。是真实调用把它顶回来的：
+
+```
+POST /admin/agent-tokens {"scopes":["agent:read"], ...}
+-> {"code":"VALIDATION_FAILED", "data":{"allowed":"auction:read,auction:bid","scope":"agent:read"},
+    "message":"未知的权限项"}
+```
+
+错误响应里直接给出了允许值（`data.allowed`），照它改即可。随后五个端点逐个实测：
+
+```
+POST :8080 /admin/agent-tokens                              -> OK（明文只回一次）
+GET  :8090 /agent/auctions/auc_demo_0001   (auction:read)   -> OK（返回快照）
+GET  :8090 /agent/auctions/auc_whatever    (未授权场)       -> FORBIDDEN「Agent Token 未被授权访问该拍卖」
+POST :8090 /agent/auctions/auc_demo_0001/bids（只读 Token） -> FORBIDDEN「Agent Token 不具备该操作的权限」
+```
+
+**验证**
+
+```
+$ grep -rn "尚未实现\|路由尚未挂载\|后续里程碑" frontend/src/     # 无输出
+$ npm run typecheck                                            # 通过
+ Test Files  5 passed | 2 skipped (7)
+      Tests  56 passed | 3 skipped (59)
+$ curl -s http://localhost:5173/src/App.vue | grep -c "已实现的接口"   → 1
+$ curl -s http://localhost:5173/src/App.vue | grep -c "路由尚未挂载"   → 0
+```
+
+**工程结论**
+
+文档漂移不只在 Markdown 里。**界面文案也是关于系统的断言**，而且是最容易被评审看到的那一份：
+一句“当前尚未实现”会让已经验收过的能力看起来没做，比缺一段文档更伤。
+交付一个里程碑时，除了改 Markdown，还要 `grep` 一遍“尚未实现 / 尚未挂载 / 待补 / TODO”这类**负向断言**，
+它们和正向文档一样需要随版本更新。
+
+补一句：修正的方向对了不代表细节对——**权限项、端口、路径这些字符串必须从实现/契约里取，不能凭印象写**。
+这次是 `auction:read` 而不是 `agent:read`，靠一次真实调用才发现的；
+幸好系统把“允许什么”作为机器可读的字段（`data.allowed`）返回了，没有让我去猜。
