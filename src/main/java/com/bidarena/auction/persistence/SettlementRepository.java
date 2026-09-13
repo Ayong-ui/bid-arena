@@ -1,4 +1,4 @@
-package com.bidarena.auction.adapter;
+package com.bidarena.auction.persistence;
 
 import com.bidarena.auction.domain.SettlementReason;
 import com.bidarena.shared.Db;

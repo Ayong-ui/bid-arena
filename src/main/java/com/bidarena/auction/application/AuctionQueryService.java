@@ -1,13 +1,13 @@
 package com.bidarena.auction.application;
 
-import com.bidarena.api.ApiTime;
-import com.bidarena.api.PageQuery;
-import com.bidarena.auction.adapter.AuctionRepository;
-import com.bidarena.auction.adapter.AuctionRepository.AuctionRow;
-import com.bidarena.auction.adapter.AuctionRepository.BidRow;
-import com.bidarena.auction.adapter.AuctionViews;
-import com.bidarena.auction.adapter.SettlementRepository;
-import com.bidarena.auction.adapter.SettlementRepository.SettlementRow;
+import com.bidarena.shared.ApiTime;
+import com.bidarena.shared.PageQuery;
+import com.bidarena.auction.persistence.AuctionRepository;
+import com.bidarena.auction.persistence.AuctionRepository.AuctionRow;
+import com.bidarena.auction.persistence.AuctionRepository.BidRow;
+import com.bidarena.auction.application.AuctionViews;
+import com.bidarena.auction.persistence.SettlementRepository;
+import com.bidarena.auction.persistence.SettlementRepository.SettlementRow;
 import com.bidarena.auction.domain.AuctionStatus;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.Db;

@@ -1,9 +1,9 @@
-package com.bidarena.auction.adapter;
+package com.bidarena.auction.application;
 
-import com.bidarena.api.ApiTime;
-import com.bidarena.auction.adapter.AuctionRepository.AuctionRow;
-import com.bidarena.auction.adapter.AuctionRepository.BidRow;
-import com.bidarena.auction.adapter.AuctionRepository.ParticipantRow;
+import com.bidarena.shared.ApiTime;
+import com.bidarena.auction.persistence.AuctionRepository.AuctionRow;
+import com.bidarena.auction.persistence.AuctionRepository.BidRow;
+import com.bidarena.auction.persistence.AuctionRepository.ParticipantRow;
 import java.time.Instant;
 
 /**

@@ -1,12 +1,12 @@
 package com.bidarena.wallet.application;
 
-import com.bidarena.api.PageQuery;
+import com.bidarena.shared.PageQuery;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.ErrorCode;
-import com.bidarena.wallet.adapter.WalletRepository;
-import com.bidarena.wallet.adapter.WalletRepository.LedgerRow;
-import com.bidarena.wallet.adapter.WalletRepository.WalletRow;
-import com.bidarena.wallet.adapter.WalletViews;
+import com.bidarena.wallet.persistence.WalletRepository;
+import com.bidarena.wallet.persistence.WalletRepository.LedgerRow;
+import com.bidarena.wallet.persistence.WalletRepository.WalletRow;
+import com.bidarena.wallet.application.WalletViews;
 import java.util.List;
 import java.util.Map;
 

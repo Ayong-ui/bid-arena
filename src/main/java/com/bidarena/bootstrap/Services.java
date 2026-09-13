@@ -1,8 +1,8 @@
 package com.bidarena.bootstrap;
 
-import com.bidarena.auction.adapter.AuctionRepository;
+import com.bidarena.auction.persistence.AuctionRepository;
 import com.bidarena.auction.adapter.AuctionSocketHandler;
-import com.bidarena.auction.adapter.SettlementRepository;
+import com.bidarena.auction.persistence.SettlementRepository;
 import com.bidarena.auction.adapter.WsEventBroadcaster;
 import com.bidarena.auction.application.AuctionCommandService;
 import com.bidarena.auction.application.AuctionQueryService;
@@ -10,11 +10,11 @@ import com.bidarena.auction.application.BidService;
 import com.bidarena.auction.application.SettlementService;
 import com.bidarena.identity.adapter.BCryptPasswordHasher;
 import com.bidarena.identity.adapter.JwtTokens;
-import com.bidarena.identity.adapter.UserRepository;
+import com.bidarena.identity.persistence.UserRepository;
 import com.bidarena.identity.application.IdentityService;
 import com.bidarena.identity.application.TokenService;
 import com.bidarena.identity.application.WsTicketService;
-import com.bidarena.wallet.adapter.WalletRepository;
+import com.bidarena.wallet.persistence.WalletRepository;
 import com.bidarena.wallet.application.WalletQueryService;
 import javax.sql.DataSource;
 

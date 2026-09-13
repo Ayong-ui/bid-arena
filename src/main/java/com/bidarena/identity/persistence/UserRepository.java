@@ -1,4 +1,4 @@
-package com.bidarena.identity.adapter;
+package com.bidarena.identity.persistence;
 
 import com.bidarena.identity.domain.User;
 import com.bidarena.identity.domain.UserRole;

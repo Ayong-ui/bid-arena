@@ -2,7 +2,8 @@ package com.bidarena.wallet.adapter;
 
 import com.bidarena.api.ApiTrace;
 import com.bidarena.api.CurrentUser;
-import com.bidarena.api.PageQuery;
+import com.bidarena.api.PageParams;
+import com.bidarena.shared.PageQuery;
 import com.bidarena.identity.domain.Principal;
 import com.bidarena.shared.ApiResponse;
 import com.bidarena.wallet.application.WalletQueryService;
@@ -35,6 +36,6 @@ public class HttpWalletController {
     @Mapping(value = "/wallets/me/ledger", method = MethodType.GET)
     public ApiResponse walletLedger() {
         Principal me = CurrentUser.require(ContextUtil.current());
-        return ApiResponse.ok(wallets.ledger(me.userId(), PageQuery.parse(ContextUtil.current())), ApiTrace.current());
+        return ApiResponse.ok(wallets.ledger(me.userId(), PageParams.parse(ContextUtil.current())), ApiTrace.current());
     }
 }

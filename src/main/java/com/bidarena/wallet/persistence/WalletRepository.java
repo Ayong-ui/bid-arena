@@ -1,4 +1,4 @@
-package com.bidarena.wallet.adapter;
+package com.bidarena.wallet.persistence;
 
 import com.bidarena.shared.Db;
 import com.bidarena.shared.ErrorCode;

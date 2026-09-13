@@ -1,7 +1,7 @@
 package com.bidarena.auction.application;
 
-import com.bidarena.api.ApiTime;
-import com.bidarena.auction.adapter.AuctionViews;
+import com.bidarena.shared.ApiTime;
+import com.bidarena.auction.application.AuctionViews;
 import com.bidarena.auction.domain.AuctionEvent;
 import com.bidarena.auction.domain.AuctionEventType;
 import com.bidarena.shared.AnonymousId;

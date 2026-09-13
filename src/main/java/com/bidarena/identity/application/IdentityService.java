@@ -1,7 +1,7 @@
 package com.bidarena.identity.application;
 
-import com.bidarena.identity.adapter.UserRepository;
-import com.bidarena.identity.adapter.UserRepository.StoredUser;
+import com.bidarena.identity.persistence.UserRepository;
+import com.bidarena.identity.persistence.UserRepository.StoredUser;
 import com.bidarena.identity.domain.User;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.ErrorCode;

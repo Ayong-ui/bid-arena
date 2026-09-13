@@ -1,4 +1,4 @@
-package com.bidarena.api;
+package com.bidarena.shared;
 
 import java.time.Instant;
 

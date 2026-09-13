@@ -1,6 +1,6 @@
 package com.bidarena;
 
-import com.bidarena.api.ApiTime;
+import com.bidarena.shared.ApiTime;
 import com.bidarena.api.ApiTrace;
 import com.bidarena.shared.ApiResponse;
 import java.time.Instant;

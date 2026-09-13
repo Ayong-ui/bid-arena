@@ -2,6 +2,7 @@ package com.bidarena.auction.adapter;
 
 import com.bidarena.auction.application.AuctionEvents;
 import com.bidarena.auction.application.AuctionQueryService;
+import com.bidarena.auction.application.AuctionViews;
 import com.bidarena.identity.application.WsTicketService;
 import com.bidarena.identity.domain.Principal;
 import com.bidarena.shared.BizException;

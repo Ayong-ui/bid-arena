@@ -1,9 +1,9 @@
 package com.bidarena.auction.application;
 
-import com.bidarena.auction.adapter.AuctionRepository;
-import com.bidarena.auction.adapter.AuctionRepository.AuctionRow;
-import com.bidarena.auction.adapter.SettlementRepository;
-import com.bidarena.auction.adapter.SettlementRepository.SettlementRow;
+import com.bidarena.auction.persistence.AuctionRepository;
+import com.bidarena.auction.persistence.AuctionRepository.AuctionRow;
+import com.bidarena.auction.persistence.SettlementRepository;
+import com.bidarena.auction.persistence.SettlementRepository.SettlementRow;
 import com.bidarena.auction.domain.AuctionEvent;
 import com.bidarena.auction.domain.AuctionEventPublisher;
 import com.bidarena.auction.domain.AuctionStatus;
@@ -11,8 +11,8 @@ import com.bidarena.auction.domain.SettlementReason;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.Db;
 import com.bidarena.shared.ErrorCode;
-import com.bidarena.wallet.adapter.WalletRepository;
-import com.bidarena.wallet.adapter.WalletRepository.WalletRow;
+import com.bidarena.wallet.persistence.WalletRepository;
+import com.bidarena.wallet.persistence.WalletRepository.WalletRow;
 import com.bidarena.wallet.domain.LedgerType;
 import java.sql.Connection;
 import java.sql.SQLException;

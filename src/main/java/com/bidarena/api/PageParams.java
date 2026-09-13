@@ -2,42 +2,31 @@ package com.bidarena.api;
 
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.ErrorCode;
-import java.util.List;
+import com.bidarena.shared.PageQuery;
 import java.util.Map;
 import org.noear.solon.core.handle.Context;
 
 /**
- * 分页参数与分页结果。
+ * 把 HTTP 查询串解析成分页参数。
  *
- * <p>上限 {@value #MAX_SIZE} 是契约规定（{@code Size.maximum}），不是随手取的数：
- * 没有上限时，客户端一个 {@code size=1000000} 就能把整张流水表读进内存。
- * 越界的处理是**拒绝**而不是静默截断——静默截断会让客户端以为拿全了。
+ * <p>放在 {@code api} 包而不是 {@link PageQuery} 里：解析需要 Solon 的 {@link Context}，
+ * 而使用分页参数的应用服务不该因此依赖 HTTP 框架。两件事分开之后，
+ * "应用层不得依赖 HTTP 层"这条规则才能由架构测试守住（见 {@code ArchitectureTest}）。
  */
-public record PageQuery(int page, int size) {
+public final class PageParams {
 
-    public static final int DEFAULT_SIZE = 20;
-    public static final int MAX_SIZE = 100;
-
-    public int limit() {
-        return size;
-    }
-
-    public int offset() {
-        return (page - 1) * size;
-    }
-
-    /** 分页返回体。字段名与 openapi 的 {@code Envelope} + 列表语义一致。 */
-    public record Page<T>(List<T> items, int page, int size, long total) {}
+    private PageParams() {}
 
     public static PageQuery parse(Context ctx) {
         int page = positive(ctx, "page", 1);
-        int size = positive(ctx, "size", DEFAULT_SIZE);
+        int size = positive(ctx, "size", PageQuery.DEFAULT_SIZE);
         if (page < 1) {
             throw new BizException(ErrorCode.VALIDATION_FAILED, "page 必须 >= 1", Map.of("page", page));
         }
-        if (size < 1 || size > MAX_SIZE) {
+        if (size < 1 || size > PageQuery.MAX_SIZE) {
             throw new BizException(ErrorCode.VALIDATION_FAILED,
-                    "size 必须在 1.." + MAX_SIZE + " 之间", Map.of("size", size, "max", MAX_SIZE));
+                    "size 必须在 1.." + PageQuery.MAX_SIZE + " 之间",
+                    Map.of("size", size, "max", PageQuery.MAX_SIZE));
         }
         return new PageQuery(page, size);
     }

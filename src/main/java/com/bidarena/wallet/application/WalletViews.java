@@ -1,8 +1,8 @@
-package com.bidarena.wallet.adapter;
+package com.bidarena.wallet.application;
 
-import com.bidarena.api.ApiTime;
-import com.bidarena.wallet.adapter.WalletRepository.LedgerRow;
-import com.bidarena.wallet.adapter.WalletRepository.WalletRow;
+import com.bidarena.shared.ApiTime;
+import com.bidarena.wallet.persistence.WalletRepository.LedgerRow;
+import com.bidarena.wallet.persistence.WalletRepository.WalletRow;
 
 /**
  * 钱包上下文的对外投影。字段与 {@code openapi.yaml} 的 {@code Wallet} / {@code LedgerEntry} 一致。

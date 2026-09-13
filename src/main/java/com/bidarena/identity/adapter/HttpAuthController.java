@@ -1,9 +1,10 @@
 package com.bidarena.identity.adapter;
 
-import com.bidarena.api.ApiTime;
+import com.bidarena.shared.ApiTime;
 import com.bidarena.api.ApiTrace;
 import com.bidarena.api.CurrentUser;
 import com.bidarena.identity.application.IdentityService;
+import com.bidarena.identity.application.UserView;
 import com.bidarena.identity.application.WsTicketService;
 import com.bidarena.identity.domain.Principal;
 import com.bidarena.shared.ApiResponse;

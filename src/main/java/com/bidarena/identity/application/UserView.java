@@ -1,4 +1,4 @@
-package com.bidarena.identity.adapter;
+package com.bidarena.identity.application;
 
 import com.bidarena.identity.domain.User;
 

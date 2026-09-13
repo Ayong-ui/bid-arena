@@ -1,9 +1,10 @@
 package com.bidarena.auction.adapter;
 
-import com.bidarena.api.ApiTime;
+import com.bidarena.shared.ApiTime;
 import com.bidarena.api.ApiTrace;
 import com.bidarena.api.CurrentUser;
-import com.bidarena.api.PageQuery;
+import com.bidarena.api.PageParams;
+import com.bidarena.shared.PageQuery;
 import com.bidarena.auction.application.AuctionCommandService;
 import com.bidarena.auction.application.AuctionQueryService;
 import com.bidarena.auction.application.BidService;
@@ -63,7 +64,7 @@ public class HttpAuctionController {
     @Mapping(value = "/auctions", method = MethodType.GET)
     public ApiResponse listAuctions() {
         Context ctx = ContextUtil.current();
-        return ApiResponse.ok(query.auctions(statusParam(ctx), PageQuery.parse(ctx)), ApiTrace.current());
+        return ApiResponse.ok(query.auctions(statusParam(ctx), PageParams.parse(ctx)), ApiTrace.current());
     }
 
     @Mapping(value = "/auctions/{auctionId}", method = MethodType.GET)
@@ -80,7 +81,7 @@ public class HttpAuctionController {
     @Mapping(value = "/auctions/{auctionId}/bids", method = MethodType.GET)
     public ApiResponse listBids(@Path("auctionId") String auctionId) {
         Context ctx = ContextUtil.current();
-        return ApiResponse.ok(query.bids(auctionId, PageQuery.parse(ctx)), ApiTrace.current());
+        return ApiResponse.ok(query.bids(auctionId, PageParams.parse(ctx)), ApiTrace.current());
     }
 
     @Mapping(value = "/auctions/{auctionId}/bids", method = MethodType.POST)

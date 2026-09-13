@@ -1,9 +1,9 @@
 package com.bidarena.auction.application;
 
-import com.bidarena.auction.adapter.AuctionRepository;
-import com.bidarena.auction.adapter.AuctionRepository.AuctionRow;
-import com.bidarena.auction.adapter.AuctionRepository.ParticipantRow;
-import com.bidarena.auction.adapter.AuctionViews;
+import com.bidarena.auction.persistence.AuctionRepository;
+import com.bidarena.auction.persistence.AuctionRepository.AuctionRow;
+import com.bidarena.auction.persistence.AuctionRepository.ParticipantRow;
+import com.bidarena.auction.application.AuctionViews;
 import com.bidarena.auction.domain.AuctionEvent;
 import com.bidarena.auction.domain.AuctionEventPublisher;
 import com.bidarena.auction.domain.AuctionStatus;
