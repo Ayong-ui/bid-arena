@@ -43,9 +43,27 @@ services:
       WS_PORT: "18080"
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
     ports:
-      - "8080:8080"   # 用户/管理员 HTTP
-      - "8090:8090"   # 竞拍 Agent HTTP（独立端口，独立凭据）
-      - "18080:18080" # WebSocket（独立监听器，见 .env.example）
+      - "8080:8080"   # 用户/管理员 HTTP（前端经反代访问；保留发布便于本机 curl/E2E 脚本直连）
+      - "8090:8090"   # 竞拍 Agent HTTP（独立端口、独立凭据；`/agent-api` 刻意不经反代，见 frontend/nginx.conf）
+      - "18080:18080" # WebSocket（独立监听器；反代经容器网络访问，发布仅供本机工具直连）
+
+  # 单 origin 入口：静态前端 + 反向代理（`/api` → backend:8080，`/ws` → backend:18080）。
+  # 浏览器只访问这一个端口，不再需要为跨源配置 CORS，也不需要单独处理 WS 的 18080。
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # 网络受限时可指向本地镜像源，而不必改 Dockerfile（见 frontend/Dockerfile 顶部）。
+        NODE_IMAGE: ${FRONTEND_NODE_IMAGE:-node:22-alpine}
+        NGINX_IMAGE: ${FRONTEND_NGINX_IMAGE:-nginx:1.27-alpine}
+    image: bid-arena-frontend:local
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "${WEB_PORT:-8088}:80"
 
 volumes:
   mysql_data:

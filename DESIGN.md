@@ -74,13 +74,13 @@
 - 架构守卫：`ArchUnit` 九条分层/跨上下文/无环规则（§2.4）。
 - 前端：Vue 3 + Pinia 接入真实 HTTP/WS，类型从契约生成，金额/倒计时以服务端为准（P4）；P6 增补尾段“博弈时间”提示（依据快照下发的 `finalGameWindowSeconds`）、成交主体 `AI/真人` 徽标与管理员按场次流水面板（D-33），并把“智能体接入”整页换成用户向的“我的 AI 代理”——主路径是**创建托管代理**（选场次 + 预算上限）与在管列表，自助 Token 收进页底“高级”（D-34/D-36）；大厅与运营台显示“预告 mm:ss 后开拍”（用 `store.serverNow`，不用本机时钟，D-35）。
 - 证据：`mvn clean verify` 共 225 个测试全绿（真库集成 85 + 其余领域/身份/结算/事件/WS/Agent 单元 131 + 架构守卫 9）；
-  关键路径另做变异测试反向确认确实会红（架构 9/9、Agent 14/14、前端 16/16）；前端另有 69 单测与 3 个真后端联调。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
+  关键路径另做变异测试反向确认确实会红（架构 9/9、Agent 14/14、前端 16/16）；前端另有 73 单测与 3 个真后端联调。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
 
 **尚未实现（如实声明）：** 只能靠 HTTP 复现的部分已全部有脚本——`tools/auction_sim.py` 覆盖并发同/邻价、`requestId`
 重试、拒绝场景、最后五秒狙击、断线快照与结算对账（实测 52/52），`tools/agent_sim.py` 覆盖 Agent 侧（44/44）。
 唯一仍需集成测试承担的是“20 个**不同用户**并发”：公开 API 没有注册端点、种子只有 3 个演示账号，
 这部分由真实库上的 `BidConcurrencyTest` 覆盖。另：
-`docker compose up` 的实测（`Dockerfile` 与 `backend` 服务已配置并经 `docker compose config` 校验，但未在本机构建镜像）、
+`docker compose up` 的实测（`Dockerfile`/`frontend/Dockerfile`/`frontend/nginx.conf` 与 `backend`/`frontend` 服务已配置，并经 `docker compose config` 与 `nginx -t` 校验，但未在本机构建镜像——Docker Hub 不可达且本地镜像源无 node/maven/temurin）、
 演示录屏与现场核验素材。
 
 ## 2. 组件与职责
@@ -232,7 +232,7 @@ com.bidarena
 
 ## 7. 部署与演进
 
-Docker Compose 启动 MySQL、后端和前端，Flyway 在应用启动时自动迁移并种子演示账号与草稿拍卖（理由见 `DECISIONS.md` 的 D-2 / D-6）。MySQL 对外端口由 `.env` 指定，默认避开宿主机已占用的 3306。Redis 暂不作为事实来源；若未来用于广播或限流，故障时均回退 MySQL，不能依赖 Redis 恢复余额或赢家。
+Docker Compose 启动 MySQL、后端和前端，Flyway 在应用启动时自动迁移并种子演示账号与草稿拍卖（理由见 `DECISIONS.md` 的 D-2 / D-6）。前端容器用 Nginx 托管产物并把 `/api` 与 `/ws` 反代到后端，**浏览器只访问一个 origin**（`WEB_PORT`，默认 8088）：组件间 HTTP 与 WebSocket 都不再需要跨源配置，Agent API 仍保持独立端口 `:8090` 直连以保留隔离（D-37）。MySQL 对外端口由 `.env` 指定，默认避开宿主机已占用的 3306。Redis 暂不作为事实来源；若未来用于广播或限流，故障时均回退 MySQL，不能依赖 Redis 恢复余额或赢家。
 
 推荐按以下顺序实现，保证每一阶段均可独立验证：
 

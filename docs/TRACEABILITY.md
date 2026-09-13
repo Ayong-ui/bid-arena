@@ -79,13 +79,14 @@ HTTP 集成测试与 WS 集成测试**共用同一个自启动的服务实例**�
 
 ### 前端（P4）
 
-前端不连库，单测用假 HTTP、假 socket、内存存储，覆盖“与边界打交道的那一层”：契约生成类型、HTTP 客户端、实时订阅状态机、Pinia store。共 **69 个用例**（`cd frontend && npm test`），类型检查与构建通过（`npm run typecheck` / `npm run build`）。
+前端不连库，单测用假 HTTP、假 socket、内存存储，覆盖“与边界打交道的那一层”：契约生成类型、HTTP 客户端、实时订阅状态机、WS 地址拼接、Pinia store。共 **73 个用例**（`cd frontend && npm test`），类型检查与构建通过（`npm run typecheck` / `npm run build`，单 origin 构建另跑 `VITE_WS_SAME_ORIGIN=1 npm run build`）。
 
 | 测试文件 | 数量 | 覆盖 |
 |---|---:|---|
 | `src/api/client.test.ts` | 12 | 统一封套：`code` 为权威（不是 HTTP 状态）、`IDEMPOTENCY_REPLAY` 视为成功、非契约响应拒绝、鉴权头、出价幂等键头、超时中止、401 触发会话清理、`BID_TOO_LOW` 最低加价提示 |
 | `src/api/contract.test.ts` | 4 | 生成类型与 `openapi.yaml` 的关键字段/枚举对齐（D-26） |
 | `src/realtime/feed.test.ts` | 14 | `(auctionId, seq, type)` 去重、缺口拉 HTTP 快照并丢弃旧事件/补放新事件、无基线先缓存、快照持续落后时有限重试、重连换新票并重置基线、退避封顶、快照失败保留连接、握手原因码透出、坏帧忽略、`stop()` 后不再重连 |
+| `src/realtime/socket.test.ts` | 4 | WS 地址拼接两种拓扑：直连用服务端 `wsPort`、单 origin 用页面 host（D-37）；HTTPS 升 `wss`；`auctionId` 与 ticket 均按 URL 编码 |
 | `src/store/arena.test.ts` | 31 | 登录与 401 清会话、实时事件驱动价格/领先者/延时、倒计时用服务端时间校准、结算 404 不是错误、出价取服务端价格、重试复用幂等键/改金额换新键、`NOT_JOINED` 自动加入、`BID_TOO_LOW` 不复用键、运营台创建/开始/按场次查流水（含主体标识）、尾段博弈时间提示不拦真人、自助 AI 授权（列表无明文、请求不带 `agentUserId`、吊销后收走明文、`logout()` 清空）、托管 AI 代理（候选场次只含草稿/进行中、创建只发 `{auctionId, budgetLimit}`、失败不刷新列表、触顶提醒只出现一次、结束时提醒输赢与成交价、撤销后刷新） |
 | `src/anonymous.test.ts` | 8 | 匿名标识确定性、与服务端固定向量一致（跨端契约） |
 
@@ -217,15 +218,15 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
 | E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `tools/agent_sim.py`（Agent 侧端到端）、`tools/auction_sim.py`（全链路） | `tools/agent_sim.py` **44/44**（真实双端口，开发库）；`tools/auction_sim.py` **52/52**（八个阶段，见上文“全链路模拟（E1）”，复跑前用 `db/reset_demo_data.sql` 恢复余额，DBG-31）；真正“20 个不同 `user_id`”的并发由 `BidConcurrencyTest` 覆盖 | ✅ |
-| E2 | 自动化测试 | 覆盖原文列出的全部测试点 | 后端 `src/test`；前端 `frontend/src` | 后端 **225/225** 绿（`mvn clean verify`）；前端 **69 单测** + **3 真后端联调** + **16 变异 KILLED**；Agent 侧 71 个用例 + 14/14 变异 KILLED（P5/P6） | ✅ |
+| E2 | 自动化测试 | 覆盖原文列出的全部测试点 | 后端 `src/test`；前端 `frontend/src` | 后端 **225/225** 绿（`mvn clean verify`）；前端 **73 单测** + **3 真后端联调** + **16 变异 KILLED**；Agent 侧 71 个用例 + 14/14 变异 KILLED（P5/P6） | ✅ |
 | E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：216 个用例跑在真实 MySQL 8.4 上（HTTP/WS/Agent/托管代理集成测试共用同一个自启动服务实例），另 9 个为纯静态架构守卫 | ✅ |
-| E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend/src/store/arena.test.ts`（Pinia store，31 个用例）+ `frontend/src/realtime/feed.test.ts`（14）+ `frontend/src/api/client.test.ts`（12）等 | 见上文「前端（P4）」：69 单测 + 3 真后端联调 + 16/16 变异；`npm run typecheck` 与 `vite build` 通过 | ✅ |
+| E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend/src/store/arena.test.ts`（Pinia store，31 个用例）+ `frontend/src/realtime/feed.test.ts`（14）+ `frontend/src/api/client.test.ts`（12）+ `frontend/src/realtime/socket.test.ts`（4）等 | 见上文「前端（P4）」：73 单测 + 3 真后端联调 + 16/16 变异；`npm run typecheck` 与 `vite build` 通过（含 `VITE_WS_SAME_ORIGIN=1`） | ✅ |
 
 ## F. 快速启动与初始数据（原文 第 4 页）
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| F1 | 根目录交付 | `.env.example`、Compose、迁移、种子、一键测试、模拟脚本 | 仓库根目录 | `.env.example`/`db/migration`/`tools/agent_sim.py`/`tools/auction_sim.py`/`Dockerfile`/`docker-compose.yml`（`docker compose config` 已校验）；两个模拟脚本已在开发库实跑（44/44、52/52） | 🟨 Compose `backend` 服务已配好但未在本机构建镜像（C-6） |
+| F1 | 根目录交付 | `.env.example`、Compose、迁移、种子、一键测试、模拟脚本 | 仓库根目录 | `.env.example`/`db/migration`/`tools/agent_sim.py`/`tools/auction_sim.py`/`Dockerfile`/`frontend/Dockerfile`/`frontend/nginx.conf`/`docker-compose.yml`（`docker compose config` 与 `nginx -t` 均已校验）；两个模拟脚本已在开发库实跑（44/44、52/52）；D-37 后 compose 含 `mysql/backend/frontend`，浏览器只访问一个端口（`WEB_PORT` 默认 8088），前端 `npm test` 73 绿、`VITE_WS_SAME_ORIGIN=1 npm run build` 通过 | 🟨 两个镜像已配好但未在本机构建（Docker Hub 不可达、本地镜像源无 node/maven/temurin，C-6） |
 | F2 | 演示账号 | 原文建议的三类账号 | `db/migration/V2` 种子（ADMIN + 两个 BIDDER） | `SeededDemoCredentialsTest`（三个口令登录成功、错口令失败）；`HttpApiIntegrationTest` 用同一批账号走完整 HTTP 登录 | ✅ |
 | F3 | README 路径 | 可复制的完整演示路径 | `README.md` | 照做一遍 | ⬜ |
 | F4 | 演示拍品 | 至少一件可立即开始，服务启动不自动倒计时 | 种子数据 | 实测 | ⬜ |
@@ -236,7 +237,7 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 |---|---|---|---|---|---|
 | G1 | `AI_USAGE.md` | 分工、本人决定、未采用方案、真实错误、无法独立解释的代码 | `AI_USAGE.md` | 文档评审 | ✅ 已填写 §1~§6（工具/模型可由 `PI_*` 自证；决定引用 D-32/D-33/D-36/D-5；错误引用 DBG-30/DBG-29/DBG-27 + 2 条补充；§6 列 7 类）；文末 3 项作者核对清单 |
 | G2 | `DESIGN.md` | 边界、事务、结算、并发、恢复、丢消息策略 | `DESIGN.md` | 文档评审 | ✅ 已同步 V1~V6、四个上下文的边界与依赖规则、出价/结算事务、恢复与丢消息策略、验证重点 |
-| G3 | `DECISIONS.md` | ≥3 项决策含代价与验证 | `DECISIONS.md` | 文档评审 | ✅ 已写 D-1~D-36（含背景/候选/选择/代价/验证结果），每条均有落地验证证据 |
+| G3 | `DECISIONS.md` | ≥3 项决策含代价与验证 | `DECISIONS.md` | 文档评审 | ✅ 已写 D-1~D-37（含背景/候选/选择/代价/验证结果），每条均有落地验证证据 |
 | G4 | `DEBUG_LOG.md` | ≥2 个真实问题，禁止编造 | `DEBUG_LOG.md` | 与提交/日志对应 | ✅ 已写 31 条（DBG-1~DBG-31） |
 | G5 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 操作 Agent | `AGENT_TOOL_SPEC.md` | 文档评审 | ✅ 已从“骨架”更新为 P5 已实现并验证：操作步骤、提示词模板、失败边界、验收清单已勾选并登记证据（`tools/agent_sim.py` 44/44）；另补充 D-34 自助 Token 与 D-36 托管代理的区别 |
 | G6 | Git 历史 | 有意义、非机械拆分、说明行为变化 | 提交历史 | `git log` | ⬜ |

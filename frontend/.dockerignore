@@ -1,0 +1,7 @@
+# 前端镜像的构建上下文排除项（context 是 ./frontend）。
+# 依赖在镜像内 `npm ci` 重装、产物在镜像内 `npm run build` 生成，
+# 因此本机的 node_modules 与 dist 都不该进上下文（远程 Docker context 下要打包传过去）。
+node_modules
+dist
+.vite
+*.log

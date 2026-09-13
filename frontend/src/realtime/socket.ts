@@ -39,17 +39,36 @@ export function createBrowserSocket(url: string, handlers: SocketHandlers): Sock
  * 拼 WS 地址。
  *
  * 两件事不能想当然：
- * - 端口**必须**用服务端给的 `wsPort`（独立监听器，默认 HTTP 端口 +10000）。
- *   前端自己推导的话，改了配置就变成“静默连不上”；
+ * - 端口默认**必须**用服务端给的 `wsPort`（独立监听器，默认 HTTP 端口 +10000）。
+ *   前端自己推导的话，改了配置就变成“静默连不上”；只有反代把 `/ws` 收进同一 origin
+ *   的部署拓扑例外（{@link SocketUrlOptions.sameOrigin}）。
  * - 路径是**模板**（`/ws/auctions/{auctionId}`），必须把 `{auctionId}` 换掉。
  *   漏了这一步的表现是握手 404，而且看起来像"服务端没上线"（踩过一次，见 DBG-23）。
  *
  * 主机名沿用当前页面的 host，这样同一个前端既能连本机也能连远端（HTTPS 页面下用 wss）。
  */
-export function socketUrl(ticket: WsTicket, auctionId: string): string {
+export interface SocketUrlOptions {
+  /**
+   * 单 origin 部署（前端经反向代理与后端同源）时为 true。
+   *
+   * <p>此时 WS 和页面走同一个外部 origin（80/443），由反代把 `/ws` 转到后端的独立
+   * 监听器；**不能**再把服务端给的 `wsPort`（18080）拼进去——那个端口在部署拓扑里
+   * 并不对外暴露，拼上去的表现是浏览器一直重连、而服务端一切正常。
+   * 直连拓扑（本机开发）保持默认 false，端口仍以服务端告知为准。
+   */
+  sameOrigin?: boolean
+}
+
+export function socketUrl(ticket: WsTicket, auctionId: string, options: SocketUrlOptions = {}): string {
   const scheme = globalThis.location?.protocol === 'https:' ? 'wss:' : 'ws:'
-  const host = globalThis.location?.hostname ?? 'localhost'
   const raw = ticket.wsPath.startsWith('/') ? ticket.wsPath : `/${ticket.wsPath}`
   const path = raw.replace('{auctionId}', encodeURIComponent(auctionId))
-  return `${scheme}//${host}:${ticket.wsPort}${path}?ticket=${encodeURIComponent(ticket.ticket)}`
+  const query = `?ticket=${encodeURIComponent(ticket.ticket)}`
+  if (options.sameOrigin) {
+    // host 已含外部端口（缺省 80/443）：同源部署下这是唯一正确的 authority。
+    const host = globalThis.location?.host ?? 'localhost'
+    return `${scheme}//${host}${path}${query}`
+  }
+  const host = globalThis.location?.hostname ?? 'localhost'
+  return `${scheme}//${host}:${ticket.wsPort}${path}${query}`
 }

@@ -13,6 +13,13 @@ import { DEMO_ACCOUNTS, describe, isUnauthenticated, liveFromPayload, newRequest
 export const useArenaStore = defineStore('arena', () => {
   const deps = arenaDeps()
 
+  /**
+   * 构建期开关：单 origin 部署（前端经反向代理）时由 `frontend/Dockerfile` 传
+   * `VITE_WS_SAME_ORIGIN=1`，让 WS 走同源 `/ws` 而不是票里的 `wsPort`（D-37）。
+   * 本机开发（Vite 5173 + 后端 18080）保持未设置，行为与以前完全一致。
+   */
+  const wsSameOrigin = import.meta.env.VITE_WS_SAME_ORIGIN === '1'
+
   // ── 会话与身份 ────────────────────────────────────────────────────────────
   const session = ref(deps.session.read())
   const currentUser = computed<User | null>(() => session.value?.user ?? null)
@@ -497,7 +504,8 @@ export const useArenaStore = defineStore('arena', () => {
         },
         createSocket: deps.createSocket ?? createBrowserSocket,
         // 票里的路径是模板，auctionId 由这里补上：feed 只关心"怎么连"，不关心连的是哪一场。
-        url: (ticket) => socketUrl(ticket, auctionId),
+        // 单 origin 部署（反代把 /ws 转给 18080）时忽略票里的 wsPort，见 D-37。
+        url: (ticket) => socketUrl(ticket, auctionId, { sameOrigin: wsSameOrigin }),
         schedule: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
         cancelSchedule: (handle) => globalThis.clearTimeout(handle as number),
       },

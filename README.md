@@ -72,7 +72,21 @@ docker compose up -d mysql backend
 `backend` 服务会等 MySQL 健康后启动，并自己跑 Flyway 迁移与种子（与本地直连共用同一套迁移）。
 它映射三个端口：`8080`（用户/管理）、`8090`（Agent）、`18080`（WebSocket）。
 只想建镜像：`docker build -t bid-arena-backend .`。
-（注：本仓库的验证流程没有实际 `docker compose up` 过——评测机的容器按约定不重建，见 [docs/STATUS.md](docs/STATUS.md) 的 C-6。）
+
+**一条命令起完整栈（单 origin，推荐）**：前面那个方式还要自己想办法托管前端、把 CORS 与 WS 端口对上；直接把 `frontend` 也交给 compose 即可（D-37）：
+
+```bash
+cp .env.example .env          # 至少填 JWT_SECRET；WEB_PORT 默认 8088
+# 网络受限时可先指定前端基础镜像源（见 .env.example 的 FRONTEND_*_IMAGE）
+docker compose up -d --build
+# 浏览器访问 http://localhost:8088
+```
+
+浏览器只看到一个 origin：`frontend` 容器用 Nginx 托管前端产物，并把 `/api` 与 `/ws` 反代到后端的
+`8080`/`18080`，因此**不需要配 `CORS_ORIGINS`，也不用让浏览器直连 18080**。
+`backend` 的端口保留发布只是方便本机 `curl` 与 E2E/压测脚本直连。
+Agent API 仍是独立端口 `:8090`，**刻意不经反代**（保留 D-9/D-29 的爆炸半径隔离，理由写在 `frontend/nginx.conf` 顶部）。
+（注：本仓库的验证流程没有实际 `docker compose up` 过——评测机的容器按约定不重建，见 [docs/STATUS.md](docs/STATUS.md) 的 C-6；前端配置已用 `docker compose config` 与 `nginx -t` 验证。）
 
 ### 已实现的 HTTP 接口
 
@@ -314,8 +328,10 @@ docker exec -i bid-arena-mysql-1 mysql --default-character-set=utf8mb4 \
   并发清场与吞吐另由 `tools/stress_test.py` 覆盖（博弈时间 `-c 100` 全拒、吞吐约 410 QPS 无 5xx）。
   唯一不能只靠 HTTP 复现的是“20 个**不同用户**并发”：公开 API 没有注册端点、种子只有 3 个演示账号，
   这部分由真实库上的 `BidConcurrencyTest` 覆盖（详见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md) E1）。
-- **Compose 的 `backend` 服务尚未在本机构建过镜像**。`Dockerfile` 与 `docker-compose.yml` 已就位，
-  `docker compose config` 已校验；但按仓库约定（不重建评测机上的容器），没有实际 `docker compose up` 过。
+- **Compose 的镜像尚未在本机构建过**。`backend`/`frontend` 两个 `Dockerfile` 与 `docker-compose.yml` 已就位，
+  `docker compose config` 与 `frontend/nginx.conf` 的 `nginx -t` 均已校验；但按仓库约定（不重建评测机上的容器），
+  没有实际 `docker compose up` 过。本机 Docker daemon 在远程 VM 上且连不上 Docker Hub，本地镜像源也没有
+  node/maven/temurin 基础镜像，因此无法就地构建（已用 `ARG` 暴露基础镜像供受限环境替换，D-37）。
 - **[AI_USAGE.md](AI_USAGE.md) 已填写**：工具与模型（`pi` + `deepseek-v4-flash`）、各模块人机分工与口径、
   四项本人设计决定、六项未采用方案、四项真实错误，以及七类目前仍不能独立解释/修改的代码；
   文末留三项「作者核对清单」（模型列表完整性、比例口径、决定归属）。
@@ -356,7 +372,7 @@ npm run dev        # http://localhost:5173/
 
 ```powershell
 cd frontend
-npm test           # 69 个单测（api client / realtime feed / store / anonymous）
+npm test           # 73 个单测（api client / realtime feed / socket / store / anonymous）
 npm run typecheck  # vue-tsc
 npm run build      # vite build
 ```

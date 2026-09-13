@@ -774,6 +774,33 @@
 
 ---
 
+## D-37　单 origin 部署：前端容器 + 反向代理把三个端口收成一个
+
+**背景**：D-36 之前，交付物只有“后端镜像 + MySQL”，`docker-compose.yml` 里**没有前端**：评审要自己撑一个静态服务器，再把 `VITE_API_BASE_URL`、`CORS_ORIGINS` 和浏览器的 18080 直连对上；“快速部署”卡在编排而不是业务代码（见本次复盘）。WebSocket 尤其麻烦：`WsTicket` 如实告知 `wsPort=18080`，而部署拓扑未必对外暴露它。
+
+| 决策点 | 方案 | 说明 | 代价 |
+|---|---|---|---|
+| 前端托管 | 后端托管静态资源 | 少一个容器 | 后端要为静态文件与 SPA fallback 负责，Java 服务与前端发版耦合 |
+| 前端托管 | **独立 Nginx 容器托管产物**（当前实现） | 职责清晰，Nginx 做静态与反代是本职工作 | 多一个容器、多一份 `nginx.conf` |
+| 对外形态 | 浏览器直连 8080/8090/18080 | 不改前端 | 三个 origin：CORS、TLS 证书、WS 独立端口都要分别处理，正是“不好部署”的来源 |
+| 对外形态 | **反代收成一个 origin**（当前实现） | 浏览器只访问 `WEB_PORT`，`/api` 与 `/ws` 同源 | 反代成为关键路径；要正确转发 WS 的 `Upgrade`/`Connection` |
+| WS 地址 | 前端继续拼 `ticket.wsPort` | 前端不用改 | 同源拓扑下 18080 不对外，表现为“前端一直重连、后端日志正常” |
+| WS 地址 | **构建期 `VITE_WS_SAME_ORIGIN=1`，WS 走同源 `/ws`**（当前实现） | 端口由页面自身 authority 决定，反代再转 18080 | 多一个构建期开关；两套拓扑都要有测试（`socket.test.ts`） |
+| Agent API（8090） | 也经反代暴露（如 `/agent-api/`） | 单一入口、更“整齐” | 抹掉 D-9/D-29 用独立端口建立的爆炸半径隔离 |
+| Agent API（8090） | **保持独立端口，不经反代**（当前实现） | 隔离语义不变 | 使用者仍需直连 8090（`AGENT_TOOL_SPEC.md` 已写明） |
+| Nginx upstream | 直接写 `proxy_pass http://backend:8080` | 配置直观 | Nginx 在**启动时**解析主机名：后端未就绪或重建（IP 变化）会起不来 / 连旧 IP |
+| Nginx upstream | **变量 + Docker 内嵌 DNS（`resolver 127.0.0.11`）延迟解析**（当前实现） | 消除启动顺序窗口，容器重建后自动跟上 | `resolver` 地址是 Docker 网络专有值（本配置本就只服务 compose） |
+| 基础镜像 | 固定 `node:22-alpine` / `nginx:1.27-alpine` | 简单 | 国内/离线环境拉不到 |
+| 基础镜像 | **用 `ARG` 暴露，compose 经 `FRONTEND_NODE_IMAGE`/`FRONTEND_NGINX_IMAGE` 覆盖**（当前实现） | 换镜像源不必改 Dockerfile | 配置面多两个变量（已在 `.env.example` 说明，且不配即官方镜像） |
+
+**最终选择**：`docker-compose.yml` 新增 `frontend` 服务（多阶段构建：Node 构建 `dist` → Nginx 托管），只发布 `${WEB_PORT:-8088}:80`；`frontend/nginx.conf` 托管 SPA 并反代 `/api/` → `backend:8080`、`/ws/` → `backend:18080`；`frontend/src/realtime/socket.ts` 的 `socketUrl` 增加 `sameOrigin` 选项，store 按 `VITE_WS_SAME_ORIGIN==='1'` 传入（Dockerfile 构建期默认 `1`）；`docker-compose.yml` 的 `backend` 端口保留发布仅为本机 curl/E2E 工具直连。
+
+**代价**：多一个容器与一份 Nginx 配置；同一份前端代码要支持“直连（端口取自票）”与“同源（端口取自页面）”两种拓扑；`nginx.conf` 的 `resolver 127.0.0.11` 只在 Docker 网络内成立（该文件本就只为 compose 服务）。
+
+**验证结果**：✅ `docker compose config` 通过（服务 `mysql/backend/frontend`，frontend 发布 `8088:80`，构建参数正确渲染）；`frontend/nginx.conf` 经本地 Nginx 镜像 `nginx -t` 语法与配置检查通过；前端 `npm run typecheck` 通过；`npm test` **73 绿**（新增 `socket.test.ts` 4 例：直连用 `wsPort`、同源用页面 host、HTTPS 升 `wss`、`auctionId` 编码）；`VITE_WS_SAME_ORIGIN=1 npm run build` 成功，产物中 `VITE_WS_SAME_ORIGIN` 已被 Vite 内联（不再残留字面量）。⏳ 未在本机 VM 真正构建镜像：Docker daemon 在远程 VM 上且**连不上 Docker Hub**，本地镜像源也没有 node/maven/temurin，故仍未 `docker compose up`（延续 §8 的 C-6）。
+
+---
+
 | 方案 | 未采用原因 | 如果重来会怎样 |
 |---|---|---|
 | 复用"校园跑腿"项目资产 | 该代码库并不存在于本仓库，`REUSE_MAP.md` 属空头承诺 | 已删除该文档，改为原创实现 |
@@ -783,6 +810,10 @@
 | 用数据库触发器维护不变量 | 逻辑分散在表上，调试与演练时需要跨层跳跃；触发器内的错误码无法传给业务层；后续改规则要再发一次迁移 | 约束声明不变量的**边界**（D-10），事务过程仍写在服务层（D-4） |
 | 只在应用层校验不变量 | 任何绕过服务的写入（运维 SQL、新入口）都能破坏不变量，事后无法定位 | 下沉到 CHECK / 外键 / 唯一键（D-10） |
 | Maven 多模块 + 独立 worker 进程 | 编译期强制与 ArchUnit 等价；进程分离不增加正确性证据 | 单模块 + 包边界 + ArchUnit（D-6） |
+| 后端托管前端静态资源 | Java 服务要为静态文件与 SPA fallback 负责，前端发版与后端发布耦合 | 独立 Nginx 容器（D-37） |
+| 浏览器直连 8080/8090/18080 三个端口 | 三个 origin：CORS、TLS 证书、WS 端口都要分别处理 | 反代收成单一 origin（D-37） |
+| Agent API 也经反代暴露 | 抹掉独立端口建立的爆炸半径隔离（D-9/D-29） | Agent 保持 :8090 直连（D-37） |
+| 为离线环境把镜像源写死进 Dockerfile | 把某个环境的私有地址固化进交付物 | 用 ARG + compose 变量覆盖（D-37） |
 | 7 个限界上下文 | 多数上下文在本领域不存在；`settlement` 是事务边界而非上下文 | 4 个上下文（`DESIGN.md` §2.1） |
 | Redis 作为事实来源 / 分布式锁 | 引入第二个事实来源，失效时无法自证一致性 | MySQL 唯一约束 + 行锁（D-4） |
 | 全内存 Mock 做并发测试 | 原文明确要求关键并发与结算测试使用真实 MySQL | Testcontainers / 真库集成测试 |
