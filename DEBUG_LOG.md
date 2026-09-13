@@ -13,6 +13,11 @@
 | DBG-5 | 测试的结论可能错在断言本身，而不在被测代码 | 断言不得依赖调度；新增测试必须用变异测试确认会红 |
 | DBG-6 | “取消”拿到了成交结果，还被标成幂等重放 | 重放只能用在**确实生效过**的操作上，否则是在对调用方说谎 |
 | DBG-7 | 赢家冻结为 0 时结算静默放行了一场"没付钱"的成交 | 资金路径上宁可报错停事务，也不要跳过——跳过后的账是平的 |
+| DBG-8 | 单类测试绿，全量构建却报"fork 启动失败" | 测试里"优雅停机"的 API 可能 `System.exit`，会杀掉被托管的测试 JVM；提示信息未必是原因 |
+| DBG-9 | CORS 预检被测试报成 405，服务端看起来是坏的 | JDK 的 `HttpURLConnection` 默认丢弃 `Origin` / `Access-Control-Request-Method` 等受限头，不等于浏览器行为 |
+| DBG-10 | 设了 `SERVER_PORT` 系统属性，服务却没换端口 | `${VAR:default}` 只读环境变量；要覆盖 yml 得用 yml 里真实存在的键（`server.port`），并加断言 |
+| DBG-11 | 显式声明了 Jackson，请求体却被 snack3 解析成 `Format error` | 插件式框架里"声明了"不等于"生效了"，要让它成为 classpath 上唯一的候选 |
+| DBG-12 | 库口令出现在 `target/surefire-reports/*.xml` 里 | 系统属性会进测试报告，且 fork 复用会污染同一 JVM 之后的测试类；用完必须清掉 |
 
 ---
 
@@ -394,3 +399,299 @@ if (winnerId != null && winnerFrozen != finalPrice) {
 **工程结论**
 
 资金路径上，“跳过”比“报错”危险得多。跳过留下的是一笔**在对账上完全平掉的错账**，报错留下的是一个能被扫描器重试的待办事项。因此结算里每一处“不满足条件就跳过”都要反问一句：跳过之后，这个用户还欠钱吗？
+## DBG-8：测试 fork 被 `Solon.stop()` 里的 `System.exit` 杀掉，还被一个假的 Class-Path 报错带偏
+
+**现象**
+
+P2 的 HTTP 集成测试单独跑是绿的：
+
+```
+[INFO] Tests run: 19, Failures: 0, Errors: 0, Skipped: 0 -- in com.bidarena.api.HttpApiIntegrationTest
+```
+
+但按 `README.md` 的一键命令 `mvn clean verify` 跑全量时构建失败，而且失败点看起来跟测试内容毫无关系：
+
+```
+[ERROR] The forked VM terminated without properly saying goodbye. VM crash or System.exit called?
+[ERROR] Command was cmd.exe /X /C "java -Dfile.encoding=UTF-8 -jar ...\surefirebooter-20260913151155301_3.jar ..."
+[ERROR] Error occurred in starting fork, check output in log
+[ERROR] Process Exit Code: 1
+[ERROR] Crashed tests: com.bidarena.auction.application.BidConcurrencyTest
+```
+
+`HttpApiIntegrationTest` 的 19 个用例**全部通过**，然后整个 fork 没了，而 surefire 把下一个待测类（`BidConcurrencyTest`）标成"crashed"。
+
+**定位**
+
+`target/surefire-reports/*.dumpstream` 里有这样三行：
+
+```
+Boot Manifest-JAR contains absolute paths in classpath 'D:\maven_repository\...\surefire-booter-3.5.2.jar'
+Hint: <argLine>-Djdk.net.URLClassPath.disableClassPathURLCheck=true</argLine>
+'other' has different root
+```
+
+这是一个**非常像**"Windows 盘符/临时目录"的环境问题（`java.io.tmpdir` 在 `C:`，依赖仓库在 `D:`），我照着提示把 `-Djdk.net.URLClassPath.disableClassPathURLCheck=true` 加进 surefire 的 `argLine`，重跑——**一模一样的报错**。提示是假的线索。
+
+真正的原因在测试的清理代码里：
+
+```java
+@AfterAll
+static void stopServer() {
+    Solon.stop();     // ← 这里
+}
+```
+
+`Solon.stop()` 的反编译结果（`javap -c org.noear.solon.Solon`）：
+
+```java
+public static void stop()      { ... stop(cfg.stopDelay()); }          // 转发
+public static void stop(int)   { new Thread(runnable).start(); }       // ← 异步线程
+private static void stop0(boolean block, int delay, int code) {
+    ...  // pre-stop / delay / stop 三阶段
+    if (block) { System.exit(code); }                                  // ← 退出 JVM
+}
+```
+
+`stop()` 走的是 `stop0(true, delay, 0)`：停止流程被丢到一个新线程里，**最后调用 `System.exit(0)`**。在被 surefire 托管的测试 JVM 里，这等于在测试跑完后自杀：JVM 直接退出，来不及跟 surefire 握手，于是"terminated without properly saying goodbye"；surefire 以为这个 fork 崩了，就重启一个 fork 去跑剩下的类，而重启过程中才吐出那个盘符相关的报错——它是**后果**，不是原因。
+
+单独跑一个测试类时问题被掩盖了：那个类就是最后一个，JVM 退出后再没有类要跑，surefire 没有"重启 fork"的动作，构建就绿了。**只有全量运行才会暴露。**
+
+**修复**
+
+用同一个停止路径，但不阻塞、不退出 JVM：
+
+```java
+@AfterAll
+static void stopServer() {
+    // stopBlock(block=false) → stop0(false, 0, 1)：不 System.exit，其余流程不变
+    Solon.stopBlock(false, 0);
+}
+```
+
+**验证**
+
+- `mvn -o clean verify`（`README.md` 一键命令）→ `Tests run: 63, Failures: 0, Errors: 0` + `BUILD SUCCESS`，不再出现 fork 报错。
+- 顺手确认了这确实与 `argLine` 无关：把那个 JDK 开关从 `pom.xml` 里撤掉，构建仍然全绿，因此不留这条无依据的配置。
+
+**工程结论**
+
+"测试都过了但构建失败"是一个信号：问题出在测试**周围**，不在测试里。库代码提供的"优雅停机"通常面向进程生命周期（它有权结束进程），把这种 API 直接用在测试清理里，就是把进程控制权交了出去。凡是测试里要"关掉什么东西"，先确认它会不会 `System.exit`。
+
+---
+
+## DBG-9：CORS 预检在测试里报 405——JDK 的 `HttpURLConnection` 默认丢弃 `Origin` 这类请求头
+
+**现象**
+
+`corsFollowsAllowList` 断言浏览器预检（`OPTIONS` + `Access-Control-Request-Method: POST` + `Origin`）返回 204：
+
+```
+java.lang.AssertionError: ... expected: <204> but was: <405>
+{"code":"METHOD_NOT_ALLOWED","data":{"method":"OPTIONS","path":"/api/v1/admin/auctions"}, ...}
+```
+
+405 的封套里 `"method":"OPTIONS"`，说明请求**确实**是 OPTIONS 到达了服务器；而 `CorsFilter` 的预检判定是：
+
+```java
+boolean preflight = "OPTIONS".equals(ctx.method())
+        && ctx.header("Access-Control-Request-Method") != null;
+```
+
+也就是说，服务端没看到那个请求头。
+
+**定位**
+
+先怀疑大小写：`ctx.header()` 底层是 `MultiMap`，用 `javap` 看它的构造：
+
+```java
+public class MultiMap<T> {
+  protected final IgnoreCaseMap<KeyValues<T>> innerMap;   // ← 大小写不敏感
+```
+
+排除。再回到客户端侧：测试用的是 Solon 的 `HttpUtils`，它的默认实现是 JDK 的 `HttpURLConnection`。而 `sun.net.www.protocol.http.HttpURLConnection` 有一个**受限头集合**，默认会**静默丢弃**下列请求头（不报错、不警告）：
+
+```
+Access-Control-Request-Headers, Access-Control-Request-Method,
+Connection, Content-Length, Content-Transfer-Encoding,
+Host, Keep-Alive, Origin, Trailer, Transfer-Encoding, Upgrade, Via
+```
+
+`Origin` 和 `Access-Control-Request-Method` 恰好都在里面——**CORS 预检的标识性请求头被客户端自己吃掉了**。所以请求变成了"既没有 Origin、也没有 Request-Method 的普通 OPTIONS"，被路由当普通请求拒成 405。
+
+**修复**
+
+在测试类初始化之前打开这个开关（必须在 `HttpURLConnection` 类初始化之前设置，所以放在 `static` 块而不是 `@BeforeAll`）：
+
+```java
+static {
+    System.setProperty("sun.net.http.allowRestrictedHeaders", "true");
+}
+```
+
+**验证**
+
+- `corsFollowsAllowList`：白名单内 → 预检 204 且回显 `Access-Control-Allow-Origin: http://localhost:5173`；白名单外 → 不回显 `Allow-Origin`。两条断言都通过。
+- 这是**测试侧的坑**，服务端 `CorsFilter` 一行都没改：真实浏览器不会丢弃这些头（否则 CORS 根本不会存在），所以不要为了迁就这个测试去改生产代码。
+
+**工程结论**
+
+用 JDK 自带客户端"模拟浏览器"时，它并不是浏览器：受限头、重定向策略、Cookie 策略都不同。写这类测试前先确认客户端会发出什么，否则会把"测试工具的限制"误判成"被测代码的缺陷"——这次差点就跑去改 `CorsFilter` 了。
+
+---
+
+## DBG-10：`SERVER_PORT` 系统属性改了没用——`${...}` 占位符只认环境变量
+
+**现象**
+
+HTTP 集成测试需要让服务监听一个随机空闲端口（避免与本机 8080 上已跑着的实例冲突）。于是照常设系统属性：
+
+```java
+System.setProperty("SERVER_PORT", String.valueOf(port));
+Application.main(new String[0]);
+assertEquals(port, Solon.cfg().serverPort());
+```
+
+结果启动失败，端口也不是期望值；再后来换了个更靠上的随机端口，又撞到 `IllegalArgumentException: port out of range:75364`。
+
+**定位**
+
+两步。
+
+第一步，**先搞清端口是从哪条路进来的**。`src/main/resources/app.yml` 里只有一行配置：
+
+```yaml
+server:
+  port: ${SERVER_PORT:8080}
+```
+
+`javap` 看 `SolonProps` 的加载过程：
+
+- `loadInit(URL, Properties)`：把 JVM 系统属性快照逐条覆盖到**已加载的 yml 中同名键**上。yml 里的键是 `server.port`，而系统属性叫 `SERVER_PORT`——**不是同一个键**，所以覆盖不到。
+- `${...}` 占位符由 `Props.getByTmpl` 解析，它只查 props 与本进程的**环境变量**（`System.getenv`），**不查系统属性**。
+
+两条路都到不了系统属性。同一份代码在测试里能通过的唯一原因是测试是用环境变量传的。
+
+第二步，"空闲端口"的探测方式也错了：`new ServerSocket(0)` 拿到的是 Windows 的临时端口段（49152–65535），而 Solon 的 WebSocket 插件默认监听 **`server.port + 10000`**，于是 `75364` 直接越界。
+
+**修复**
+
+- 端口用**系统属性 `server.port`** 覆盖（它确实是 yml 里存在的键）：`System.setProperty("server.port", ...)`；
+- 空闲端口改成在 `40000–49000` 区间随机探测，探测成功再交给服务，保证 `+10000` 不越界；
+- 启动后加一条断言，把"覆盖是否真的生效"变成一个可执行的事实，而不是假设：
+
+```java
+assertEquals(port, Solon.cfg().serverPort(), "服务没有按测试指定的端口启动，后续请求会打到别处");
+```
+
+**验证**
+
+- `assertEquals(port, Solon.cfg().serverPort())` 通过，随后 19 个用例全部打到这个端口上。
+- 反证：把端口恢复成走 `SERVER_PORT` 系统属性，断言立刻失败——说明这条断言抓得住"配置没生效"，不是摆设。
+
+**工程结论**
+
+`${VAR:default}` 这种写法读的是**环境变量**，而"设个同名系统属性"读的是**另一条通路**。配置项有多个来源时，必须为"优先级"写一条断言；否则测试会莫名其妙地连到另一个实例上，而所有用例还是绿的（那才是最坏的情况）。这条与 `DEBUG_LOG.md` DBG-4（残留旧进程导致健康检查假通过）是同一类风险的两个入口。
+
+---
+
+## DBG-11：Jackson 声明了却没生效——请求体全被 snack3 解析成 `Format error`
+
+**现象**
+
+HTTP 集成测试第一次跑起来，19 个用例里 16 个失败，而失败长这样：
+
+```
+org.noear.snack.exception.SnackException: Format error!
+    at org.noear.snack.core.utils.IOUtil ...
+    at org.noear.snack.core.Serializer ... SnackStringSerializer.deserializeFromBody
+```
+
+每个带 JSON 请求体的接口（登录、建拍卖、出价）都返回 500。项目里显式声明的是 Jackson（`solon-serialization-jackson`），代码里没有任何一处用到 snack3。
+
+**定位**
+
+`mvn dependency:tree` 看到两个序列化插件同时在场：
+
+```
++- org.noear:solon-web:3.0.1
+|  \- org.noear:solon-serialization-snack3:3.0.1      ← 传递进来
++- org.noear:solon-serialization-jackson:3.0.1        ← 显式声明
+```
+
+Solon 的序列化插件是按 classpath 扫描注册的，两个都注册时**谁生效由加载顺序决定**。"显式声明了 Jackson"只能说明它在 classpath 上，**不能说明它被选中了**。
+
+**修复**
+
+在 `pom.xml` 里把 `solon-web` 传递进来的 snack3 排掉，让 classpath 上只剩一个序列化器：
+
+```xml
+<exclusions>
+  <exclusion>
+    <groupId>org.noear</groupId>
+    <artifactId>solon-serialization-snack3</artifactId>
+  </exclusion>
+</exclusions>
+```
+
+**验证**
+
+排除后重跑，错误从 `SnackException` 变成了 Jackson 的语法错误：
+
+```
+com.fasterxml.jackson.core.JsonParseException: Unrecognized token 'Admin123456': ...
+```
+
+这条新错误说明"解析器确实换人了"——它是被测测试自己拼错了 JSON（口令值没加引号），与序列化器无关，修掉测试助手后 19/19 全绿，全量 63/63 全绿。
+
+**工程结论**
+
+"我用的是 X" 与 "X 生效了" 是两件事，在插件式框架里尤其如此。可验证的收敛方式是**让 classpath 上只留一个候选**，而不是靠文档声称用了哪个；否则依赖树一变，序列化格式会静默漂移，而且往往只在解析报错时才暴露。
+## DBG-12：库口令被 surefire 写进了构建产物——系统属性会进测试报告
+
+**现象**
+
+提交前按 `CONTRIBUTING.md` §5 扫一遍"有没有提交口令"，仓库里干净，但顺手扫 `target/` 时发现：
+
+```
+$ grep -rl "$DB_PASSWORD" target/
+target/surefire-reports/TEST-com.bidarena.api.HttpApiIntegrationTest.xml
+target/surefire-reports/TEST-com.bidarena.auction.application.BidConcurrencyTest.xml
+target/surefire-reports/TEST-com.bidarena.auction.application.BidServiceTest.xml
+target/surefire-reports/TEST-com.bidarena.auction.application.SettlementConcurrencyTest.xml
+target/surefire-reports/TEST-com.bidarena.auction.application.SettlementServiceTest.xml
+
+$ grep -A2 'name="DB_PASSWORD"' target/surefire-reports/TEST-com.bidarena.auction.application.BidServiceTest.xml
+<property name="DB_PASSWORD" value="<真实开发/测试库口令>"/>
+```
+
+`BidServiceTest` 自己从不设这个属性，它是**被牵连**的。
+
+**定位**
+
+两个事实叠加：
+
+1. HTTP 集成测试为了让服务读到测试库，用系统属性传配置（D-17）：`System.setProperty("DB_PASSWORD", require("BID_ARENA_TEST_DB_PASSWORD"))`；
+2. surefire 会把 fork 的系统属性快照写进每个测试类的 XML 报告，而 surefire 默认**复用同一个 fork**——属性一旦被某个测试类设上，同一个 JVM 之后所有类的报告都会带上它。`HttpApiIntegrationTest` 按字母序先跑，于是污染了后面所有报告。
+
+`target/` 在 `.gitignore` 里，所以它不会进仓库；但"没进仓库"不等于没问题：报告是**给别人看证据**用的文件，会出现在本机、CI 日志归档、以及录屏画面上。
+
+**修复**
+
+在 HTTP 测试的 `@AfterAll` 里把带凭证的系统属性清掉：
+
+```java
+System.clearProperty("DB_URL");
+System.clearProperty("DB_USER");
+System.clearProperty("DB_PASSWORD");
+System.clearProperty("JWT_SECRET");
+```
+
+**验证**
+
+- 修复后重跑 `mvn -o clean verify`：全量 63/63 绿（清理不影响其它测试类——它们读的是环境变量 `BID_ARENA_TEST_DB_*`，不是系统属性）。
+- 再扫一遍：`grep -rl "<口令>" target/` 与 `grep -rl "<JWT_SECRET>" target/` 都无匹配。
+
+**工程结论**
+
+"这个文件不会提交"是一句降低标准的自我安慰：只要口令出现过，它就会出现在备份、截图、CI 归档里。把凭证交给进程时，也要想清楚谁会把它**记下来**——这次记下来的是测试框架，而测试框架的职责恰好就是"留下证据"。

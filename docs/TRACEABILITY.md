@@ -18,9 +18,18 @@
 ## 已登记的验证证据
 
 上面 INV-1~4 的“校验手段”已实现为可执行 SQL，位于 `src/test/java/com/bidarena/support/Invariants.java`，
-由 32 个真实 MySQL 集成测试调用（`BidConcurrencyTest` 5 个、`BidServiceTest` 11 个、
+由真实 MySQL 集成测试调用（`BidConcurrencyTest` 5 个、`BidServiceTest` 11 个、
 `SettlementConcurrencyTest` 5 个、`SettlementServiceTest` 11 个）。
-运行方式见 [`README.md` 一键验证](../README.md)。
+
+P2 追加 31 个用例，全量共 **63 个**，运行方式见 [`README.md` 一键验证](../README.md)：
+
+| 测试类 | 数量 | 覆盖 |
+|---|---:|---|
+| `HttpApiIntegrationTest` | 19 | 封套与错误码全路径（200/201/400/401/403/404/405/409）、鉴权与默认拒绝、RBAC、CORS 预检、出价全链路（加入 → 出价 → 幂等重放 → 钱包冻结 → 流水 → 快照 → 结算 → 结果）、取消释放、分页与过滤边界 |
+| `IdentityServiceTest` | 10 | 登录签发/校验令牌、角色与过期、篡改/错密钥/空令牌拒绝、三种失败返回同一响应、弱密钥快速失败、`toString` 不泄露哈希 |
+| `SeededDemoCredentialsTest` | 2 | 从迁移脚本里按行解析种子账号，用 BCrypt 实测三个演示口令可登录、错口令不可登录，且明文口令不出现在仓库文件中 |
+
+HTTP 集成测试**自己启动一个完整的服务实例**（随机空闲端口、独立于 8080），因此它同时验证了“组合根接线是否可用”，而不只是控制器逻辑。
 
 **测试有效性经过变异测试反向确认**，不以“全绿”为证据：
 
@@ -37,8 +46,8 @@
 
 ### 尚未验证的部分
 
-以下内容**当前没有任何测试**，属于已知缺口而非已完成：HTTP 接口层（C 组）、
-WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与模拟脚本（E1/E4/F1）、ArchUnit 包边界规则（D-6 的未验证项）。
+以下内容**当前没有任何测试**，属于已知缺口而非已完成：
+WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与模拟脚本（E1/E4/F1）、ArchUnit 包边界规则（D-6 的未验证项）、录屏与现场核验（H 组）。
 
 ## A. 拍卖与资金规则（原文 第 2 页）
 
@@ -57,7 +66,7 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| B1 | 数据模型 用户 | 身份、角色、密码哈希、状态 | `db/migration` V2 | 迁移执行 + 种子账号可登录（待登录接口） | ✅ |
+| B1 | 数据模型 用户 | 身份、角色、密码哈希、状态 | `db/migration` V2 + `identity/domain/User` | 迁移执行；`POST /auth/login` 实测可登录 + `SeededDemoCredentialsTest` 用 BCrypt 校验种子哈希；三种失败同响应见 `IdentityServiceTest` | ✅ |
 | B2 | 数据模型 钱包 | 总余额、冻结金额、并发所需字段 | `db/migration` V2 + `ck_wallets_available_nonneg` | `Invariants.walletsAvailableNonNegative`、`frozenMatchesTwoLevels`；约束反向验证 | ✅ |
 | B3 | 数据模型 资金流水 | 用户、类型、金额、关联拍卖、关联请求、时间 | `db/migration` V2 + `ledger_entries` | `Invariants.ledgerReconcilesWithFrozen`（流水净额可解释冻结额） | ✅ |
 | B4 | 数据模型 拍卖 | 状态、起拍价、当前价、领先者、截止、延长次数 | `db/migration` V1 + V2 | `BidServiceTest`（截止、延时、状态流转列均被读写） | ✅ |
@@ -70,8 +79,8 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| C1 | 接口清单 | 覆盖原文列出的 HTTP 路径（含 `/bids` 查询） | Controller 层 | openapi 校验 + 集成测试 | ⬜ |
-| C2 | 出价请求 | 至少含 `requestId` 与 `amount` | `openapi.yaml` + DTO | 接口测试 | ⬜ |
+| C1 | 接口清单 | 覆盖原文列出的 HTTP 路径（含 `/bids` 查询） | `identity/adapter/HttpAuthController`、`auction/adapter/HttpAuctionController`、`auction/adapter/HttpAdminController`、`wallet/adapter/HttpWalletController`、`HealthController`（共 14 个端点） | `HttpApiIntegrationTest` 逐个端点调用（含未实现路径的 404 行为）；契约 `docs/openapi.yaml` | ✅ |
+| C2 | 出价请求 | 至少含 `requestId` 与 `amount` | `HttpAuctionController.BidRequest` + `openapi.yaml` | `HttpApiIntegrationTest.bidFlowWithIdempotentReplay`（首次 200 `OK` / 重放 200 `IDEMPOTENCY_REPLAY` 且 `seq` 不变）、`bidGuards`（未加入 409 `NOT_JOINED`、加价不足 409 `BID_TOO_LOW`、金额 0 → 400）、`idempotencyKeyResolution`（缺 `requestId` 400；header 与 body 不一致 400） | ✅ |
 | C3 | 确认事件字段 | 含 `auctionId` / 单调 `seq` / `serverTime` / `type` | 事件 DTO | WS 测试 | ⬜ |
 | C4 | 推荐事件类型 | 快照、加入、接受、拒绝（仅本人）、延时、结束、连接状态 | 事件发布层 | WS 测试 | ⬜ |
 | C5 | seq 缺口处理 | 发现缺口时重新获取权威快照，不猜测 | 前端 store | 前端 Store 测试 + 集成 | ⬜ |
@@ -80,7 +89,7 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| D1 | Agent Token | 字段齐全、只存摘要、明文仅一次、最小权限、独立凭据 | Agent 认证 + 管理接口 | 范围/权限/过期/吊销/限流测试 | ⬜ |
+| D1 | Agent Token | 字段齐全、只存摘要、明文仅一次、最小权限、独立凭据 | `db/migration` + `agent_tokens` 表已就位；**认证与签发未实现** | ⏳ 表结构已就位；`/auth/ws-tickets` 与 Agent Token 签发属 P3/P5 | 🟨 |
 
 ## E. 模拟脚本与自动化测试（原文 第 3~4 页）
 
@@ -88,7 +97,7 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 |---|---|---|---|---|---|
 | E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `scripts/` 模拟脚本 | 脚本输出断言与摘要 | ⬜ |
 | E2 | 自动化测试 | 覆盖原文列出的全部测试点 | `src/test` | `mvn test` 报告 | ⬜ |
-| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：32 个用例全部跑在真实 MySQL 8.4 上 | 🟨 |
+| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：63 个用例全部跑在真实 MySQL 8.4 上（含 HTTP 集成测试自行启动服务实例） | ✅ |
 | E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend` 测试 | 测试报告 | ⬜ |
 
 ## F. 快速启动与初始数据（原文 第 4 页）
@@ -96,7 +105,7 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
 | F1 | 根目录交付 | `.env.example`、Compose、迁移、种子、一键测试、模拟脚本 | 仓库根目录 | 全新环境实测 | ⬜ |
-| F2 | 演示账号 | 原文建议的三类账号 | 种子数据 | 登录实测 | ⬜ |
+| F2 | 演示账号 | 原文建议的三类账号 | `db/migration/V2` 种子（ADMIN + 两个 BIDDER） | `SeededDemoCredentialsTest`（三个口令登录成功、错口令失败）；`HttpApiIntegrationTest` 用同一批账号走完整 HTTP 登录 | ✅ |
 | F3 | README 路径 | 可复制的完整演示路径 | `README.md` | 照做一遍 | ⬜ |
 | F4 | 演示拍品 | 至少一件可立即开始，服务启动不自动倒计时 | 种子数据 | 实测 | ⬜ |
 
@@ -125,7 +134,7 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 |---|---|---:|---|---|
 | I1 | 架构与职责边界 | 1.5 | `DESIGN.md` + 分层结构 | ⬜ |
 | I2 | 拍卖业务与并发一致性 | 1.8 | A2–A8 的测试 | ⬜ |
-| I3 | Solon 后端能力 | 1.2 | HTTP/WS/鉴权/异常/模块组织 | ⬜ |
+| I3 | Solon 后端能力 | 1.2 | HTTP 与鉴权已可运行（过滤器链、统一异常、注入、分页）；WS 待 P3 | 🟨 |
 | I4 | Vue 3 / TypeScript | 1.0 | 类型、状态、重连恢复 | ⬜ |
 | I5 | MySQL 实战能力 | 1.2 | 模型、事务、约束、锁、流水 | ⬜ |
 | I6 | 代码质量 | 1.2 | 可读性、职责、安全、可维护 | ⬜ |
