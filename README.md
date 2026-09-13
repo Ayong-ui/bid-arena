@@ -272,6 +272,24 @@ python tools/stress_test.py --mode throughput -c 50 --seconds 10
 
 同样只用标准库；每次运行自建拍卖与 Token，结束后默认取消（`--keep` 可保留）。
 
+### 重复运行前：演示数据的恢复（`db/reset_demo_data.sql`）
+
+三个脚本都跑在开发库上，并且会**真的花钱**（真冻结、真成交）。连跑几轮之后种子余额（各 1000）
+会被花完，此后的出价全是 `INSUFFICIENT_BALANCE`——那是“数据用完了”，不是缺陷。恢复种子状态：
+
+```bash
+docker exec -i bid-arena-mysql-1 mysql --default-character-set=utf8mb4 \
+  -ubid_arena -p"$DB_PASSWORD" bid_arena < db/reset_demo_data.sql
+```
+
+该脚本只动数据（清空竞拍相关表、钱包写回 1000/0、重建那场 `DRAFT` 演示拍品；`users` 保留），
+不改 schema、不碰 `flyway_schema_history`，最后回显钱包与拍品供人核对。
+
+三个脚本自己也会在开跑前检查可用余额：不足时**在阶段 0 停下**并打印上面这条命令，
+退出码 `2`（`0` = 全绿 / `1` = 有检查失败 / `2` = 缺数据）。这样“跑不完”的原因永远出现在
+第一个失败点上，而不是以一排与本因无关的 `INSUFFICIENT_BALANCE` 或一个裸的 WS 超时收场
+（见 [DEBUG_LOG.md](DEBUG_LOG.md) DBG-31）。
+
 ## 设计与决策
 
 - 业务全景（角色、主链路、四条不变式）、分层与一致性方案见 [DESIGN.md](DESIGN.md)。

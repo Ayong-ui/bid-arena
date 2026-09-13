@@ -141,6 +141,10 @@ Agent 侧没有“全绿就算”的豁免：`tools/agent_mutation_check.py` 把
 `tools/auction_sim.py` 只用标准库（含最小 RFC 6455 客户端），在真实 `:8080`/`:8090`/`:18080` 与真实 MySQL 上跑完八个阶段，
 每条断言打印“期望 vs 实际”，任一条不符即非零退出。实测 **52/52，退出码 0**：
 
+> 脚本会在真实库上真的花钱（真冻结、真成交），所以复跑前前提是“种子余额还在”。
+> 可用余额不足时它**在阶段 0 停下**（退出码 `2`）并指向 `db/reset_demo_data.sql`，
+> 而不是打出一排与本因无关的 `INSUFFICIENT_BALANCE`（见 `DEBUG_LOG.md` DBG-31）。
+
 | 阶段 | 断言的不变量 | 实测结果 |
 |---|---|---|
 | 1 准备 | 未加入即出价 → 409 `NOT_JOINED` | `409` / `NOT_JOINED` |
@@ -212,7 +216,7 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `tools/agent_sim.py`（Agent 侧端到端）、`tools/auction_sim.py`（全链路） | `tools/agent_sim.py` **44/44**（真实双端口，开发库）；`tools/auction_sim.py` **52/52**（八个阶段，见上文“全链路模拟（E1）”）；真正“20 个不同 `user_id`”的并发由 `BidConcurrencyTest` 覆盖 | ✅ |
+| E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `tools/agent_sim.py`（Agent 侧端到端）、`tools/auction_sim.py`（全链路） | `tools/agent_sim.py` **44/44**（真实双端口，开发库）；`tools/auction_sim.py` **52/52**（八个阶段，见上文“全链路模拟（E1）”，复跑前用 `db/reset_demo_data.sql` 恢复余额，DBG-31）；真正“20 个不同 `user_id`”的并发由 `BidConcurrencyTest` 覆盖 | ✅ |
 | E2 | 自动化测试 | 覆盖原文列出的全部测试点 | 后端 `src/test`；前端 `frontend/src` | 后端 **225/225** 绿（`mvn clean verify`）；前端 **69 单测** + **3 真后端联调** + **16 变异 KILLED**；Agent 侧 71 个用例 + 14/14 变异 KILLED（P5/P6） | ✅ |
 | E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：216 个用例跑在真实 MySQL 8.4 上（HTTP/WS/Agent/托管代理集成测试共用同一个自启动服务实例），另 9 个为纯静态架构守卫 | ✅ |
 | E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend/src/store/arena.test.ts`（Pinia store，31 个用例）+ `frontend/src/realtime/feed.test.ts`（14）+ `frontend/src/api/client.test.ts`（12）等 | 见上文「前端（P4）」：69 单测 + 3 真后端联调 + 16/16 变异；`npm run typecheck` 与 `vite build` 通过 | ✅ |
@@ -233,7 +237,7 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 | G1 | `AI_USAGE.md` | 分工、本人决定、未采用方案、真实错误、无法独立解释的代码 | `AI_USAGE.md` | 文档评审 | ✅ 已填写 §1~§6（工具/模型可由 `PI_*` 自证；决定引用 D-32/D-33/D-36/D-5；错误引用 DBG-30/DBG-29/DBG-27 + 2 条补充；§6 列 7 类）；文末 3 项作者核对清单 |
 | G2 | `DESIGN.md` | 边界、事务、结算、并发、恢复、丢消息策略 | `DESIGN.md` | 文档评审 | ✅ 已同步 V1~V6、四个上下文的边界与依赖规则、出价/结算事务、恢复与丢消息策略、验证重点 |
 | G3 | `DECISIONS.md` | ≥3 项决策含代价与验证 | `DECISIONS.md` | 文档评审 | ✅ 已写 D-1~D-36（含背景/候选/选择/代价/验证结果），每条均有落地验证证据 |
-| G4 | `DEBUG_LOG.md` | ≥2 个真实问题，禁止编造 | `DEBUG_LOG.md` | 与提交/日志对应 | ✅ 已写 30 条（DBG-1~DBG-30） |
+| G4 | `DEBUG_LOG.md` | ≥2 个真实问题，禁止编造 | `DEBUG_LOG.md` | 与提交/日志对应 | ✅ 已写 31 条（DBG-1~DBG-31） |
 | G5 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 操作 Agent | `AGENT_TOOL_SPEC.md` | 文档评审 | ✅ 已从“骨架”更新为 P5 已实现并验证：操作步骤、提示词模板、失败边界、验收清单已勾选并登记证据（`tools/agent_sim.py` 44/44）；另补充 D-34 自助 Token 与 D-36 托管代理的区别 |
 | G6 | Git 历史 | 有意义、非机械拆分、说明行为变化 | 提交历史 | `git log` | ⬜ |
 | G7 | 录屏 | 3~5 分钟覆盖关键流程 | 交付物 | 人工核验 | ⬜ |

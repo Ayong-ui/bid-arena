@@ -16,22 +16,32 @@
 
 依赖：只用 Python 标准库。后端需先按 README 启动（:8080 + :8090）。
 
+前置条件：演示账号（种子各 1000）还有可用余额——出价会真的花钱。
+不足时在**创建拍卖之前**就停下来，并指向 `db/reset_demo_data.sql` 恢复。
+
 用法：
     python tools/agent_sim.py                 # 默认 http://localhost:8080 / :8090
     python tools/agent_sim.py --base http://192.168.1.10:8080/api/v1 \
                               --agent-base http://192.168.1.10:8090/api/v1
     python tools/agent_sim.py --keep          # 跑完不取消拍卖（便于在前端里继续观察）
+
+退出码：0 = 全部检查通过；1 = 有检查失败；2 = 前置条件不满足（缺数据，不是缺陷）。
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
+
+# 与本脚本同目录的公共前置检查（详见 tools/preconditions.py）。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from preconditions import ensure_demo_balances  # noqa: E402  （必须在 sys.path 调整之后）
 
 # 与 db/migration/V1、V3 的种子数据一致（README 的演示账号）。
 ADMIN_EMAIL = "admin@example.com"
@@ -134,6 +144,10 @@ class Api:
         self.token = data_of(envelope)["accessToken"]
         return data_of(envelope)["user"]
 
+    def wallet(self):
+        _, envelope = self.get("/wallets/me")
+        return data_of(envelope)
+
 
 def iso_utc(moment):
     """契约要 ISO-8601 时刻（如 2026-12-31T00:00:00Z）。"""
@@ -181,6 +195,9 @@ def main():
     print("== 1. 管理员登录并创建一场 RUNNING 拍卖 ==")
     admin_user = admin.login(ADMIN_EMAIL, ADMIN_PASSWORD)
     report.check("管理员角色", admin_user["role"], "ADMIN")
+    # 先确认演示账号还有钱，再创建拍卖：出价阶段真的会花钱（见 tools/preconditions.py）。
+    human.login(BIDDER_A_EMAIL, BIDDER_PASSWORD)
+    ensure_demo_balances([("bidder_a", human.wallet()["availableBalance"])])
 
     title = "Agent 模拟 %s" % datetime.now().strftime("%H:%M:%S")
     status, envelope = admin.post("/admin/auctions", {

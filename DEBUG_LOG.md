@@ -18,6 +18,25 @@
 | DBG-10 | 设了 `SERVER_PORT` 系统属性，服务却没换端口 | `${VAR:default}` 只读环境变量；要覆盖 yml 得用 yml 里真实存在的键（`server.port`），并加断言 |
 | DBG-11 | 显式声明了 Jackson，请求体却被 snack3 解析成 `Format error` | 插件式框架里"声明了"不等于"生效了"，要让它成为 classpath 上唯一的候选 |
 | DBG-12 | 库口令出现在 `target/surefire-reports/*.xml` 里 | 系统属性会进测试报告，且 fork 复用会污染同一 JVM 之后的测试类；用完必须清掉 |
+| DBG-13 | 同一 JVM 里第二次启动 Solon，服务绑在旧端口上 | 进程级单例的框架里“重启”并不成立，测试基座宁可用更简单的一次生命周期 |
+| DBG-14 | `Map.copyOf` 不接受 null，“无人出价”把结算变成 NPE | 收窄值域的 API 把“忘判空”升级成运行中崩溃，要让“缺席”成为默认而非特例 |
+| DBG-15 | `Future` 上没有 `whenComplete`，异步发送失败成观测盲区 | 必须可观测的事实要同步异常与异步失败各留一条路径 |
+| DBG-16 | JUnit 不给 `@BeforeAll` 注入 `ExtensionContext` | 需要上下文的钩子用扩展回调，注解方法只负责不依赖上下文的事 |
+| DBG-17 | `seq` 无缺口断言用 `-1` 当初值，第一次比较就失败 | “看起来对的数据被判违规”几乎总是断言自己写错了 |
+| DBG-18 | 设计文档写的依赖规则与代码里的包结构对不上 | 把规则写成测试之前先照实现状检查一遍 |
+| DBG-19 | `noClasses().should(自定义条件)` 被 ArchUnit 反转，规则永远不会红 | 否定式断言必须先用一个人造违规证明它会红 |
+| DBG-20 | 全量跑时偶发一次 WS 握手超时 | 共享基座的时间预算按最坏负载给，用截止时间重试而不是一刀切放大 |
+| DBG-21 | 变异 F14 存活——测试其实没有验证幂等键复用 | 观察点只在成功路径上，就观察不到“失败与成功用的是同一个键” |
+| DBG-22 | `Solon.start` 是进程级单例，第二次不会开出第二个监听器 | “调用一次启动”不等于“起了一个监听器”，要数端口这类外部事实 |
+| DBG-23 | 提前拒绝带请求体的请求会污染 keep-alive 上的下一个请求 | 早拒绝要配一个动作：把请求体读尽，或显式关闭连接 |
+| DBG-24 | JWT 的 base64url 末位字符含填充位，改它等于没改 | 构造负例要改**参与解码的位**，不是任意一个字符 |
+| DBG-25 | 源码改了、测试却在跑旧字节码 | 先比 `src` 与 `target` 的 mtime 再怀疑逻辑；验证工具本身也要被验证 |
+| DBG-26 | E2E 脚本自己的断言用了一枚早就被吊销的 Token | “测试红了”可能是测试错了；顺着数据往下看一层 |
+| DBG-27 | E2E 断言把不变量想得比契约更强（邻价并发、狙击上限） | 写并发断言前先问：这条不变量的事务边界在哪、锁住了什么 |
+| DBG-28 | 幂等键含 `user_id`——换个用户复用同一 `requestId` 不是重放 | 幂等是给**同一调用方**的重试去重，不是全局去重 |
+| DBG-29 | 界面还在说 Agent API“尚未实现”，实际 P5 已经交付 | 界面文案也是关于系统的断言，交付里程碑时要 `grep` 一遍负向断言 |
+| DBG-30 | 预告开拍“到点没动”——数据库容器的时钟比开发机慢 3 分钟 | 三个候选时钟里，业务判定一律以数据库时间为准（D-5） |
+| DBG-31 | E2E 连跑几次后连环 `INSUFFICIENT_BALANCE`，最后以无关的 WS 超时收场 | 脚本真的会花钱：缺数据要在阶段 0 停下并给出恢复命令 |
 
 ---
 
@@ -1666,3 +1685,115 @@ starts_at  = (server_now + timedelta(seconds=8)).strftime("%Y-%m-%dT%H:%M:%SZ")
 顺带一个可复用的结论：**`serverTime` 已经是一个可读的权威来源**（HTTP 与 WS 快照都带）。
 需要“未来某个时刻”时，用它做基准即可；凡是代码里出现 `Date.now()` / `Instant.now()` 参与
 业务时刻的地方，都值得再看一眼。
+
+---
+
+## DBG-31：E2E 连跑几次后连环 `INSUFFICIENT_BALANCE`——脚本真的会花钱
+
+**现象**
+
+同一台后端、同一套代码，`tools/auction_sim.py` 前一天还是 `52/52`，这次变成大面积失败，
+而且失败点散落在好几个阶段（有的像并发规则坏了，有的像幂等键坏了），最后以一段
+WebSocket 读取超时收场：
+
+```
+== 3. 20 条邻价（120/130）并发出价：最终价必为最高价 ==
+  [FAIL] 被接受的最高价 = 130       expected=130 actual=120
+         {"BID_TOO_LOW": 9, "INSUFFICIENT_BALANCE": 10, "OK": 1}
+  [FAIL] 其余全部 BID_TOO_LOW       expected=19  actual=9
+== 4. 同一用户同一 requestId 并发重试 20 次：只写入一次、只冻结一次 ==
+  [FAIL] 另一用户复用同一 requestId 视为新出价（键含 user_id） expected=OK actual=INSUFFICIENT_BALANCE
+         data={"totalBalance":170,"frozenAmount":150,"availableBalance":20,"requiredDelta":150}
+...
+  File "tools/auction_sim.py", line 221, in _read_exact
+    chunk = self.sock.recv(65536)
+TimeoutError: timed out
+```
+
+这一片失败里最有迷惑性的地方在于：**每一条 FAIL 都像在指控产品**（并发规则、幂等键、实时通道），
+而它们彼此之间没有共同点——除了响应体里那句 `INSUFFICIENT_BALANCE`。
+
+**定位**
+
+直接查库，答案只有一个：演示账号被**真的花掉了**。
+
+```
+$ docker exec bid-arena-mysql-1 mysql -ubid_arena -p*** -N \
+    -e "SELECT user_id,total_balance,frozen_amount FROM bid_arena.wallets ORDER BY user_id;"
+usr_admin     1000  0
+usr_bidder_a   540  140      # 可用 400
+usr_bidder_b    20    0      # 可用 20  ← 已经花完
+```
+
+种子给每个账号 1000。`auction_sim.py`（20 条并发出价 + 狙击阶段）、`agent_sim.py`、
+`stress_test.py` 都跑在**开发库**上，每一轮都真实冻结资金、真实成交，不会自己回滚。
+连跑几轮之后余额见底：后面的出价全被拒，于是**所有依赖“出价成功”的断言同时失效**，
+WebSocket 阶段也因为等不到 `BID_ACCEPTED` 而超时。
+
+所以缺陷有两处，都不在产品里：
+
+1. 脚本**没有前置条件**。它默认“种子余额还在”，但这件事只对第一轮成立；
+   而且它把“数据不够”表达成了一堆与根因无关的断言失败——失败点离根因太远。
+2. **没有恢复手段**。跑完一轮之后，想再跑一轮只能自己想办法把余额弄回去；
+   如果没有一条明确的路径，评审很容易把“没数据了”读成“实现是坏的”。
+
+**修复**
+
+1. `tools/preconditions.py`：所有会花钱的脚本共用一条前置检查，可用余额低于 400 就在**阶段 0** 停下，
+   打印根因与恢复命令，并以**退出码 2** 结束（与“有检查失败”的 1 区分开）：
+
+```
+== 0. 前置检查：演示账号可用余额 ==
+  [前置] 可用余额 bidder_a         400
+  [前置] 可用余额 bidder_b         20
+
+!! 前置条件不满足：bidder_b(20) 的可用余额低于 400，脚本跑不完一轮。
+   这些脚本会在真实库里真的花钱：连跑几次就会把种子的 1000 花完，
+   之后的出价全是 INSUFFICIENT_BALANCE —— 那不是缺陷，而是数据用完了。
+   恢复种子状态（仅开发库；不修 schema、不动 Flyway 历史）：
+     docker exec -i bid-arena-mysql-1 mysql --default-character-set=utf8mb4 \
+       -ubid_arena -p"$DB_PASSWORD" bid_arena < db/reset_demo_data.sql
+```
+
+2. `db/reset_demo_data.sql`：一条命令把演示数据恢复到种子状态——按 `TestDatabase.TABLES_IN_WIPE_ORDER`
+   的顺序清空竞拍相关表（`users` 保留），钱包写回 1000/0，并重建那场 `DRAFT` 演示拍品；
+   只动数据，不改 schema、不碰 `flyway_schema_history`。最后回显钱包与拍品供人一眼确认。
+
+3. `auction_sim.py` 的每个阶段现在都带上名字再抛异常（只补上下文，不吞异常、不改堆栈）：
+   真出问题时先看到“阶段「实时通道」异常中断：TimeoutError”，而不是一段裸 traceback。
+
+**验证**
+
+```
+$ python tools/auction_sim.py --quick          # 余额不足时
+== 0. 前置检查：演示账号可用余额 ==
+!! 前置条件不满足：bidder_b(20) 的可用余额低于 400，脚本跑不完一轮。
+exit=2
+
+$ docker exec -i bid-arena-mysql-1 mysql --default-character-set=utf8mb4 \
+    -ubid_arena -p*** bid_arena < db/reset_demo_data.sql
+kind    name           total  frozen
+wallet  usr_admin      1000   0
+wallet  usr_bidder_a   1000   0
+wallet  usr_bidder_b   1000   0
+auction auc_demo_0001  DRAFT
+
+$ python tools/auction_sim.py                  # 恢复后
+---- 52/52 checks passed ----          exit=0
+$ python tools/stress_test.py --mode game-window -c 100
+---- 11/11 checks passed ----
+$ python tools/agent_sim.py
+---- 44/44 checks passed ----
+```
+
+**工程结论**
+
+“验证工具也是被测对象”这条（DBG-25/DBG-26）在这里换了张脸：这次工具没有算错，它只是**依赖于一个
+会用完的前提**。凡是会消耗真实资源（余额、配额、额度）的脚本，都该在开头把前提写成断言，
+把“前提不成立”和“行为不符合预期”分成两种退出码——否则前者的表现会被读成后者，
+而前者是可以一条命令修好的，后者才需要改代码。
+
+补一条顺手发现的不一致：`db/reset_demo_data.sql` 里原本用中文做 `SELECT` 的列别名，
+在客户端默认字符集为 `latin1` 时直接 `ERROR 1064`——同一份 UTF-8 文件里，**注释**里的中文没事，
+**标识符**里的中文就会炸。所以文件里刻意只用 ASCII 别名，并在用法中显式带上
+`--default-character-set=utf8mb4`。

@@ -22,17 +22,23 @@
 
 依赖：只用 Python 标准库。后端需先按 README 启动（用户端口 8080、Agent 端口 8090）。
 
+前置条件：演示账号（种子各 1000）还有可用余额——真人那一手会真的花钱。
+不足时在开拍前直接停下来并指向 `db/reset_demo_data.sql`，而不是在断言里堆一排 `INSUFFICIENT_BALANCE`。
+
 用法：
     python tools/stress_test.py                                   # 博弈时间清场，50 并发
     python tools/stress_test.py --mode game-window -c 200         # 200 并发
     python tools/stress_test.py --mode throughput -c 20 --seconds 15
     python tools/stress_test.py --base http://192.168.1.10:8080/api/v1 \
                                --agent-base http://192.168.1.10:8090/api/v1
+
+退出码：0 = 全部检查通过；1 = 有检查失败；2 = 前置条件不满足（缺数据，不是缺陷）。
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import statistics
 import sys
 import threading
@@ -43,6 +49,10 @@ import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+
+# 与本脚本同目录的公共前置检查（详见 tools/preconditions.py）。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from preconditions import ensure_demo_balances  # noqa: E402  （必须在 sys.path 调整之后）
 
 # 与 db/migration/V1 的种子数据一致。
 ADMIN_EMAIL = "admin@example.com"
@@ -149,6 +159,10 @@ class Api:
         self.token = data_of(envelope)["accessToken"]
         return data_of(envelope)["user"]
 
+    def wallet(self):
+        _, envelope, _ = self.get("/wallets/me")
+        return data_of(envelope)
+
 
 def setup_running_auction(admin, title, duration, start_price=100, increment=10):
     _, created, _ = admin.post("/admin/auctions", {
@@ -227,6 +241,7 @@ def mode_game_window(args):
     print("== 1. 管理员开拍，真人加入 ==")
     admin.login(ADMIN_EMAIL, ADMIN_PASSWORD)
     bidder_a = human.login(*BIDDER_A)
+    ensure_demo_balances([("bidder_a", human.wallet()["availableBalance"])])
     auction_id, start_price, increment = setup_running_auction(
         admin, "压测-博弈时间 %s" % datetime.now().strftime("%H:%M:%S"),
         duration=(args.duration or max(10, int(args.enter_at) + 5)))
@@ -306,6 +321,7 @@ def mode_throughput(args):
     print("== 1. 管理员开拍，真人加入 ==")
     admin.login(ADMIN_EMAIL, ADMIN_PASSWORD)
     human.login(*BIDDER_A)
+    ensure_demo_balances([("bidder_a", human.wallet()["availableBalance"])])
     auction_id, start_price, increment = setup_running_auction(
         admin, "压测-吞吐 %s" % datetime.now().strftime("%H:%M:%S"), duration=(args.duration or 120))
     human.post("/auctions/%s/join" % auction_id)

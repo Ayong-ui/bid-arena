@@ -30,11 +30,17 @@
 
 依赖：只用 Python 标准库（含一个最小 RFC 6455 客户端，见 WsClient）。后端需先按 README 启动。
 
+前置条件：演示账号（种子各 1000）**还没被花完**——本脚本会在真实库里真的花钱。
+若可用余额低于 400，脚本会在阶段 0 直接停下来，告诉你执行 `db/reset_demo_data.sql` 恢复，
+而不是打出一排 `INSUFFICIENT_BALANCE` 让你去猜。
+
 用法：
     python tools/auction_sim.py                 # 全部八个阶段
     python tools/auction_sim.py --quick         # 跳过最慢的狙击阶段（约省 35 秒）
     python tools/auction_sim.py --base http://192.168.1.10:8080/api/v1
     python tools/auction_sim.py --keep          # 结束时不取消拍卖，便于在前端继续观察
+
+退出码：0 = 全部检查通过；1 = 有检查失败；2 = 前置条件不满足（缺数据，不是缺陷）。
 """
 from __future__ import annotations
 
@@ -53,6 +59,11 @@ import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+
+# 与本脚本同目录的公共前置检查。显式把脚本目录插进 sys.path：
+# `python tools/auction_sim.py` 本来就能找到，但 `python -m tools.auction_sim` 或从别处 import 时不一定。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from preconditions import ensure_demo_balances  # noqa: E402  （必须在 sys.path 调整之后）
 
 # 与 db/migration/V1、V3 的种子数据一致（README 的演示账号）。
 ADMIN_EMAIL = "admin@example.com"
@@ -551,6 +562,22 @@ def poll_result(api, auction_id, timeout=25):
     raise RuntimeError("等待结算超时（%s 秒内未拿到结果）" % timeout)
 
 
+def run_phase(name, function, *args):
+    """跑一个阶段；异常时先把“是哪个阶段炸的”说清楚，再把异常原样抛出去。
+
+    失败现场最贵的是上下文：早先只看到一排 `INSUFFICIENT_BALANCE` 加一个裸 WebSocket 超时，
+    根本看不出该从哪一段查起。这里只补一行上下文，**不吞异常、不改堆栈**。
+    """
+    try:
+        return function(*args)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print("\n!! 阶段「%s」异常中断：%s: %s" % (name, type(exc).__name__, exc))
+        print("   （先看这一条：前面的 FAIL 未必是根因）")
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(description="竞拍全链路模拟")
     parser.add_argument("--base", default="http://localhost:8080/api/v1", help="用户/管理员 API 基址")
@@ -565,13 +592,17 @@ def main():
     b = Api(args.base)
     b.login(BIDDER_B)
 
+    print("== 0. 前置检查：演示账号可用余额 ==")
+    ensure_demo_balances([("bidder_a", a.wallet()["availableBalance"]),
+                          ("bidder_b", b.wallet()["availableBalance"])])
+
     report = Reporter()
     created = []
-    created.append(concurrency_phase(report, admin, a, b))
+    created.append(run_phase("并发与幂等", concurrency_phase, report, admin, a, b))
     if not args.quick:
-        created.append(sniping_phase(report, admin, a, b))
-    created.append(websocket_phase(report, admin, a, b))
-    created.append(settlement_phase(report, admin, a))
+        created.append(run_phase("尾段狙击与延时", sniping_phase, report, admin, a, b))
+    created.append(run_phase("实时通道", websocket_phase, report, admin, a, b))
+    created.append(run_phase("结算核对", settlement_phase, report, admin, a))
 
     if args.keep:
         print("\n（--keep：保留拍卖 %s 供观察）" % ", ".join(created))
