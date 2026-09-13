@@ -11,6 +11,8 @@
 | DBG-3 | MySQL 8.4 默认认证插件导致 JDBC 连不上 | 连接串是可部署性的一部分，必须进 `.env.example` |
 | DBG-4 | 验证命中了残留旧进程，健康检查"假通过" | 压测/结算验证前必须断言服务进程归属 |
 | DBG-5 | 测试的结论可能错在断言本身，而不在被测代码 | 断言不得依赖调度；新增测试必须用变异测试确认会红 |
+| DBG-6 | “取消”拿到了成交结果，还被标成幂等重放 | 重放只能用在**确实生效过**的操作上，否则是在对调用方说谎 |
+| DBG-7 | 赢家冻结为 0 时结算静默放行了一场"没付钱"的成交 | 资金路径上宁可报错停事务，也不要跳过——跳过后的账是平的 |
 
 ---
 
@@ -273,3 +275,122 @@ OWNER=$(netstat -ano | grep ":8080 " | ... )
 - 并发场景下，只能断言**与调度无关的量**（最终状态、不变式），不能断言“几条成功”“谁先成功”。
 - 新增或修改关键测试后，必须拆掉一项它声称保护的保障并确认它会红；这是 [`CONTRIBUTING.md` §4](CONTRIBUTING.md) 的完成定义之一。
 - 断言本身也是代码，同样会写错。失败时先问“被测代码错还是断言错”，不要为了变绿而改代码。
+
+---
+
+## DBG-6：取消返回了成交结果，而且还被标成"幂等重放"
+
+**现象**
+
+写并发结算测试时，让两个线程同时对同一场已到期的拍卖分别发起结算与取消。看到日志里出现：
+
+```
+INFO SettlementService - 拍卖已按 TIMEOUT 结束，返回已有结果 auction=auc_c4 winner=u_1
+```
+
+而这一行来自**取消请求**。更麻烦的是返回值：
+
+```
+SettlementResult(auctionId=auc_c4, winnerId=u_1, finalPrice=120, reason=TIMEOUT, replay=true)
+```
+
+调用方（管理员发起的取消）看到 `replay=true`，字面上被告知“你的取消已生效”，而实际上发生的是**成交**，钱已经扣了。
+
+**定位**
+
+结算与取消共用一条终局路径，我写的幂等短路是“只要 `settlements` 里已有记录就返回它”：
+
+```java
+SettlementRow existing = settlements.lock(conn, auctionId);
+if (existing != null) {
+    return new SettlementResult(..., existing.reason(), true, now);   // ← 没区分入口
+}
+```
+
+对到期结算来说这是对的：重复触发本就该返回同一结论。但 `replay = true` 不是“没有变化”的描述，而是**一句断言**——“这个操作已经生效过”。用在取消上就不成立了。
+
+顺带发现同一处的另一半：`SettlementServiceTest.cannotCancelAfterSettlement` 期望 `INVALID_STATE`，而当时的实现根本走不到那个分支，它会先被重放短路返回。**测试预期与实际行为不一致，只是刚好还没跑到。**
+
+**修复**
+
+重放只在“同一种结束方式已经发生过”时生效：
+
+```java
+boolean sameKind = cancelRequested == (existing.reason() == SettlementReason.CANCELLED);
+if (sameKind) { return 已有结果; }
+throw new BizException(ErrorCode.INVALID_STATE, ...);
+```
+
+即：取消命中 `CANCELLED` 才重放；取消命中 `TIMEOUT/NO_BIDS` 报状态错。反向同理（已取消的拍卖不能再被结算）。
+
+**验证**
+
+- `SettlementServiceTest.cannotCancelAfterSettlement`、`cannotSettleCancelledAuction` 转为绿。
+- `SettlementConcurrencyTest.simultaneousSettlementAndCancellationOnlyOneWins`：不断言“谁赢”（那是调度决定的），而是断言两种可能的结局都自洽——`FINISHED` 则扣款且成交价等于当前价，`CANCELLED` 则分文不扣；并断言败者只会得到 `INVALID_STATE`，不会得到“静默成功”。
+
+**工程结论**
+
+幂等返回值的语义必须跟**被请求的操作**对齐，不能只跟“数据有没有变”对齐。“没有变化”可以同时对应“已经做过”和“因为别的原因早就结束了”，而客户端会依赖这两者的区别。
+
+---
+
+## DBG-7：赢家冻结为 0 时，结算静默放行了一场“没付钱”的成交
+
+**现象**
+
+写“单场结算失败不阻塞整批”的用例时，需要人为制造一场结算失败。我的做法是把领先者的按场冻结清零（模拟历史缺陷或人工改库），预期结算会因为“冻结额与成交价不一致”而报错。
+
+但第一版实现根本没走到那个检查——初版 `moveMoney` 是“跳过冻结为 0 的参与者”：
+
+```java
+for (entry : freezes) {
+    long frozen = entry.getValue();
+    if (frozen == 0) { continue; }          // ← 赢家也被跳过了
+    if (userId.equals(winnerId)) { ...扣款... }
+}
+```
+
+结果：拍卖被置为 `FINISHED`，成交记录写的是 `winner=u_1, final_price=120`，而 `u_1` 的总额一分没少——**东西拿走了，钱没付**。
+
+**为什么这个缺陷特别危险**
+
+事后看账，所有不变量都是平的：
+
+- 成交记录唯一 ✓（`settle_rows = 1`）
+- SETTLE 流水金额等于成交价 ✓
+- 结算后本场冻结为 0 ✓
+- 钱包可用额非负 ✓
+
+因为扣款路径与流水写入在同一分支里，跳过它就两边一起跳过了，**账面上没有留下任何异常**。它只会表现为“平台的账少了 120”，而没有任何一条查询会报警。
+
+**修复**
+
+把“赢家必须扣款”变成一个显式前置条件，而不是循环里的一个分支：
+
+```java
+long winnerFrozen = ...从 freezes 里查 winnerId...  // 没这条参与记录则为 -1
+if (winnerId != null && winnerFrozen != finalPrice) {
+    throw new BizException(ErrorCode.INTERNAL_ERROR,
+            "赢家冻结额与成交价不一致，拒绝结算以免扣错金额或漏扣", ...);
+}
+```
+
+注意是 `!=` 而不是 `<`：多冻结也要报错。冻结多了说明前面某一步已经错了，此时按成交价扣款会把差额静默吞掉。
+
+**验证（变异测试）**
+
+按 [`CONTRIBUTING.md` §4](CONTRIBUTING.md) 的完成定义，对结算的四项保障各拆一次，确认测试会红：
+
+| 变异 | 预期会红的保障 | 实测结果 |
+|---|---|---|
+| 去掉结算事务内的幂等短路 | 重复触发只结算一次 | ❌ 4 个用例失败（并发 3 + 功能 1） |
+| 把赢家当普通出价者处理（只释放不扣款） | 赢家必须被扣款 | ❌ 11 个用例失败 |
+| `settleWinner` 结算时钱包冻结不减 | 两层冻结必须一致 | ❌ 11 个用例失败（含 4 个内部错误） |
+| 把一致性检查从 `!=` 放宽成 `>`（少扣也放行） | 少扣必须被拒绝 | ❌ 1 个用例失败，正是 `oneFailingAuctionDoesNotBlockTheRestOfTheBatch` |
+| 全部还原后复跑 | — | ✅ 32 个用例全绿 |
+
+第四个变异只被一个用例杀死，这是合理的：它保护的是一条很窄的守卫，而那个用例正是为它写的；能杀掉它，说明这条守卫不是“写了但没人测”。
+
+**工程结论**
+
+资金路径上，“跳过”比“报错”危险得多。跳过留下的是一笔**在对账上完全平掉的错账**，报错留下的是一个能被扫描器重试的待办事项。因此结算里每一处“不满足条件就跳过”都要反问一句：跳过之后，这个用户还欠钱吗？

@@ -2,7 +2,7 @@
 
 仓库地址：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开启分支保护）
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V3）、身份/钱包/资金流水数据模型、以及**并发安全的出价事务**（含 16 个真实 MySQL 集成测试）。尚未完成：结算、HTTP 接口层与鉴权、WebSocket 推送、前端接真实接口、Agent API。
+这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V3）、身份/钱包/资金流水数据模型、**并发安全的出价事务**，以及**唯一结算与到期自动结算**（含 32 个真实 MySQL 集成测试，覆盖 INV-1~4）。尚未完成：HTTP 接口层与鉴权、WebSocket 推送、前端接真实接口、Agent API。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
@@ -48,15 +48,15 @@ mvn clean verify
 
 ```powershell
 Copy-Item .env.example .env
+# 把 .env 里的 CHANGE_ME 换成真实值，然后导出为环境变量（后端进程读环境变量，不读 .env 文件）
 docker compose up -d mysql
 mvn -q test-compile
-java -ea -cp "target/classes;target/test-classes" com.bidarena.AuctionEngineTest
 cd frontend
 npm install
 npm run dev
 ```
 
-- 后端当前可通过 Maven 编译；完整 HTTP 业务接口、MySQL Repository、鉴权和 WebSocket 将在后续阶段接入。
+- 后端目前是纯服务端逻辑（迁移 + 出价事务 + 结算），HTTP 接口、鉴权与 WebSocket 在后续阶段接入；`Application` 启动时会同时启动到期结算扫描。
 - 前端开发地址：`http://localhost:5173`
 - 健康检查：`GET http://localhost:8080/api/v1/health`
 
@@ -72,7 +72,7 @@ npm run dev
 - 进度看板见 [docs/STATUS.md](docs/STATUS.md)，文档地图与权威边界见 [docs/DOCS.md](docs/DOCS.md)。
 - 提交与交付规范见 [CONTRIBUTING.md](CONTRIBUTING.md)，验收追溯见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
 
-文档明确区分目标架构与当前实现状态；不要把 Mock 前端或内存领域引擎当作生产资金系统。
+文档明确区分目标架构与当前实现状态；不要把 Mock 前端当作生产前端，也不要把"尚未接入 HTTP"理解成"资金逻辑未实现"——资金的正确性已经由真实 MySQL 集成测试与变异测试验证。
 
 ## 公开仓库约定
 

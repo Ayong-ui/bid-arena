@@ -13,12 +13,13 @@
 | INV-1 资金非负且守恒 | A2, A5, A7, B2, B3 | 可用额非负；钱包冻结 = 各按场冻结之和；流水净额可解释冻结额；本场冻结总额 = 当前最高价 | `wallet.adapter.WalletRepository` | ✅ |
 | INV-2 领先者唯一 | A4, A5, A6 | 本场冻结中非领先者为 0；出价链 `server_seq` 严格递增、每步至少一个最小加价；末条出价与拍卖行领先者一致 | `auction.application.BidService` | ✅ |
 | INV-3 请求幂等 | A4, B6 | 同 `requestId` 重放后 `bids` 计数 = 1 且 `ledger_entries` 计数 = 1；重复提交返回首次结果 | `bid_requests` 主键 + `bids.uk_bid_request` | ✅ |
-| INV-4 成交唯一 | A7, B7 | 重复 / 并发触发结算后 `settlements` 计数 ≤ 1；余额与流水一致 | `SettlementService`（未实现） | ⬜ |
+| INV-4 成交唯一 | A7, B7 | 重复 / 并发触发结算后 `settlements` 计数 ≤ 1；余额与流水一致 | `auction.application.SettlementService` + `settlements` 主键 | ✅ |
 
 ## 已登记的验证证据
 
-上面 INV-1~3 的“校验手段”已实现为可执行 SQL，位于 `src/test/java/com/bidarena/support/Invariants.java`，
-由 16 个真实 MySQL 集成测试调用（`BidConcurrencyTest` 5 个、`BidServiceTest` 11 个）。
+上面 INV-1~4 的“校验手段”已实现为可执行 SQL，位于 `src/test/java/com/bidarena/support/Invariants.java`，
+由 32 个真实 MySQL 集成测试调用（`BidConcurrencyTest` 5 个、`BidServiceTest` 11 个、
+`SettlementConcurrencyTest` 5 个、`SettlementServiceTest` 11 个）。
 运行方式见 [`README.md` 一键验证](../README.md)。
 
 **测试有效性经过变异测试反向确认**，不以“全绿”为证据：
@@ -27,13 +28,17 @@
 |---|---|---|
 | 拿掉拍卖行行锁（`lockAuction` 的 `FOR UPDATE`） | 并发用例 | 20 次同额出价中 14 次既非成功也非规则拒绝而是内部错误；两用例失败（断言 19 实际 6、断言 20 实际 5） |
 | 拿掉幂等重放短路 | 幂等用例 | 出价记录数与成功幂等记录数不再相等；两用例失败 |
+| 拿掉结算事务内的幂等短路 | 唯一结算 | 4 个用例失败（并发 3 + 功能 1） |
+| 赢家当普通出价者处理（只释放不扣款） | 赢家必须被扣款 | 11 个用例失败 |
+| `settleWinner` 结算时钱包冻结不减 | 两层冻结一致 | 11 个用例失败（含 4 个内部错误） |
+| 一致性检查从 `!=` 放宽成 `>`（少扣也放行） | 少扣必须被拒绝 | 1 个用例失败，正是 `oneFailingAuctionDoesNotBlockTheRestOfTheBatch` |
 
 还原后复跑全绿。**绿而不会红，等于没测**——此规则已写入 [`CONTRIBUTING.md` §4 完成定义](../CONTRIBUTING.md)。
 
 ### 尚未验证的部分
 
-以下内容**当前没有任何测试**，属于已知缺口而非已完成：结算（A7 / INV-4）、HTTP 接口层（C 组）、
-WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与模拟脚本（E1/E4/F1）。
+以下内容**当前没有任何测试**，属于已知缺口而非已完成：HTTP 接口层（C 组）、
+WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与模拟脚本（E1/E4/F1）、ArchUnit 包边界规则（D-6 的未验证项）。
 
 ## A. 拍卖与资金规则（原文 第 2 页）
 
@@ -45,7 +50,7 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 | A4 | 规则 4 幂等与并发 | 同 `requestId` 只生效一次；并发出价唯一赢家 | 唯一约束 + 行锁 + 死锁重试 | `BidConcurrencyTest.sameAmountOnlyOneBecomesLeader`、`sameRequestIdIsAppliedOnce`、`repeatedConcurrentRounds` | ✅ |
 | A5 | 规则 5 冻结余额 | 释放旧领先者、同用户只加差额、失败不改资金、非负、流水可解释、无半完成 | `BidService` + `WalletRepository` + `ledger_entries` | `previousLeaderIsReleasedOnTransfer`、`bidBelowMinimumIsRejected`，均由 `Invariants` 逐条校验 | ✅ |
 | A6 | 规则 6 最后五秒延时 | 基准为最新截止、最多三次、超限仍成功、与出价同一边界 | `auction.application.BidService` | `bidWithinLastFiveSecondsExtendsDeadlineAtMostThreeTimes`、`bidOutsideWindowDoesNotExtend` | ✅ |
-| A7 | 规则 7 唯一结算 | 赢家扣款、他人释放、无人出价无扣款、自动结算、重启继续、重复触发不重复 | `SettlementService`（未实现） | 集成测试 + 重启恢复测试 | ⬜ |
+| A7 | 规则 7 唯一结算 | 赢家扣款、他人释放、无人出价无扣款、自动结算、重启继续、重复触发不重复 | `auction.application.SettlementService` + `SettlementScheduler` | `SettlementServiceTest` 11 个（含 `expiredAuctionDeductsWinnerAndReleasesOthers`、`auctionWithoutAnyBidEndsWithNoWinnerAndNoDeduction`、`schedulerResumesExpiredButUnsettledAuctionsAfterRestart`）、`SettlementConcurrencyTest` 5 个 | ✅ |
 | A8 | 规则 8 通知边界 | 广播失败不回滚、快照可重同步 | 事件发布层（未实现） | 集成测试 + 断线测试 | ⬜ |
 
 ## B. 数据模型（原文 第 2~3 页）
@@ -58,7 +63,7 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 | B4 | 数据模型 拍卖 | 状态、起拍价、当前价、领先者、截止、延长次数 | `db/migration` V1 + V2 | `BidServiceTest`（截止、延时、状态流转列均被读写） | ✅ |
 | B5 | 数据模型 参与者 | 拍卖用户关系、加入时间、Agent/真人标识 | `db/migration` V1 + V3（按场冻结） | `Invariants.auctionFrozenEqualsPrice` | ✅ |
 | B6 | 数据模型 出价 | 拍卖、用户、金额、`requestId`、服务端序号、时间 | `db/migration` + `bids.uk_bid_request` | `Invariants.oneBidPerRequest`、`bidChainStrictlyIncreasing` | ✅ |
-| B7 | 数据模型 成交结果 | 赢家、成交价、原因；每场最多一条 | `db/migration` + `settlements` 唯一键 | 表已就位，结算逻辑未实现 | 🟨 |
+| B7 | 数据模型 成交结果 | 赢家、成交价、原因；每场最多一条 | `db/migration` + `settlements` 唯一键 + `auction.adapter.SettlementRepository` | `Invariants.settlementIsConsistent`、`oneSettlementPerAuction`；`SettlementConcurrencyTest.twoSchedulersRunningAtTheSameTimeSettleEachAuctionOnce` | ✅ |
 | B8 | 数据模型 Agent Token | 摘要、所属用户、拍卖范围、权限、过期、吊销 | `db/migration` + `agent_tokens` | 表已就位，Agent 认证未实现 | 🟨 |
 
 ## C. 接口与事件（原文 第 3 页）
@@ -83,7 +88,7 @@ WebSocket 事件与 `seq` 缺口（C3〜C5）、Agent 凭据（D1）、前端与
 |---|---|---|---|---|---|
 | E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `scripts/` 模拟脚本 | 脚本输出断言与摘要 | ⬜ |
 | E2 | 自动化测试 | 覆盖原文列出的全部测试点 | `src/test` | `mvn test` 报告 | ⬜ |
-| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：16 个用例全部跑在真实 MySQL 8.4 上 | 🟨 |
+| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：32 个用例全部跑在真实 MySQL 8.4 上 | 🟨 |
 | E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend` 测试 | 测试报告 | ⬜ |
 
 ## F. 快速启动与初始数据（原文 第 4 页）
