@@ -38,6 +38,13 @@ class WsIntegrationTest extends ApiTestHarness {
 
     private static final long AWAIT_MILLIS = 5_000;
 
+    /**
+     * 建立连接的总预算。比单次尝试的 {@link #AWAIT_MILLIS} 宽，因为这里共享一个服务实例，
+     * 机器忙的时候首个握手偶发超过 5s（一次全量跑真的碰到过，见 DEBUG_LOG DBG-20）。
+     * 按截止时间重试而不是把单次预算一味放大：连不上时依旧会失败，耗时上限仍然明确。
+     */
+    private static final long CONNECT_DEADLINE_MILLIS = 20_000;
+
     /** 收帧的测试客户端：把帧存起来按类型等，避免用例去猜顺序与时间。 */
     private static final class Client extends WebSocketClient {
 
@@ -139,9 +146,16 @@ class WsIntegrationTest extends ApiTestHarness {
     }
 
     private Client connect(String url) throws Exception {
+        long deadline = System.currentTimeMillis() + CONNECT_DEADLINE_MILLIS;
         Client client = new Client(url);
-        assertTrue(client.connectBlocking(AWAIT_MILLIS, TimeUnit.MILLISECONDS),
-                "WebSocket 连接没有在 " + AWAIT_MILLIS + "ms 内建立：" + url);
+        while (!client.connectBlocking(AWAIT_MILLIS, TimeUnit.MILLISECONDS)) {
+            if (System.currentTimeMillis() >= deadline) {
+                throw new AssertionError(
+                        "WebSocket 连接没有在 " + CONNECT_DEADLINE_MILLIS + "ms 内建立：" + url);
+            }
+            // 失败过一次的客户端不可复用（底层套接字已废），重试用新连接。
+            client = new Client(url);
+        }
         opened.add(client);
         return client;
     }
