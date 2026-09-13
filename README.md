@@ -2,7 +2,7 @@
 
 仓库地址：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开启分支保护）
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V5）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**尾段“博弈时间”强制拒绝 Agent 出价**、**成交主体（AI / 真人）可追溯且仅对赢家与管理员可见**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及**竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流，并支持用户在“我的 AI 代理”页**自助签发自己名下的授权**）与**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）和**一份服务器压测脚本**（`tools/stress_test.py`，尾段博弈时间清场 + 持续吞吐）。全量 **206 个测试**（197 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
+这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V6）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**尾段“博弈时间”强制拒绝 Agent 出价**、**成交主体（AI / 真人）可追溯且仅对赢家与管理员可见**、**预告开拍与到点自动开拍**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及两条 AI 路径：**面向普通用户的「托管 AI 代理」**（选进行中/未开拍的场次 + 设定预算上限，服务端到点自动进场并按最小加价跟价，D-36）与**面向开发者的竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流，用户可在“我的 AI 代理”页**自助签发自己名下的授权**，D-34）；另有**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）和**一份服务器压测脚本**（`tools/stress_test.py`，尾段博弈时间清场 + 持续吞吐）。全量 **225 个测试**（216 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
@@ -91,7 +91,7 @@ docker compose up -d mysql backend
 | GET | `/api/v1/auctions/{id}/bids` | 出价记录（分页） |
 | POST | `/api/v1/auctions/{id}/bids` | 出价（body 含 `requestId` 幂等键与 `amount`） |
 | GET | `/api/v1/auctions/{id}/result` | 成交结果（未结算时 404） |
-| POST | `/api/v1/admin/auctions` | 管理员：创建拍卖（201） |
+| POST | `/api/v1/admin/auctions` | 管理员：创建拍卖（201；可选 `startsAt` 预告开拍，到点由扫描器自动开拍） |
 | POST | `/api/v1/admin/auctions/{id}/start` | 管理员：开始拍卖 |
 | POST | `/api/v1/admin/auctions/{id}/cancel` | 管理员：取消并释放全部冻结 |
 | GET | `/api/v1/admin/auctions/{id}/ledger` | 管理员：该场全部资金流水（含每条的主体 `actorType`：HUMAN/AGENT） |
@@ -102,6 +102,10 @@ docker compose up -d mysql backend
 | GET | `/api/v1/me/agent-tokens` | 用户：**自己名下**的 Agent 授权列表（含派生 `status`，不含明文） |
 | POST | `/api/v1/me/agent-tokens` | 用户：为自己签发一份授权（body **没有** `agentUserId`，归属由服务端钉死） |
 | POST | `/api/v1/me/agent-tokens/{tokenId}/revoke` | 用户：吊销自己的 Token（不是自己的一律 404，不泄露存在性） |
+| GET | `/api/v1/me/agent-proxies` | 用户：**自己名下**的托管 AI 代理列表（含 `status`/`nextBidAmount`/`leading`，不含明文） |
+| POST | `/api/v1/me/agent-proxies` | 用户：在指定拍卖上创建一个托管 AI 代理（body 只有 `auctionId` + `budgetLimit`，归属由服务端钉死） |
+| POST | `/api/v1/me/agent-proxies/{proxyId}/revoke` | 用户：撤销自己的托管代理（不是自己的一律 404） |
+| GET | `/api/v1/admin/agent-proxies` | 管理员：全部托管 AI 代理总览（只读，带 `ownerUserId`） |
 | GET | `/api/v1/agent/auctions/{id}` | Agent（`:8090`）：拍卖快照（需 `auction:read` 且在该 Token 的拍卖范围内） |
 | POST | `/api/v1/agent/auctions/{id}/bids` | Agent（`:8090`）：出价（需 `auction:bid`；body 含 `requestId` 与 `amount`） |
 | GET | `/api/v1/agent/auctions/{id}/result` | Agent（`:8090`）：成交结果（未结算时 404） |
@@ -191,6 +195,29 @@ python tools/agent_sim.py --duration 60     # 拍卖持续秒数（默认 300）
 
 脚本只用 Python 标准库（不需要 `pip install`）；每次运行自己创建拍卖与 Token，结束后默认清理（`--keep` 可保留供手工核对）。
 
+## 托管 AI 代理（前端「AI 代理」页，D-36）
+
+上一条是**给开发者**的 Agent API；普通用户不需要写程序、也不需要开服务器：登录后点侧边栏 **「AI 代理」→「创建 AI 代理」**，选一场**进行中或尚未开拍**的拍卖、填一个**预算上限**，剩下的由服务端完成。
+
+- **策略只有一条**（可预测、可断言）：只要自己不是领先者，就出 `当前价 + 最小加价`；达到预算上限就停手并提醒一次。不预冻结资金，钱只在真正出价时按既有出价事务冻结（D-30）。
+- **到点自动进场**：若目标拍卖还没开始，需要它有预告时间（管理员创建时填 `startsAt`，或在库中直接设置）；`AuctionStartScheduler` 到点自动开拍（与管理员手动 `start` 复用完全相同的开拍逻辑，D-35），`AgentProxyScheduler` 随即开始跟价。前端大厅与运营台会显示“预告 mm:ss 后开拍”（用服务端时间校准，不用本机时钟）。
+- **一人一场只能挂一个代理**（`uk_proxy_owner_auction`）；撤销后可重建，复用同一条记录。
+- **尾段“博弈时间”没有例外**：托管代理同样是 Agent，最后 20 秒内同样被 `HUMAN_ONLY_PERIOD` 拒；这是产品规则（D-32），不是故障。
+- **提醒走轮询**（仅在“AI 代理”页每 3 秒拉一次列表并对比前后状态），不新增私有 WebSocket 事件。
+
+相关后台配置（都可在 `.env` 里覆盖，见 [`.env.example`](.env.example)）：`AGENT_PROXY_TICK_INTERVAL_MS`（默认 500）、`AGENT_PROXY_BATCH_SIZE`（默认 50）、`AUCTION_START_SCAN_INTERVAL_MS`（默认 1000）、`AUCTION_START_BATCH_SIZE`（默认 50）。
+
+```bash
+# 等价的最小 curl（先登录拿 $TOKEN）
+curl -s -X POST http://localhost:8080/api/v1/me/agent-proxies \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"auctionId":"1","budgetLimit":1200}'
+curl -s http://localhost:8080/api/v1/me/agent-proxies -H "Authorization: Bearer $TOKEN"
+curl -s -X POST http://localhost:8080/api/v1/me/agent-proxies/1/revoke -H "Authorization: Bearer $TOKEN"
+```
+
+> 托管代理与 Agent Token 是**两条并列的路径**：“AI 代理”页把托管做成主路径，Token 那一套收进页面底部的“高级”（自己写程序的人用）。两者共用同一个出价事务与同一套 D-32 规则。
+
 ## 全链路模拟脚本（并发 / 狙击 / 断线快照 / 结算核对）
 
 `tools/agent_sim.py` 覆盖 Agent 一侧；面向**用户侧**全链路的是 `tools/auction_sim.py`，
@@ -275,7 +302,7 @@ python tools/stress_test.py --mode throughput -c 50 --seconds 10
   `【本人填写】` 段落需由作者本人补齐，不代填。
 - **没有线上地址、没有演示录屏**（两段式现场核验的素材）。
 
-已实现的边界：用户侧 HTTP 15 个端点 + Agent 侧 3 个业务端点与 2 个签发/吊销端点 + WebSocket 实时通道（P2/P3）、
+已实现的边界：用户侧 HTTP 19 个端点 + Agent 侧 3 个业务端点与 2 个签发/吊销端点 + WebSocket 实时通道（P2/P3）、
 前端真实接入（P4）、Agent API 与端到端模拟（P5）、用户侧全链路模拟（E1）、架构守卫 9 条。
 完整的逐项状态与证据见 [docs/STATUS.md](docs/STATUS.md) 与 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
 
@@ -301,15 +328,16 @@ npm run dev        # http://localhost:5173/
 - `admin@example.com / Admin123456!`：管理员，可创建、开始、取消拍卖。
 - `bidder_a@example.com / Test123456!`、`bidder_b@example.com / Test123456!`：两名竞拍者。
 
-建议验证路径：管理员登录创建并开始拍卖 → 换成 `bidder_a` 加入并出价 → 查看钱包冻结与流水 →
+建议验证路径：管理员登录创建并开始拍卖（也可以在创建时填一个**预告开拍时间**，到点自动开拍）→ 换成 `bidder_a` 加入并出价 → 查看钱包冻结与流水 →
 另开一个浏览器用 `bidder_b` 加价，`bidder_a` 的详情页会通过 WebSocket 实时更新价格、领先者与剩余时间 →
 等待倒计时结束查看结果。倒计时以服务端时间为准；断线时页面显示“重连中/正在恢复快照”，恢复后由权威快照对齐。
+想看 AI 那侧：用 `bidder_a` 打开侧边栏 **「AI 代理」**，选一场进行中的拍卖创建一个托管代理，看它按最小加价跟价、钱包出现冻结与流水（流水里主体为 AI，只有你自己与管理员看得到）；等到最后 20 秒它会按规则停手。
 
 前端自测（不需要后端）：
 
 ```powershell
 cd frontend
-npm test           # 63 个单测（api client / realtime feed / store / anonymous）
+npm test           # 69 个单测（api client / realtime feed / store / anonymous）
 npm run typecheck  # vue-tsc
 npm run build      # vite build
 ```

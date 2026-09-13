@@ -2,6 +2,8 @@ package com.bidarena;
 
 import com.bidarena.agentaccess.adapter.AgentAuthFilter;
 import com.bidarena.agentaccess.application.AgentAuctionService;
+import com.bidarena.agentaccess.application.AgentProxyScheduler;
+import com.bidarena.agentaccess.application.AgentProxyService;
 import com.bidarena.agentaccess.application.AgentTokenService;
 import com.bidarena.api.ApiExceptionFilter;
 import com.bidarena.api.AuthFilter;
@@ -9,6 +11,7 @@ import com.bidarena.api.CorsFilter;
 import com.bidarena.auction.adapter.AuctionSocketHandler;
 import com.bidarena.auction.application.AuctionCommandService;
 import com.bidarena.auction.application.AuctionQueryService;
+import com.bidarena.auction.application.AuctionStartScheduler;
 import com.bidarena.auction.application.BidService;
 import com.bidarena.auction.application.SettlementScheduler;
 import com.bidarena.bootstrap.AgentApiPlugin;
@@ -51,6 +54,7 @@ public class Application {
           // Agent 的两个服务也要进容器：控制器用 @Inject 引用它们。
           app.context().wrapAndPut(AgentTokenService.class, services.agentTokens);
           app.context().wrapAndPut(AgentAuctionService.class, services.agentAuctions);
+          app.context().wrapAndPut(AgentProxyService.class, services.agentProxies);
 
           // —— 过滤器 ——
           // 数值越小越靠外层。顺序是刻意的：
@@ -73,6 +77,27 @@ public class Application {
                   Env.intOr("SETTLE_BATCH_SIZE", 50));
           scheduler.start();
           Runtime.getRuntime().addShutdownHook(new Thread(scheduler::stop, "settlement-shutdown"));
+
+          // —— 预告开拍（D-35）——
+          // 与结算扫描同理：服务端自己完成，不依赖任何客户端调用。到点的 DRAFT 变 RUNNING，
+          // 于是定了预告时间的拍卖不需要管理员在线也会开拍。
+          AuctionStartScheduler startScheduler =
+              new AuctionStartScheduler(
+                  services.auctionCommands,
+                  Env.intOr("AUCTION_START_SCAN_INTERVAL_MS", 1000),
+                  Env.intOr("AUCTION_START_BATCH_SIZE", 50));
+          startScheduler.start();
+          Runtime.getRuntime().addShutdownHook(new Thread(startScheduler::stop, "auction-start-shutdown"));
+
+          // —— 托管 AI 代理（D-36）——
+          // 间隔默认 500ms：代理靠"别人加了价"驱动，这个值是用户感知到的 AI 反应速度。
+          AgentProxyScheduler proxyScheduler =
+              new AgentProxyScheduler(
+                  services.agentProxies,
+                  Env.intOr("AGENT_PROXY_TICK_INTERVAL_MS", 500),
+                  Env.intOr("AGENT_PROXY_BATCH_SIZE", 50));
+          proxyScheduler.start();
+          Runtime.getRuntime().addShutdownHook(new Thread(proxyScheduler::stop, "agent-proxy-shutdown"));
 
           app.enableWebSocket(true);
 

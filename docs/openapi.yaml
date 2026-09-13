@@ -28,6 +28,7 @@ tags:
   - name: Admin
   - name: Agent
   - name: AgentTokens
+  - name: AgentProxies
 paths:
   /auth/login:
     post:
@@ -309,6 +310,78 @@ paths:
         '200': {$ref: '#/components/responses/EnvelopeAgentToken'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '404': {$ref: '#/components/responses/NotFound'}
+  /me/agent-proxies:
+    get:
+      tags: [AgentProxies]
+      security: [{bearerAuth: []}]
+      operationId: listMyAgentProxies
+      description: |
+        我创建的托管 AI 代理。只返回当前登录用户名下的那些。
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAgentProxyPage'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      tags: [AgentProxies]
+      security: [{bearerAuth: []}]
+      operationId: createAgentProxy
+      description: |
+        在一场**正在进行或尚未开始**的拍卖上创建托管代理：服务端替这个用户按最小加价跟价，
+        直到预算上限（`budgetLimit`）为止。
+
+        - 归属恒为当前用户：请求体里没有 `agentUserId`，也没有任何策略参数。
+        - 同一场同一人只有一个代理位（`409 CONFLICT`）；撤销后重建会**重置同一个位置**。
+        - `budgetLimit` 必须 ≤ 当前可用额（`409 INSUFFICIENT_BALANCE`）。AI 出价会**真实冻结**资金，
+          但创建时**不**预冻结——只有在真正出价的那一刻才动钱。
+        - 代理**同样受尾段博弈时间约束**：截止前 20 秒内它无法出价（D-32），没有例外。
+          前端必须在创建时说清楚这一点，否则用户会以为“我的 AI 坏了”。
+        - 允许建在 `DRAFT` 上：拍卖开拍后代理自动进场；配合 `startsAt` 预告开拍即为“时间到自动入场”。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateAgentProxyRequest'}
+      responses:
+        '201': {$ref: '#/components/responses/EnvelopeAgentProxy'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /me/agent-proxies/{proxyId}/revoke:
+    post:
+      tags: [AgentProxies]
+      security: [{bearerAuth: []}]
+      operationId: revokeAgentProxy
+      description: |
+        撤销自己的 AI 代理：立即停止跟价（已经出价成交的结果不受影响）。
+        不属于本人的 `proxyId` 返回 404，与“不存在”不可区分。
+      parameters:
+        - in: path
+          name: proxyId
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAgentProxy'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /admin/agent-proxies:
+    get:
+      tags: [AgentProxies]
+      security: [{bearerAuth: []}]
+      operationId: listAgentProxies
+      description: |
+        全局总览：便于排障时回答“现在有哪些 AI 在替人出价”。
+        只读——**不提供**管理员代建代理或改预算的能力，那等于让运营替用户消耗资金。
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvelopeAgentProxyPage'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /agent/auctions/{auctionId}:
     servers:
       - url: http://localhost:8090/api/v1
@@ -447,6 +520,13 @@ components:
         currentPrice: {type: integer, minimum: 0}
         leader: {type: string, nullable: true}
         endsAt: {type: string, format: date-time, nullable: true}
+        startsAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            预告开拍时间。缺席/为 null 表示“只等管理员手动开始”。
+            它不参与出价、延时或结算的任何判定，纯粹是排期；真正开拍时才用时长换算出 endsAt。
         extensionCount: {type: integer, minimum: 0}
         participantCount: {type: integer, minimum: 0}
         seq: {type: integer, minimum: 0}
@@ -519,6 +599,56 @@ components:
         startPrice: {type: integer, minimum: 1}
         minIncrement: {type: integer, minimum: 1}
         durationSeconds: {type: integer, minimum: 10, maximum: 86400}
+        # 可选预告开拍时间：填了就是“到点自动开拍”，不填就等管理员手动开始（D-35）。
+        # 必须晚于**服务端数据库当前时间**，否则 400；不带时区的写法同样 400（歧义）。
+        startsAt: {type: string, format: date-time, nullable: true}
+    CreateAgentProxyRequest:
+      type: object
+      required: [auctionId, budgetLimit]
+      properties:
+        auctionId: {type: string}
+        # 硬预算上限：跟价金额永不超过它，触顶后停止并提醒一次。
+        # 上限由服务端另设天花板（当前 1000000）防呆。
+        budgetLimit: {type: integer, minimum: 1, maximum: 1000000}
+    AgentProxySummary:
+      type: object
+      required: [proxyId, ownerUserId, auctionId, status, auctionStatus, budgetLimit, bidCount, currentPrice, minIncrement, nextBidAmount, leading, budgetReached, createdAt, updatedAt]
+      properties:
+        proxyId: {type: string}
+        ownerUserId: {type: string}
+        auctionId: {type: string}
+        auctionTitle: {type: string}
+        auctionStatus: {$ref: '#/components/schemas/AuctionStatus'}
+        status:
+          type: string
+          enum: [PENDING, BIDDING, BUDGET_REACHED, FINISHED, REVOKED]
+          description: |
+            PENDING=已创建未出价（未开拍或还没轮到它）· BIDDING=已进场在跟价 ·
+            BUDGET_REACHED=到达预算上限已停手 · FINISHED=拍卖结束已收尾 · REVOKED=用户撤销
+        budgetLimit: {type: integer, minimum: 1}
+        bidCount: {type: integer, minimum: 0}
+        lastBidAmount: {type: integer, nullable: true}
+        # 下面四个是**拍卖的实时事实**（与拍卖快照同源），不是代理自己的记录：
+        # 前端直接用它们解释“AI 现在在干什么”，不必再拉一次快照。
+        currentPrice: {type: integer, minimum: 0}
+        minIncrement: {type: integer, minimum: 1}
+        nextBidAmount: {type: integer, minimum: 0}
+        leading: {type: boolean}
+        budgetReached: {type: boolean}
+        won: {type: boolean, nullable: true}
+        finalPrice: {type: integer, nullable: true}
+        budgetReachedAt: {type: string, format: date-time, nullable: true}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        revokedAt: {type: string, format: date-time, nullable: true}
+    AgentProxyPage:
+      type: object
+      required: [items, page, size, total]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AgentProxySummary'}}
+        page: {type: integer, minimum: 1}
+        size: {type: integer, minimum: 1}
+        total: {type: integer, minimum: 0}
     CreateAgentTokenRequest:
       type: object
       required: [name, agentUserId, scopes, expiresAt]
@@ -650,6 +780,8 @@ components:
     EnvelopeParticipant: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/Participant'}}}]}}}}
     EnvelopeAgentToken: {description: Created; token is returned once, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AgentToken'}}}]}}}}
     EnvelopeAgentTokenPage: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AgentTokenPage'}}}]}}}}
+    EnvelopeAgentProxy: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AgentProxySummary'}}}]}}}}
+    EnvelopeAgentProxyPage: {description: OK, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/Envelope'}, {type: object, properties: {data: {$ref: '#/components/schemas/AgentProxyPage'}}}]}}}}
     BadRequest: {description: Invalid request, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
     Unauthorized: {description: Authentication required, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
     Forbidden: {description: Permission denied, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}

@@ -336,6 +336,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/me/agent-proxies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 我创建的托管 AI 代理。只返回当前登录用户名下的那些。 */
+        get: operations["listMyAgentProxies"];
+        put?: never;
+        /**
+         * @description 在一场**正在进行或尚未开始**的拍卖上创建托管代理：服务端替这个用户按最小加价跟价，
+         *     直到预算上限（`budgetLimit`）为止。
+         *
+         *     - 归属恒为当前用户：请求体里没有 `agentUserId`，也没有任何策略参数。
+         *     - 同一场同一人只有一个代理位（`409 CONFLICT`）；撤销后重建会**重置同一个位置**。
+         *     - `budgetLimit` 必须 ≤ 当前可用额（`409 INSUFFICIENT_BALANCE`）。AI 出价会**真实冻结**资金，
+         *       但创建时**不**预冻结——只有在真正出价的那一刻才动钱。
+         *     - 代理**同样受尾段博弈时间约束**：截止前 20 秒内它无法出价（D-32），没有例外。
+         *       前端必须在创建时说清楚这一点，否则用户会以为“我的 AI 坏了”。
+         *     - 允许建在 `DRAFT` 上：拍卖开拍后代理自动进场；配合 `startsAt` 预告开拍即为“时间到自动入场”。
+         */
+        post: operations["createAgentProxy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/me/agent-proxies/{proxyId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * @description 撤销自己的 AI 代理：立即停止跟价（已经出价成交的结果不受影响）。
+         *     不属于本人的 `proxyId` 返回 404，与“不存在”不可区分。
+         */
+        post: operations["revokeAgentProxy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/agent-proxies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * @description 全局总览：便于排障时回答“现在有哪些 AI 在替人出价”。
+         *     只读——**不提供**管理员代建代理或改预算的能力，那等于让运营替用户消耗资金。
+         */
+        get: operations["listAgentProxies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/auctions/{auctionId}": {
         parameters: {
             query?: never;
@@ -442,6 +511,12 @@ export interface components {
             leader?: string | null;
             /** Format: date-time */
             endsAt?: string | null;
+            /**
+             * Format: date-time
+             * @description 预告开拍时间。缺席/为 null 表示“只等管理员手动开始”。
+             *     它不参与出价、延时或结算的任何判定，纯粹是排期；真正开拍时才用时长换算出 endsAt。
+             */
+            startsAt?: string | null;
             extensionCount: number;
             participantCount: number;
             seq: number;
@@ -502,6 +577,49 @@ export interface components {
             startPrice: number;
             minIncrement: number;
             durationSeconds: number;
+            /** Format: date-time */
+            startsAt?: string | null;
+        };
+        CreateAgentProxyRequest: {
+            auctionId: string;
+            budgetLimit: number;
+        };
+        AgentProxySummary: {
+            proxyId: string;
+            ownerUserId: string;
+            auctionId: string;
+            auctionTitle?: string;
+            auctionStatus: components["schemas"]["AuctionStatus"];
+            /**
+             * @description PENDING=已创建未出价（未开拍或还没轮到它）· BIDDING=已进场在跟价 ·
+             *     BUDGET_REACHED=到达预算上限已停手 · FINISHED=拍卖结束已收尾 · REVOKED=用户撤销
+             * @enum {string}
+             */
+            status: "PENDING" | "BIDDING" | "BUDGET_REACHED" | "FINISHED" | "REVOKED";
+            budgetLimit: number;
+            bidCount: number;
+            lastBidAmount?: number | null;
+            currentPrice: number;
+            minIncrement: number;
+            nextBidAmount: number;
+            leading: boolean;
+            budgetReached: boolean;
+            won?: boolean | null;
+            finalPrice?: number | null;
+            /** Format: date-time */
+            budgetReachedAt?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: date-time */
+            revokedAt?: string | null;
+        };
+        AgentProxyPage: {
+            items: components["schemas"]["AgentProxySummary"][];
+            page: number;
+            size: number;
+            total: number;
         };
         CreateAgentTokenRequest: {
             name: string;
@@ -761,6 +879,28 @@ export interface components {
             content: {
                 "application/json": components["schemas"]["Envelope"] & {
                     data?: components["schemas"]["AgentTokenPage"];
+                };
+            };
+        };
+        /** @description OK */
+        EnvelopeAgentProxy: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Envelope"] & {
+                    data?: components["schemas"]["AgentProxySummary"];
+                };
+            };
+        };
+        /** @description OK */
+        EnvelopeAgentProxyPage: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Envelope"] & {
+                    data?: components["schemas"]["AgentProxyPage"];
                 };
             };
         };
@@ -1187,6 +1327,76 @@ export interface operations {
             200: components["responses"]["EnvelopeAgentToken"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    listMyAgentProxies: {
+        parameters: {
+            query?: {
+                page?: components["parameters"]["Page"];
+                size?: components["parameters"]["Size"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["EnvelopeAgentProxyPage"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    createAgentProxy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAgentProxyRequest"];
+            };
+        };
+        responses: {
+            201: components["responses"]["EnvelopeAgentProxy"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    revokeAgentProxy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                proxyId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["EnvelopeAgentProxy"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listAgentProxies: {
+        parameters: {
+            query?: {
+                page?: components["parameters"]["Page"];
+                size?: components["parameters"]["Size"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["EnvelopeAgentProxyPage"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     agentAuction: {

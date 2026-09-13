@@ -18,3 +18,19 @@
 .agent-status{padding:3px 9px;border-radius:9px;font-size:10px;font-weight:600;background:#eef2ee;color:#75858c}.agent-status.active{background:#eef4dd;color:#6c8a2d}.agent-status.expired{background:#f4f1e6;color:#9a8f6a}.agent-status.revoked{background:#faefec;color:#a46b60}
 .agent-steps{margin:0;padding-left:18px;color:#5d6b72;font-size:12px;line-height:2}.agent-steps code{font:500 11px 'DM Mono';background:#eef2ee;padding:1px 4px}
 @media(max-width:900px){.agent-layout{grid-template-columns:1fr}}
+
+/* ── 托管 AI 代理（D-36） ─────────────────────────────────────────── */
+/* 下拉与文本框同一套外观：两种控件在同一张表单里长相不同，用户会以为它们不是一回事。 */
+.agent-form select{display:block;width:100%;margin-top:7px;height:41px;border:1px solid #d3ddda;padding:0 10px;outline:0;background:#fff;color:#44525a}
+.proxy-list-head{margin-top:22px;border-top:1px solid #edf0ef;padding-top:16px}
+.proxy-row{display:flex;align-items:flex-start;gap:11px;padding:13px 0;border-top:1px solid #edf0ef}
+.proxy-row:first-of-type{border-top:0}
+.proxy-main{flex:1;min-width:0}
+.proxy-main b{font-size:13px}
+.proxy-main small{display:block;color:#8d999c;font-size:11px;line-height:1.7;margin-top:4px}
+.agent-status.pending{background:#eef2ee;color:#75858c}
+.agent-status.finished{background:#eef0f2;color:#6b7a83}
+/* 预告开拍：与“博弈时间”同一套视觉语言（都是“规则/时间”类提示，不是拦截）。 */
+.start-banner{display:flex;align-items:center;gap:10px;margin-top:16px;padding:11px 14px;border:1px solid #cddda3;background:#f6f9ee;color:#5d7330;font-size:11px;line-height:1.6}
+.start-banner b{flex-shrink:0;font-size:12px;letter-spacing:1px;color:#6c8a2d}
+.table-panel.advanced{margin-top:16px}

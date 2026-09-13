@@ -11,6 +11,8 @@ import com.bidarena.shared.ActorType;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.Db;
 import com.bidarena.shared.ErrorCode;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -62,9 +64,16 @@ public class AuctionCommandService {
         this.finalGameWindowSeconds = finalGameWindowSeconds;
     }
 
-    /** 创建拍品请求。与契约 {@code CreateAuctionRequest} 一致。 */
+    /**
+     * 创建拍品请求。与契约 {@code CreateAuctionRequest} 一致。
+     *
+     * <p>{@code startsAt} 是可选的**预告开拍时间**：填了就是"到点自动开拍"，
+     * 不填就退化成旧行为（等管理员手动开始）。保留旧行为是刻意的——
+     * 演示、临时加场这些场景不需要排期，逼着填一个时间反而多一步。
+     */
     public record CreateAuction(
-            String title, String description, long startPrice, long minIncrement, int durationSeconds) {}
+            String title, String description, long startPrice, long minIncrement, int durationSeconds,
+            Instant startsAt) {}
 
     /**
      * 创建一件 {@code DRAFT} 拍品，返回生成的 ID。
@@ -104,8 +113,19 @@ public class AuctionCommandService {
         }
 
         String id = "auc_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        Instant startsAt = command.startsAt() == null ? null : command.startsAt();
+        if (startsAt != null) {
+            // 用数据库时间而不是本机时钟比较（D-5）：多实例/容器漂移时，
+            // 一个实例认为"还有 30 秒"、另一个认为"已经过了"，会让"预告"这件事变得不可解释。
+            Instant now = auctions.currentDbTime();
+            if (!startsAt.isAfter(now)) {
+                throw new BizException(ErrorCode.VALIDATION_FAILED,
+                        "startsAt 必须晚于当前时间（否则请留空，改为手动开始）",
+                        Map.of("startsAt", startsAt.toString(), "serverTime", now.toString()));
+            }
+        }
         auctions.insertOutsideTx(id, title, description, command.startPrice(), command.minIncrement(),
-                command.durationSeconds());
+                command.durationSeconds(), startsAt);
         return id;
     }
 
@@ -123,6 +143,32 @@ public class AuctionCommandService {
         // （状态、截止时间、版本号），订阅者直接拿到可替换的权威状态，不必自己拼。
         publishQuietly(AuctionEvents.snapshot(
                 AuctionViews.Snapshot.of(started.auction(), started.serverTime(), finalGameWindowSeconds)));
+    }
+
+    /**
+     * 自动开拍：把预告时间已到的拍品转成 {@code RUNNING}。返回实际开拍的场数。
+     *
+     * <p>与 {@link #start(String)} 走完全相同的路径，因此广播、状态转换条件、
+     * 截止时间计算都没有第二套实现——"管理员点的开始"与"时间到了自己开始"在这一层是同一件事。
+     *
+     * <p>逐场隔离异常：某一场因为并发（管理员抢先手动了）而转换失败，不该让同批的其他场次一起失败。
+     */
+    public int startDueScheduled(int batchSize) {
+        List<String> due = Db.read(dataSource, conn -> auctions.findDueToStartIds(conn, Db.now(conn), batchSize));
+        int started = 0;
+        for (String auctionId : due) {
+            try {
+                start(auctionId);
+                started++;
+                log.info("预告到点，自动开拍 auction={}", auctionId);
+            } catch (BizException e) {
+                // INVALID_STATE：管理员恰好同时点了开始，或已被取消——都不是错误。
+                log.info("自动开拍跳过 auction={} 原因={}", auctionId, e.code());
+            } catch (RuntimeException e) {
+                log.warn("自动开拍失败 auction={}: {}", auctionId, e.getMessage());
+            }
+        }
+        return started;
     }
 
     /** 取消拍卖并释放全部冻结。委托给 {@link SettlementService#cancel}，使取消与到期结算共用同一套资金逻辑。 */

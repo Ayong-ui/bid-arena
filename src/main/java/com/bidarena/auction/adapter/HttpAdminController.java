@@ -8,6 +8,10 @@ import com.bidarena.auction.application.AuctionQueryService;
 import com.bidarena.shared.ApiResponse;
 import com.bidarena.shared.BizException;
 import com.bidarena.shared.ErrorCode;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeParseException;
+import java.util.Map;
 import org.noear.solon.annotation.Body;
 import org.noear.solon.annotation.Controller;
 import org.noear.solon.annotation.Inject;
@@ -47,7 +51,35 @@ public class HttpAdminController {
      * 指向错误原因的提示。包装类型让"没传"与"传了非法值"可分辨。
      */
     public record CreateAuctionRequest(
-            String title, String description, Long startPrice, Long minIncrement, Integer durationSeconds) {}
+            String title, String description, Long startPrice, Long minIncrement, Integer durationSeconds,
+            String startsAt) {}
+
+    /**
+     * 解析预告开拍时间。
+     *
+     * <p>接受带 {@code Z} 的 UTC（前端 {@code toISOString()} 的产物）与带时区偏移的写法
+     * （{@code 2026-09-14T10:00:00+08:00}，人手写更自然）。
+     * <b>明确拒绝</b>不带时区的 {@code LocalDateTime}：那会引入"按谁的时区解释"的歧义，
+     * 在本项目里等于把开拍时间交给浏览器所在时区决定。
+     */
+    private static Instant parseStartsAt(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String value = raw.trim();
+        try {
+            return Instant.parse(value);
+        } catch (DateTimeParseException ignored) {
+            // 不是 UTC 写法，继续试带偏移的写法
+        }
+        try {
+            return OffsetDateTime.parse(value).toInstant();
+        } catch (DateTimeParseException e) {
+            throw new BizException(ErrorCode.VALIDATION_FAILED,
+                    "startsAt 必须是 ISO-8601 时间（如 2026-09-14T10:00:00+08:00 或 2026-09-14T02:00:00Z）",
+                    Map.of("startsAt", value));
+        }
+    }
 
     @Mapping(value = "/admin/auctions", method = MethodType.POST)
     public ApiResponse createAuction(@Body CreateAuctionRequest request) {
@@ -63,7 +95,7 @@ public class HttpAdminController {
 
         String auctionId = commands.create(new CreateAuction(
                 request.title(), request.description(), request.startPrice(),
-                request.minIncrement(), request.durationSeconds()));
+                request.minIncrement(), request.durationSeconds(), parseStartsAt(request.startsAt())));
 
         ctx.status(201);
         return ApiResponse.ok(query.snapshot(auctionId), ApiTrace.current());

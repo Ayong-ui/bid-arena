@@ -8,7 +8,7 @@
 
 | 角色 | 能做 | 不能做 |
 |---|---|---|
-| 管理员 | 创建 / 开始 / 取消拍卖；签发与吊销 Agent Token；查看全局授权与按场次流水 | 代替服务端改余额、最高价、截止时间或赢家 |
+| 管理员 | 创建 / 开始 / 取消拍卖（可预告开拍）；签发与吊销 Agent Token；查看全局授权、托管代理总览与按场次流水 | 代替服务端改余额、最高价、截止时间或赢家 |
 | 真人竞拍者 | 登录、加入、出价、查询自己的钱包与流水 | 直接改余额或冻结；读取他人私有数据 |
 | 竞拍 Agent | 用受限 Token 读取被授权拍卖的状态、出价、读取结果 | 访问管理接口、数据库、他人钱包；超出授权拍卖范围 |
 | 服务端（Solon） | 唯一裁判：校验、冻结 / 释放 / 扣款、判定赢家、写流水、广播 | —— |
@@ -59,7 +59,7 @@
 
 **已实现并已在真实 MySQL 8.4 上验证：**
 
-- 迁移与连接：Flyway `V1`~`V5`（含两级冻结、`CHECK` 约束、种子数据、Agent Token 表、成交主体与流水主体），HikariCP，`Services` 组合根（测试与生产共用同一套接线）。
+- 迁移与连接：Flyway `V1`~`V6`（含两级冻结、`CHECK` 约束、种子数据、Agent Token 表、成交主体与流水主体、预告开拍列与托管代理表），HikariCP，`Services` 组合根（测试与生产共用同一套接线）。
 - 出价事务 `BidService`：差额冻结、换庄释放、幂等重放、最后 5 秒延时（上限 3 次）、按 `user_id` 升序的固定锁序；**尾段“博弈时间”（默认最后 20 秒，`AUCTION_FINAL_GAME_WINDOW_SECONDS`）在事务内强制拒绝一切 Agent 出价**（`HUMAN_ONLY_PERIOD`，D-32），真人不受限。
 - 结算 `SettlementService` + 扫描器 `SettlementScheduler`：到期结算、无人出价、取消三条路径共用一个终局逻辑，成交记录唯一、可重放。
 - HTTP API（`docs/openapi.yaml` 为契约）：统一响应封套与错误码、JWT 鉴权与 RBAC、幂等键、限流、分页。
@@ -69,10 +69,12 @@
 - 结算与主体标识：结算把赢家最后一笔出价的 `actor_type` 快照进 `settlements.winner_type`，也写进每条 `ledger_entries.actor_type`；`result.winnerType` 仅赢家本人/管理员可见，另提供管理员按场次流水 `GET /admin/auctions/{id}/ledger`（D-33）。
 - Agent 授权自助化（D-34）：新增 `GET/POST /me/agent-tokens` 与 `POST /me/agent-tokens/{tokenId}/revoke`，请求体**没有** `agentUserId`（归属由服务层 `issueForSelf` 钉死），他人的 Token 吊销返回 404；管理员侧另有 `GET /admin/agent-tokens` 总览；所有列表接口**从不回明文**，状态 `status` 由服务端按 `activeAt` 同口径下发；前端对应“我的 AI 代理”页面。
 - 博弈时间的可见性：快照（HTTP 与 WS 同构）带 `finalGameWindowSeconds`，由服务端下发而不是前端硬编码；前端只用它把“剩余 ≤ 窗口”渲染成提示（真人仍可出价，Agent 已被服务端事务无条件拒绝），不承担任何判定职责。
+- 托管 AI 代理（D-36）：普通用户在“AI 代理”页选一场**进行中或未开拍**的拍卖并设定预算上限，服务端 `AgentProxyScheduler` 到点（若拍品有预告时间）自动进场——策略单一（不领先就出 `currentPrice + minIncrement`，到硬预算上限停手并置 `BUDGET_REACHED`），一人一场最多一个（`uk_proxy_owner_auction`），**创建时不预冻结**（钱只在真正出价时按 D-30 冻结）；出价复用 `BidService.placeBid(..., AGENT)`，**对 D-32 的博弈时间无例外**；提醒走前端轮询读模型对比前后状态（不新增私有 WS 事件）。
+- 预告开拍（D-35）：`auctions.starts_at`（可空）+ `AuctionStartScheduler` 到点自动开拍；自动开拍复用与管理员手动 `start` 完全相同的用例（不复制状态流转），时间基准取数据库时间（`Db.now`）；快照下发 `startsAt` 供前端预告。
 - 架构守卫：`ArchUnit` 九条分层/跨上下文/无环规则（§2.4）。
-- 前端：Vue 3 + Pinia 接入真实 HTTP/WS，类型从契约生成，金额/倒计时以服务端为准（P4）；P6 增补尾段“博弈时间”提示（依据快照下发的 `finalGameWindowSeconds`）、成交主体 `AI/真人` 徽标与管理员按场次流水面板（D-33），并把“智能体接入”整页换成用户向的“我的 AI 代理”（自助授权，D-34）。
-- 证据：`mvn clean verify` 共 206 个测试全绿（真库集成 66 + 其余领域/身份/结算/事件/WS/Agent 单元 131 + 架构守卫 9）；
-  关键路径另做变异测试反向确认确实会红（架构 9/9、Agent 14/14、前端 16/16）；前端另有 63 单测与 3 个真后端联调。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
+- 前端：Vue 3 + Pinia 接入真实 HTTP/WS，类型从契约生成，金额/倒计时以服务端为准（P4）；P6 增补尾段“博弈时间”提示（依据快照下发的 `finalGameWindowSeconds`）、成交主体 `AI/真人` 徽标与管理员按场次流水面板（D-33），并把“智能体接入”整页换成用户向的“我的 AI 代理”——主路径是**创建托管代理**（选场次 + 预算上限）与在管列表，自助 Token 收进页底“高级”（D-34/D-36）；大厅与运营台显示“预告 mm:ss 后开拍”（用 `store.serverNow`，不用本机时钟，D-35）。
+- 证据：`mvn clean verify` 共 225 个测试全绿（真库集成 85 + 其余领域/身份/结算/事件/WS/Agent 单元 131 + 架构守卫 9）；
+  关键路径另做变异测试反向确认确实会红（架构 9/9、Agent 14/14、前端 16/16）；前端另有 69 单测与 3 个真后端联调。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
 
 **尚未实现（如实声明）：** 只能靠 HTTP 复现的部分已全部有脚本——`tools/auction_sim.py` 覆盖并发同/邻价、`requestId`
 重试、拒绝场景、最后五秒狙击、断线快照与结算对账（实测 52/52），`tools/agent_sim.py` 覆盖 Agent 侧（44/44）。
@@ -94,7 +96,7 @@ Vue 3 + Pinia  ──HTTP/JSON──>  Solon API  ──事务/行锁──> MyS
 - **Solon API**：认证、RBAC、请求校验、领域服务、统一错误响应、WebSocket 广播、结算扫描任务。
 - **Agent API（独立端口 :8090）**：仅暴露 `/api/v1/agent/**`，使用 Agent Token 鉴权和独立限流；不得访问管理员路由、任意用户钱包或数据库。
 - **领域层**：规则写在事务型应用服务（`BidService` / `SettlementService`）内，与持久化状态处于同一事务；`domain` 包只放不依赖任何基础设施的枚举与判定（`AuctionStatus` / `SettlementReason` / `LedgerType`）。
-- **MySQL**：用户、钱包、流水、拍卖、参与者、出价、幂等请求、成交和 Agent Token 的权威数据。
+- **MySQL**：用户、钱包、流水、拍卖、参与者、出价、幂等请求、成交、Agent Token 与托管代理的权威数据。
 - **WebSocket**：只做提交后通知，广播失败不回滚已提交事务；客户端可用快照恢复。
 
 ### 2.1 限界上下文
@@ -106,7 +108,7 @@ Vue 3 + Pinia  ──HTTP/JSON──>  Solon API  ──事务/行锁──> MyS
 | `identity` | 用户、角色、密码哈希、状态、会话令牌 | 登录、查询当前用户、管理员 RBAC |
 | `wallet` | 钱包、冻结金额、资金流水 | 冻结、释放、扣款、查询余额与流水 |
 | `auction` | 拍卖、参与者、出价、`seq`、成交结果 | 创建 / 开始 / 取消、加入、出价、结算、查询 |
-| `agentaccess` | Agent Token 摘要、范围、权限、过期、吊销、限流 | 签发（管理员代表他人 / 用户为自己）、吊销、校验 Agent 请求（D-34） |
+| `agentaccess` | Agent Token 与托管代理：摘要、范围、权限、过期、吊销、限流；代理状态机 | 签发（管理员代表他人 / 用户为自己）、吊销、校验 Agent 请求（D-34）、创建 / 撤销 / 推进托管代理（D-36） |
 
 **刻意不拆成 7 个上下文**：参考方案中的 errand 等上下文来自另一个领域，此处不存在；`settlement` 也不是独立上下文——它与出价共享“拍卖生命周期”这一概念，只是**事务边界**不同（见 §3）。把事务边界误当成上下文边界，会凭空制造跨上下文事务，违背本项目的取舍原则。
 
@@ -239,6 +241,8 @@ Docker Compose 启动 MySQL、后端和前端，Flyway 在应用启动时自动�
 3. 实现事务提交后的领域事件与 WebSocket，补 seq 缺口/快照恢复测试。
 4. 建立 Vue 3 + TypeScript + Pinia 前端，先接 HTTP 快照，再接实时事件。
 5. ✅ 加入 Agent Token、模拟脚本、Compose 和端到端验收（P5；独立端口与独立凭据、复用同一出价事务，`tools/agent_sim.py` 44/44；用户侧全链路 `tools/auction_sim.py` 52/52，E1）。
+6. ✅ 尾段“博弈时间”清场 Agent、成交主体标识与隐私遮蔽、Agent 授权自助化（P6，D-32~D-34）。
+7. ✅ 把 AI 做成普通用户可用的产品功能：预告开拍（`starts_at` + 自动开拍扫描，D-35）与服务端**托管 AI 代理**（选场次 + 预算上限，到点自动进场，D-36）。
 
 ## 8. 验证重点
 

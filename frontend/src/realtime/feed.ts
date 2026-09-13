@@ -21,6 +21,11 @@ export interface SnapshotPayload {
   currentPrice: number
   leaderAnon: string | null
   endsAt: string | null
+  /**
+   * 预告开拍时间（D-35）。可选：旧版事件没有这个字段，缺失与 null 用起来一样。
+   * 前端只用它渲染“还有多久开拍”，不参与任何判定。
+   */
+  startsAt?: string | null
   extensionCount: number
   participantCount: number
   seq: number
@@ -366,6 +371,7 @@ export function snapshotFromEvent(event: AuctionEventEnvelope): SnapshotPayload 
     currentPrice,
     leaderAnon: stringField(payload, 'leader') ?? null,
     endsAt: stringField(payload, 'endsAt') ?? null,
+    startsAt: stringField(payload, 'startsAt') ?? null,
     extensionCount: numberField(payload, 'extensionCount') ?? 0,
     participantCount: numberField(payload, 'participantCount') ?? 0,
     // 缺省 0 表示“没有博弈时间”：宁可什么都不提示，也不凭一个猜测的窗口去提示用户。

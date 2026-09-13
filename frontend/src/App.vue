@@ -11,6 +11,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useArenaStore, type LiveAuction } from './store'
 import type { AuctionStatus } from './api/types'
+import { formatRemaining } from './realtime/clock'
 
 const store = useArenaStore()
 
@@ -25,7 +26,9 @@ const newDescription = ref('')
 const newStartPrice = ref(100)
 const newMinIncrement = ref(50)
 const newDuration = ref(60)
+const newStartsAt = ref('')
 let timer: number | undefined
+let proxyTimer: number | undefined
 let copyTimer: number | undefined
 
 const apiBase = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
@@ -33,9 +36,15 @@ const apiBase = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
 onMounted(async () => {
   await store.restore()
   timer = window.setInterval(() => store.tick(), 1_000)
+  // AI 代理的进展靠轮询可见（服务端不为它单开私有推送，D-36）：
+  // 只有停在 AI 页时才拉，别在拍卖大厅里每 3 秒白跑一个请求。
+  proxyTimer = window.setInterval(() => {
+    if (view.value === 'agent' && store.loggedIn) void store.loadMyAgentProxies()
+  }, 3_000)
 })
 onUnmounted(() => {
   if (timer) window.clearInterval(timer)
+  if (proxyTimer) window.clearInterval(proxyTimer)
   if (copyTimer) window.clearTimeout(copyTimer)
   store.closeAuction()
 })
@@ -68,6 +77,21 @@ function statusLabel(status: AuctionStatus): string {
 function shortId(id: string | null | undefined): string {
   if (!id) return '—'
   return id.length > 12 ? `${id.slice(0, 11)}…` : id
+}
+
+/**
+ * 预告开拍还剩多久。
+ *
+ * 用 `store.serverNow`（校准过的服务端时间）而不是 `Date.now()`：
+ * 开发机与服务器差几分钟时，本地时钟会把这个预告算成“已经到点”，
+ * 而服务端其实还没到。
+ */
+function startHint(value: string | null | undefined): string | null {
+  if (!value) return null
+  const at = Date.parse(value)
+  if (Number.isNaN(at)) return null
+  const diff = at - store.serverNow
+  return diff > 0 ? `预告 ${formatRemaining(diff)} 后开拍` : '预告时间已到，等待开拍'
 }
 
 function displayName(text: string | null): string {
@@ -134,16 +158,25 @@ async function submitCreate(): Promise<void> {
     notify('请填写拍品名称')
     return
   }
+  // `datetime-local` 给的是不带时区的本地时间字面量，而契约只收带时区的时刻：
+  // 这里用浏览器把它转成 ISO（带 Z/偏移），歧义在进网前就被消掉。
+  const startsAt = newStartsAt.value ? new Date(newStartsAt.value) : null
+  if (startsAt && Number.isNaN(startsAt.getTime())) {
+    notify('预告开拍时间不合法')
+    return
+  }
   const ok = await store.createAuction({
     title: newTitle.value.trim(),
     description: newDescription.value.trim() || undefined,
     startPrice: newStartPrice.value,
     minIncrement: newMinIncrement.value,
     durationSeconds: newDuration.value,
+    startsAt: startsAt ? startsAt.toISOString() : null,
   })
   if (ok) {
     newTitle.value = ''
     newDescription.value = ''
+    newStartsAt.value = ''
   }
 }
 
@@ -184,7 +217,11 @@ function agentStatusLabel(status: string): string {
 function showAgent(): void {
   view.value = 'agent'
   void store.loadMyAgentTokens()
-  if (store.isAdmin) void store.loadAllAgentTokens()
+  void store.loadMyAgentProxies()
+  if (store.isAdmin) {
+    void store.loadAllAgentTokens()
+    void store.loadAllAgentProxies()
+  }
 }
 
 function toggleAgentScope(scope: 'auction:read' | 'auction:bid'): void {
@@ -232,6 +269,70 @@ async function copyAgentToken(): Promise<void> {
   } catch {
     notify('复制失败，请手动选中这串 Token')
   }
+}
+
+// ── 托管 AI 代理（D-36） ─────────────────────────────────────────────────
+// 这一段是给**不写代码的人**用的：选一场拍卖、填一个预算，剩下的事服务端做。
+// 上面的 Token 那套是“自己接程序”的路，保留在“高级”里。
+const proxyAuctionId = ref('')
+const proxyBudget = ref<number | null>(null)
+const proxyBusy = ref(false)
+const advancedOpen = ref(false)
+
+const proxyStatusLabels: Record<string, string> = {
+  PENDING: '待进场',
+  BIDDING: '出价中',
+  BUDGET_REACHED: '已达预算上限',
+  FINISHED: '已结束',
+  REVOKED: '已撤销',
+}
+
+// 与 `.agent-status` 的修饰类保持一致：可见状态就是颜色。
+const proxyStatusClass: Record<string, string> = {
+  PENDING: 'pending',
+  BIDDING: 'active',
+  BUDGET_REACHED: 'expired',
+  FINISHED: 'finished',
+  REVOKED: 'revoked',
+}
+
+function proxyStatusLabel(status: string): string {
+  return proxyStatusLabels[status] ?? status
+}
+
+function proxyStatusMark(status: string): string {
+  return proxyStatusClass[status] ?? 'pending'
+}
+
+/**
+ * 提交创建。
+ *
+ * 本地只做“填了没有”的检查：预算是否超过可用余额、这场能不能挂
+ * 都交给服务端判定（它是唯一知道余额与场次状态的权威）。
+ */
+async function submitProxy(): Promise<void> {
+  if (!proxyAuctionId.value) {
+    notify('请选择一场拍卖')
+    return
+  }
+  const budget = proxyBudget.value
+  if (typeof budget !== 'number' || !Number.isFinite(budget) || budget <= 0) {
+    notify('请填写一个大于 0 的预算上限')
+    return
+  }
+  proxyBusy.value = true
+  const ok = await store.createAgentProxy({ auctionId: proxyAuctionId.value, budgetLimit: Math.floor(budget) })
+  proxyBusy.value = false
+  if (ok) {
+    proxyAuctionId.value = ''
+    proxyBudget.value = null
+  }
+}
+
+/** 选场次时把预算默认成“现在领先需要的那口价”，用户只需要改大不改小。 */
+function pickProxyAuction(): void {
+  const picked = store.proxyCandidates.find((item) => item.id === proxyAuctionId.value)
+  if (picked && proxyBudget.value === null) proxyBudget.value = picked.currentPrice + picked.minIncrement
 }
 </script>
 
@@ -334,7 +435,10 @@ async function copyAgentToken(): Promise<void> {
                   <span class="compact-icon">📦</span>
                   <span class="compact-title">
                     <b>{{ auction.title }}</b>
-                    <small>{{ statusLabel(auction.status) }} · 版本 seq {{ auction.seq }}</small>
+                    <small>
+                      {{ statusLabel(auction.status) }} · 版本 seq {{ auction.seq }}
+                      <template v-if="startHint(auction.startsAt)"> · {{ startHint(auction.startsAt) }}</template>
+                    </small>
                   </span>
                   <strong>◎ {{ money(auction.currentPrice) }}</strong>
                 </button>
@@ -369,6 +473,14 @@ async function copyAgentToken(): Promise<void> {
                     起拍 ◎ {{ money(store.current.startPrice) }} · 最小加价 ◎ {{ money(store.current.minIncrement) }} ·
                     已延时 {{ store.current.extensionCount }} 次 · {{ store.current.participantCount }} 人参与
                   </small>
+                </div>
+                <!-- 预告开拍：开拍是服务端到点任务做的，这里不提供“手动倒计时结束即开始”的按钮（D-35）。 -->
+                <div v-if="store.current.status === 'DRAFT' && store.current.startsAt" class="start-banner">
+                  <b>预告开拍</b>
+                  <span>
+                    {{ new Date(store.current.startsAt).toLocaleString('zh-CN') }}
+                    （{{ startHint(store.current.startsAt) }}），到时由服务端自动开放竞价。
+                  </span>
                 </div>
                 <div v-if="store.inFinalGameWindow" class="final-game-banner" role="status">
                   <b>博弈时间</b>
@@ -507,6 +619,9 @@ async function copyAgentToken(): Promise<void> {
               <label>起拍价<input v-model.number="newStartPrice" type="number" min="1" /></label>
               <label>最小加价<input v-model.number="newMinIncrement" type="number" min="1" /></label>
               <label>时长（秒）<input v-model.number="newDuration" type="number" min="10" max="86400" /></label>
+              <!-- 预告开拍可选：服务端会到点自动开拍（D-35）；不填就等运营手动点「开始」。 -->
+              <label>预告开拍（可选）<input v-model="newStartsAt" type="datetime-local" /></label>
+              <p class="hint">填了预告时间，到点由服务端自动开拍；不填就等这里手动点「开始」。</p>
               <button class="primary-button full" type="submit">创建拍品</button>
             </form>
             <section class="table-panel">
@@ -514,7 +629,10 @@ async function copyAgentToken(): Promise<void> {
               <div v-for="auction in store.auctions" :key="auction.id" class="admin-row">
                 <div>
                   <b>{{ auction.title }}</b>
-                  <small>{{ statusLabel(auction.status) }} · seq {{ auction.seq }} · ◎ {{ money(auction.currentPrice) }}</small>
+                  <small>
+                    {{ statusLabel(auction.status) }} · seq {{ auction.seq }} · ◎ {{ money(auction.currentPrice) }}
+                    <template v-if="startHint(auction.startsAt)"> · {{ startHint(auction.startsAt) }}</template>
+                  </small>
                 </div>
                 <button v-if="auction.status === 'DRAFT'" class="small-button" @click="store.startAuction(auction.id)">开始</button>
                 <button
@@ -564,13 +682,13 @@ async function copyAgentToken(): Promise<void> {
               <p class="kicker">MY AI PROXY</p>
               <h1>我的 AI 代理</h1>
               <p class="muted">
-                授权一个你自己的程序代替你出价。它拿到的是一枚<b>独立凭证</b>（不是你的登录令牌），
-                只能访问你勾选的场次、只能做你勾选的事，随时可吊销；花的仍然是<b>你自己钱包里的钱</b>。
+                选一场<b>正在进行或还没开始</b>的拍卖，服务端的 AI 就替你去竞拍：在预算内按最小加价跟价，
+                到点自动进场，随时可以撤销。花的仍然是<b>你自己钱包里的钱</b>——不用写任何代码。
               </p>
             </div>
             <div class="agent-rule-chip">
               <span>⚔ 博弈时间</span>
-              <small>每场结束前 {{ store.finalGameWindowSeconds ?? '—' }} 秒，AI 一律禁止出价</small>
+              <small>每场结束前 {{ store.finalGameWindowSeconds ?? '—' }} 秒，AI 一律禁止出价（真人不受影响）</small>
             </div>
           </div>
 
@@ -591,6 +709,105 @@ async function copyAgentToken(): Promise<void> {
             </small>
           </section>
 
+          <!-- 创建 + 在管：这是主路径（D-36） -->
+          <div class="agent-layout">
+            <section class="table-panel">
+              <div class="panel-heading">
+                <h3>创建 AI 代理</h3>
+                <span>{{ store.myAgentProxies.length }} 个在管</span>
+              </div>
+              <form class="agent-form" @submit.prevent="submitProxy">
+                <label>
+                  拍卖场次
+                  <select v-model="proxyAuctionId" @change="pickProxyAuction">
+                    <option value="">请选择一场拍卖…</option>
+                    <option
+                      v-for="auction in store.proxyCandidates"
+                      :key="auction.id"
+                      :value="auction.id"
+                      :disabled="store.hasProxyFor(auction.id)"
+                    >
+                      {{ auction.title }} · {{ statusLabel(auction.status) }} · 当前价 ◎ {{ money(auction.currentPrice) }}{{ store.hasProxyFor(auction.id) ? '（已挂代理）' : '' }}
+                    </option>
+                  </select>
+                </label>
+                <label>预算上限（◎）<input v-model.number="proxyBudget" type="number" min="1" step="1" /></label>
+                <p class="hint">
+                  可用余额 ◎ {{ money(store.wallet?.availableBalance) }}。AI 只在预算内按最小加价跟价，触顶就停手并提醒你一次；
+                  创建时<b>不冻结</b>资金，只有真正出价才动钱。
+                </p>
+                <button class="primary-button full" type="submit" :disabled="proxyBusy">
+                  {{ proxyBusy ? '创建中…' : '创建 AI 代理' }}
+                </button>
+              </form>
+              <p v-if="!store.proxyCandidates.length" class="hint">
+                现在没有可挂代理的场次：只有<b>草稿</b>或<b>进行中</b>的拍卖才能创建。
+              </p>
+
+              <div class="panel-heading proxy-list-head">
+                <h3>在管的代理</h3>
+                <span>{{ store.myAgentProxies.length }} 个</span>
+              </div>
+              <div v-for="proxy in store.myAgentProxies" :key="proxy.proxyId" class="proxy-row">
+                <span class="compact-icon">🤖</span>
+                <div class="proxy-main">
+                  <b>{{ proxy.auctionTitle ?? shortId(proxy.auctionId) }}</b>
+                  <small>
+                    {{ statusLabel(proxy.auctionStatus) }} · 预算 ◎ {{ money(proxy.budgetLimit) }} · 已出价 {{ proxy.bidCount }} 次<template
+                      v-if="proxy.lastBidAmount !== null && proxy.lastBidAmount !== undefined"
+                    >（最近 ◎ {{ money(proxy.lastBidAmount) }}）</template>
+                  </small>
+                  <small v-if="proxy.status === 'PENDING'">还没开拍：时间一到它会自动进场。</small>
+                  <small v-else-if="proxy.status === 'BIDDING'">
+                    {{ proxy.leading ? '我的 AI 正领先。' : `对手加价后它的下一手是 ◎ ${money(proxy.nextBidAmount)}。` }}
+                    当前价 ◎ {{ money(proxy.currentPrice) }}。
+                  </small>
+                  <small v-else-if="proxy.status === 'BUDGET_REACHED'">
+                    已到预算上限并停手（当前价 ◎ {{ money(proxy.currentPrice) }}）：想继续就得自己出价。
+                  </small>
+                  <small v-else-if="proxy.status === 'FINISHED'">
+                    {{ proxy.won ? `拍下了，成交价 ◎ ${money(proxy.finalPrice)}` : '没有拍下' }}。
+                  </small>
+                  <small v-else>已由你撤销。</small>
+                </div>
+                <span class="agent-status" :class="proxyStatusMark(proxy.status)">{{ proxyStatusLabel(proxy.status) }}</span>
+                <button
+                  v-if="proxy.status !== 'FINISHED' && proxy.status !== 'REVOKED'"
+                  class="small-button danger"
+                  @click="store.revokeAgentProxy(proxy.proxyId)"
+                >
+                  撤销
+                </button>
+              </div>
+              <p v-if="!store.myAgentProxies.length" class="empty">
+                {{ store.myAgentProxiesLoading ? '加载中…' : '还没有 AI 代理。选一场拍卖、填个预算，剩下的交给它。' }}
+              </p>
+            </section>
+
+            <section class="table-panel">
+              <div class="panel-heading"><h3>它会怎么动</h3></div>
+              <ol class="agent-steps">
+                <li>创建时<b>不冻结</b>任何钱，只校验预算不超过可用余额。</li>
+                <li>拍卖一开拍（或已经在进行中）就以<b>最小加价</b>跟价；自己领先时不重复抬价。</li>
+                <li>出价到达<b>预算上限</b>就停手，页面上提醒你一次，此后不再动。</li>
+                <li>结束前 {{ store.finalGameWindowSeconds ?? '—' }} 秒进入<b>博弈时间</b>，AI 一律禁止出价，真人可以继续叫价。</li>
+                <li>拍卖结束自动结算，输赢与成交价会显示在左边那张卡片上。</li>
+              </ol>
+              <p class="hint">隐私：只有你自己看得到这些代理；大厅里不会暴露谁在用 AI。</p>
+            </section>
+          </div>
+
+          <!-- 高级：自己接程序（D-34）。默认收起——它只对写代码的用户有意义。 -->
+          <section class="table-panel advanced">
+            <div class="panel-heading">
+              <h3>高级：自己写程序接入（Agent Token）</h3>
+              <button class="small-button" @click="advancedOpen = !advancedOpen">{{ advancedOpen ? '收起' : '展开' }}</button>
+            </div>
+            <p class="hint">
+              不写代码就忽略这一段：上面的托管代理已经够用。这一段是给“自制机器人”的用户：发一枚独立凭证，
+              让<b>你自己跑的程序</b>拿它访问 Agent 专用端口。
+            </p>
+            <template v-if="advancedOpen">
           <div class="agent-layout">
             <section class="table-panel">
               <div class="panel-heading">
@@ -670,8 +887,29 @@ async function copyAgentToken(): Promise<void> {
               </p>
             </section>
           </div>
+            </template>
+          </section>
 
           <!-- 运营总览 -->
+          <section v-if="store.isAdmin" class="table-panel">
+            <div class="panel-heading">
+              <h3>全部托管代理（运营总览）</h3>
+              <span>{{ store.allAgentProxies.length }} 个 · 仅管理员可见 · 只读</span>
+            </div>
+            <div v-for="proxy in store.allAgentProxies" :key="proxy.proxyId" class="agent-token-row">
+              <div class="agent-token-main">
+                <b>{{ proxy.auctionTitle ?? shortId(proxy.auctionId) }}</b>
+                <small>
+                  归属 {{ shortId(proxy.ownerUserId) }} · {{ statusLabel(proxy.auctionStatus) }} ·
+                  预算 ◎ {{ money(proxy.budgetLimit) }} · 已出价 {{ proxy.bidCount }} 次
+                </small>
+              </div>
+              <span class="agent-status" :class="proxyStatusMark(proxy.status)">{{ proxyStatusLabel(proxy.status) }}</span>
+            </div>
+            <p v-if="!store.allAgentProxies.length" class="empty">
+              {{ store.allAgentProxiesLoading ? '加载中…' : '当前没有任何在管的托管代理。' }}
+            </p>
+          </section>
           <section v-if="store.isAdmin" class="table-panel">
             <div class="panel-heading">
               <h3>全部授权（运营总览）</h3>

@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
 import { anonymousId, createAnonIdCache } from '../anonymous'
 import { ApiError, type ApiOk } from '../api/client'
-import type { AgentTokenSummary, AuctionResult, AuctionSnapshot, AuctionStatus, Bid, CreateAuctionRequest, CreateMyAgentTokenRequest, LedgerEntry, LoginRequest, User, Wallet } from '../api/types'
+import type { AgentProxySummary, AgentTokenSummary, AuctionResult, AuctionSnapshot, AuctionStatus, Bid, CreateAgentProxyRequest, CreateAuctionRequest, CreateMyAgentTokenRequest, LedgerEntry, LoginRequest, User, Wallet } from '../api/types'
 import { createServerClock, formatRemaining } from '../realtime/clock'
 import { numberField, stringField, type AuctionEventEnvelope } from '../realtime/events'
 import { AuctionFeed, type SnapshotPayload } from '../realtime/feed'
@@ -39,6 +39,14 @@ export const useArenaStore = defineStore('arena', () => {
   const allAgentTokens = ref<AgentTokenSummary[]>([])
   const allAgentTokensLoading = ref(false)
   const issuedAgentToken = ref<{ token: string; tokenId: string; name: string; expiresAt: string } | null>(null)
+  /**
+   * 托管 AI 代理（D-36）。与上面那套 Token 是两条并列的路：
+   * 这条由**服务端替用户跑**（普通人不写代码就能用），Token 那条是用户自己接程序。
+   */
+  const myAgentProxies = ref<AgentProxySummary[]>([])
+  const myAgentProxiesLoading = ref(false)
+  const allAgentProxies = ref<AgentProxySummary[]>([])
+  const allAgentProxiesLoading = ref(false)
   const joinedIds = ref<string[]>([])
   const anonById = shallowRef<Record<string, string>>({})
 
@@ -57,9 +65,25 @@ export const useArenaStore = defineStore('arena', () => {
 
   /** 幂等键复用：网络失败重试时必须用**同一个** requestId，否则可能出价两次。 */
   let pendingBid: { auctionId: string; amount: number; requestId: string } | null = null
+  /**
+   * 上一次看到的代理状态。用来把“刚刚触顶 / 刚刚结束”变成**一次**提醒：
+   * 服务端不为代理单开私有推送，提醒就靠这个页面轮询后的前后对比（D-36）。
+   */
+  let proxyStatusSeen = new Map<string, string>()
 
   const runningAuctions = computed(() => auctions.value.filter((item) => item.status === 'RUNNING'))
   const otherAuctions = computed(() => auctions.value.filter((item) => item.status !== 'RUNNING'))
+  /**
+   * 可以挂托管代理的场次：还没开拍的和正在进行的。
+   * 已结束/已取消的不列——服务端也会拒（`INVALID_STATE`），但让用户点进去才被拒是坏体验。
+   */
+  const proxyCandidates = computed(() =>
+    auctions.value.filter((item) => item.status === 'DRAFT' || item.status === 'RUNNING'))
+
+  /** 这场是不是已经有我的代理（一人一场只有一个位置，服务端会 409）。 */
+  function hasProxyFor(auctionId: string): boolean {
+    return myAgentProxies.value.some((proxy) => proxy.auctionId === auctionId && proxy.status !== 'REVOKED')
+  }
   const joined = computed(() => (current.value ? joinedIds.value.includes(current.value.id) : false))
   const isMyLead = computed(() => !!current.value?.leaderAnon && current.value.leaderAnon === myAnonId.value)
   const nextBid = computed(() => (current.value ? current.value.currentPrice + current.value.minIncrement : 0))
@@ -160,6 +184,9 @@ export const useArenaStore = defineStore('arena', () => {
     issuedAgentToken.value = null
     myAgentTokens.value = []
     allAgentTokens.value = []
+    myAgentProxies.value = []
+    allAgentProxies.value = []
+    proxyStatusSeen = new Map()
   }
 
   /** 令牌过期：清会话并说明原因（不静默跳走，用户得知道为什么）。 */
@@ -292,6 +319,102 @@ export const useArenaStore = defineStore('arena', () => {
       setNotice('error', describe(error))
     } finally {
       allAgentTokensLoading.value = false
+    }
+  }
+
+  // ── 托管 AI 代理（D-36） ──────────────────────────────────────────────────
+
+  /**
+   * 我托管的代理（服务端替用户跑）。
+   *
+   * 它同时是**提醒通道**：每次拉到新状态就与上次对比，只在“刚刚触顶 / 刚刚结束”时说一句。
+   * 为什么不做成常驻的警告文案：提醒说三遍就变成背景噪音，用户要的是“变的那一刻”。
+   */
+  async function loadMyAgentProxies(): Promise<void> {
+    myAgentProxiesLoading.value = true
+    try {
+      const items = (await deps.api.myAgentProxies(1, 50)).data.items
+      myAgentProxies.value = items
+      for (const proxy of items) {
+        const previous = proxyStatusSeen.get(proxy.proxyId)
+        const title = proxy.auctionTitle ?? proxy.auctionId
+        if (previous && previous !== proxy.status) {
+          if (proxy.status === 'BUDGET_REACHED') {
+            setNotice(
+              'info',
+              `AI 代理「${title}」已到预算上限 ◎${proxy.budgetLimit}，已停止加价：想继续就要自己出价`,
+            )
+          } else if (proxy.status === 'FINISHED') {
+            setNotice(
+              'info',
+              proxy.won
+                ? `AI 代理替你拍下了「${title}」：成交价 ◎${proxy.finalPrice ?? proxy.currentPrice}`
+                : `「${title}」已结束，AI 代理没有拍下`,
+            )
+          }
+        }
+        proxyStatusSeen.set(proxy.proxyId, proxy.status)
+      }
+      // 服务端可能已删掉的条目（不可能，但缓存不该只增不减）。
+      const ids = new Set(items.map((proxy) => proxy.proxyId))
+      for (const id of [...proxyStatusSeen.keys()]) if (!ids.has(id)) proxyStatusSeen.delete(id)
+    } catch (error) {
+      if (isUnauthenticated(error)) return handleUnauthenticated()
+      setNotice('error', describe(error))
+    } finally {
+      myAgentProxiesLoading.value = false
+    }
+  }
+
+  /**
+   * 创建托管代理。
+   *
+   * 服务端把归属钉死为当前用户（请求体里没有 `agentUserId`，也没有任何策略参数）：
+   * “追多少价”是规则不是配置，前端不传、也就没有“传错”的可能。
+   */
+  async function createAgentProxy(input: CreateAgentProxyRequest): Promise<boolean> {
+    try {
+      const created = (await deps.api.createAgentProxy(input)).data
+      await Promise.all([loadMyAgentProxies(), refreshWallet()])
+      setNotice(
+        'info',
+        created.auctionStatus === 'DRAFT'
+          ? `AI 代理已就位：「${created.auctionTitle ?? created.auctionId}」开拍后它会自动进场`
+          : `AI 代理已进场：「${created.auctionTitle ?? created.auctionId}」下一手 ◎${created.nextBidAmount}`,
+      )
+      return true
+    } catch (error) {
+      if (isUnauthenticated(error)) {
+        handleUnauthenticated()
+        return false
+      }
+      setNotice('error', describe(error))
+      return false
+    }
+  }
+
+  async function revokeAgentProxy(proxyId: string): Promise<void> {
+    try {
+      await deps.api.revokeAgentProxy(proxyId)
+      proxyStatusSeen.delete(proxyId)
+      await loadMyAgentProxies()
+      setNotice('info', '代理已撤销，不会再替你出价（已经成交的结果不受影响）')
+    } catch (error) {
+      if (isUnauthenticated(error)) return handleUnauthenticated()
+      setNotice('error', describe(error))
+    }
+  }
+
+  /** 运营总览：全部托管代理（仅 ADMIN）。只读——没有代建/改预算的入口。 */
+  async function loadAllAgentProxies(): Promise<void> {
+    allAgentProxiesLoading.value = true
+    try {
+      allAgentProxies.value = (await deps.api.agentProxies(1, 50)).data.items
+    } catch (error) {
+      if (isUnauthenticated(error)) return handleUnauthenticated()
+      setNotice('error', describe(error))
+    } finally {
+      allAgentProxiesLoading.value = false
     }
   }
 
@@ -607,6 +730,12 @@ export const useArenaStore = defineStore('arena', () => {
     allAgentTokens,
     allAgentTokensLoading,
     issuedAgentToken,
+    myAgentProxies,
+    myAgentProxiesLoading,
+    allAgentProxies,
+    allAgentProxiesLoading,
+    proxyCandidates,
+    hasProxyFor,
     joined,
     joinedIds,
     isMyLead,
@@ -644,6 +773,10 @@ export const useArenaStore = defineStore('arena', () => {
     revokeMyAgentToken,
     dismissIssuedAgentToken,
     loadAllAgentTokens,
+    loadMyAgentProxies,
+    createAgentProxy,
+    revokeAgentProxy,
+    loadAllAgentProxies,
     clearNotice,
     setNotice,
     tick,

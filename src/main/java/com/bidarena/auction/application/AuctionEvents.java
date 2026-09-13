@@ -63,6 +63,8 @@ public final class AuctionEvents {
         put(payload, "leader", AnonymousId.of(view.leader()));
         // 未开拍的 DRAFT 没有截止时间：此时这个字段缺席，而不是 null。
         put(payload, "endsAt", view.endsAt());
+        // 预告开拍时间可选：没排期的拍品不会有这个字段。
+        put(payload, "startsAt", view.startsAt());
         put(payload, "extensionCount", view.extensionCount());
         put(payload, "participantCount", view.participantCount());
         put(payload, "seq", view.seq());

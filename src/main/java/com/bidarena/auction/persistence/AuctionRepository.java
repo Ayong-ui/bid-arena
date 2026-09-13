@@ -27,7 +27,8 @@ public class AuctionRepository {
 
     private static final String SELECT_AUCTION =
             "SELECT a.id, a.title, a.description, a.status, a.start_price, a.min_increment, "
-                    + "a.current_price, a.leader_id, a.ends_at, a.extension_count, a.seq, a.duration_seconds, "
+                    + "a.current_price, a.leader_id, a.ends_at, a.starts_at, a.extension_count, a.seq, "
+                    + "a.duration_seconds, "
                     + "(SELECT COUNT(*) FROM auction_participants p WHERE p.auction_id = a.id) AS participant_count "
                     + "FROM auctions a ";
 
@@ -47,6 +48,7 @@ public class AuctionRepository {
             long currentPrice,
             String leaderId,
             Instant endsAt,
+            Instant startsAt,
             int extensionCount,
             long seq,
             int durationSeconds,
@@ -231,6 +233,23 @@ public class AuctionRepository {
                 rs -> rs.getString("id"), Db.ts(now), limit);
     }
 
+    /** 开拍扫描：预告时间已到、且仍未开始的拍品。
+     *
+     * <p>走 {@code idx_auctions_status_starts}。只选 id 不选整行：真正的读-改-写发生在
+     * {@link #startNow(String)} 的行锁里，扫描阶段读到什么反正都会被重新读一遍。
+     */
+    public List<String> findDueToStartIds(Connection conn, Instant now, int limit) throws SQLException {
+        return Db.queryList(conn,
+                "SELECT id FROM auctions WHERE status = 'DRAFT' AND starts_at IS NOT NULL AND starts_at <= ? "
+                        + "ORDER BY starts_at ASC LIMIT ?",
+                rs -> rs.getString("id"), Db.ts(now), limit);
+    }
+
+    /** 数据库当前时间：任何“现在几点了”的业务判定都必须用它（D-5）。 */
+    public Instant currentDbTime() {
+        return Db.read(dataSource, Db::now);
+    }
+
     /** 状态转换。带上 from 条件，使并发触发只有一次能成功。 */
     public void updateStatus(Connection conn, String auctionId, AuctionStatus from, AuctionStatus to) {
         try {
@@ -245,14 +264,20 @@ public class AuctionRepository {
         }
     }
 
-    /** 管理员创建拍品：落为 DRAFT 且 ends_at 为 NULL，不自动倒计时。 */
+    /**
+     * 管理员创建拍品：落为 DRAFT 且 ends_at 为 NULL，不自动倒计时。
+     *
+     * <p>{@code startsAt} 是**预告开拍时间**，与 {@code ends_at} 正交：
+     * 它为空时拍卖只等管理员手动开始；不为空时 {@code AuctionStartScheduler} 到点自动开拍。
+     * 时长仍在开拍那一刻才换算出 {@code ends_at}，所以预告时间不影响"拍多久"。
+     */
     public void insert(Connection conn, String id, String title, String description, long startPrice,
-            long minIncrement, int durationSeconds) throws SQLException {
+            long minIncrement, int durationSeconds, Instant startsAt) throws SQLException {
         Db.update(conn,
                 "INSERT INTO auctions (id, title, description, status, start_price, min_increment, "
-                        + "duration_seconds, current_price, leader_id, ends_at, extension_count, seq) "
-                        + "VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, NULL, NULL, 0, 0)",
-                id, title, description, startPrice, minIncrement, durationSeconds, startPrice);
+                        + "duration_seconds, current_price, leader_id, ends_at, starts_at, extension_count, seq) "
+                        + "VALUES (?, ?, ?, 'DRAFT', ?, ?, ?, ?, NULL, NULL, ?, 0, 0)",
+                id, title, description, startPrice, minIncrement, durationSeconds, startPrice, Db.ts(startsAt));
     }
 
     /** 开始拍卖：写入截止时间，倒计时从这一刻起算。 */
@@ -341,9 +366,9 @@ public class AuctionRepository {
     }
 
     public void insertOutsideTx(String id, String title, String description, long startPrice, long minIncrement,
-            int durationSeconds) {
+            int durationSeconds, Instant startsAt) {
         Db.tx(dataSource, conn -> {
-            insert(conn, id, title, description, startPrice, minIncrement, durationSeconds);
+            insert(conn, id, title, description, startPrice, minIncrement, durationSeconds, startsAt);
             return null;
         });
     }
@@ -419,6 +444,7 @@ public class AuctionRepository {
                 rs.getLong("current_price"),
                 rs.getString("leader_id"),
                 Db.instant(rs, "ends_at"),
+                Db.instant(rs, "starts_at"),
                 rs.getInt("extension_count"),
                 rs.getLong("seq"),
                 rs.getInt("duration_seconds"),

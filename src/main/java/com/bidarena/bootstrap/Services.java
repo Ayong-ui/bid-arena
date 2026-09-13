@@ -1,8 +1,10 @@
 package com.bidarena.bootstrap;
 
 import com.bidarena.agentaccess.application.AgentAuctionService;
+import com.bidarena.agentaccess.application.AgentProxyService;
 import com.bidarena.agentaccess.application.AgentRateLimiter;
 import com.bidarena.agentaccess.application.AgentTokenService;
+import com.bidarena.agentaccess.persistence.AgentProxyRepository;
 import com.bidarena.agentaccess.persistence.AgentTokenRepository;
 import com.bidarena.auction.persistence.AuctionRepository;
 import com.bidarena.auction.adapter.AuctionSocketHandler;
@@ -60,6 +62,16 @@ public final class Services {
     public final AgentTokenRepository agentTokenRepo;
     public final AgentTokenService agentTokens;
     public final AgentAuctionService agentAuctions;
+
+    /**
+     * 托管 AI 代理（P6）。
+     *
+     * <p>调度器不在这里创建：它要读环境变量（扫描间隔、批量），而组合根的第一个
+     * 构造函数刻意只收显式参数。与 {@code SettlementScheduler} 一样，由
+     * {@code Application} 读配置并启动；测试则直接调 {@code tick()}，不涉及定时器。
+     */
+    public final AgentProxyRepository agentProxyRepo;
+    public final AgentProxyService agentProxies;
 
     // —— 实时通道 ——
     public final WsEventBroadcaster broadcaster;
@@ -119,6 +131,12 @@ public final class Services {
         this.agentTokens = new AgentTokenService(agentTokenRepo, new AgentRateLimiter(),
                 auctionQueries::existingIds);
         this.agentAuctions = new AgentAuctionService(agentTokens, auctionQueries, bids);
+
+        // —— 托管 AI 代理 ——
+        // 注意参数顺序：代理用的是同一个 BidService 实例（见 AgentProxyService 类注释），
+        // 也复用同一份钱包查询与拍卖查询——"可用额"与用户看到的数字必须是同一个算法。
+        this.agentProxyRepo = new AgentProxyRepository(ds);
+        this.agentProxies = new AgentProxyService(agentProxyRepo, auctionQueries, walletQueries, bids);
     }
 
     /** 生产接线：令牌配置从环境读取，缺失即启动失败（见 {@link Env#required}）。 */

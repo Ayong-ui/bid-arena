@@ -163,6 +163,11 @@ public abstract class ApiTestHarness extends HttpTester {
         System.setProperty("JWT_SECRET", "bidarena-http-test-secret-0123456789abcdef");
         System.setProperty("SETTLE_SCAN_INTERVAL_MS", "3600000");
         System.setProperty("SETTLE_BATCH_SIZE", "50");
+        // 两个后台调度器也要调成"几乎不会再触发"（D-35/D-36）：它们会与用例的手工
+        // startDueScheduled()/tick() 抢跑——用例刚建好代理，后台那一轮就可能先出价，
+        // 断言会变成随机结果。间隔设成 1 小时，整个测试轮次里只有启动时那一次空轮。
+        System.setProperty("AUCTION_START_SCAN_INTERVAL_MS", "3600000");
+        System.setProperty("AGENT_PROXY_TICK_INTERVAL_MS", "3600000");
         System.setProperty("CORS_ORIGINS", "http://localhost:5173");
 
         // 端口用随机空闲端口，避免与开发机上跑着的实例撞车。
@@ -337,6 +342,19 @@ public abstract class ApiTestHarness extends HttpTester {
     protected static String createAuctionJson(String title, long startPrice, long minIncrement, int durationSeconds) {
         return "{\"title\":\"" + title + "\",\"description\":\"测试描述\",\"startPrice\":" + startPrice
                 + ",\"minIncrement\":" + minIncrement + ",\"durationSeconds\":" + durationSeconds + "}";
+    }
+
+    /**
+     * 带预告开拍时间的创建请求（D-35）。
+     *
+     * <p>单独一个方法而不是给上面的方法加参数：绝大多数用例不排期，
+     * 加一个 {@code null} 参数会让每一处调用都要回答"这次排期了吗"。
+     */
+    protected static String createScheduledAuctionJson(
+            String title, long startPrice, long minIncrement, int durationSeconds, String startsAt) {
+        return "{\"title\":\"" + title + "\",\"description\":\"测试描述\",\"startPrice\":" + startPrice
+                + ",\"minIncrement\":" + minIncrement + ",\"durationSeconds\":" + durationSeconds
+                + ",\"startsAt\":\"" + startsAt + "\"}";
     }
 
     /**

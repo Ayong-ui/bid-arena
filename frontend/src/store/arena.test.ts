@@ -4,6 +4,8 @@ import { ApiError, type ApiOk } from '../api/client'
 import type { AuctionApi } from '../api/endpoints'
 import { createMemoryStorage, createSessionStorage, type SessionStorage } from '../api/session'
 import type {
+  AgentProxyPage,
+  AgentProxySummary,
   AgentToken,
   AgentTokenPage,
   AgentTokenSummary,
@@ -111,6 +113,27 @@ const BID_RESULT: BidResult = {
   seq: 4,
   serverTime: SERVER_TIME,
 }
+/** 一个托管代理的样本（D-36）：默认“已进场、正领先”。 */
+const PROXY: AgentProxySummary = {
+  proxyId: 'agp_1',
+  ownerUserId: USER.id,
+  auctionId: 'auc-1',
+  auctionTitle: '胶片相机',
+  auctionStatus: 'RUNNING',
+  status: 'BIDDING',
+  budgetLimit: 500,
+  bidCount: 1,
+  lastBidAmount: 120,
+  currentPrice: 120,
+  minIncrement: 10,
+  nextBidAmount: 130,
+  leading: true,
+  budgetReached: false,
+  won: null,
+  finalPrice: null,
+  createdAt: SERVER_TIME,
+  updatedAt: SERVER_TIME,
+}
 const TICKET: WsTicket = {
   ticket: 't1',
   expiresAt: '2030-01-01T00:01:00.000Z',
@@ -214,6 +237,10 @@ function makeWorld(overrides?: (world: FakeWorld) => Partial<AuctionApi>, now: (
     issueMyAgentToken: async () => ok<AgentToken>({ token: 'tok-1', tokenId: 'agt_1', expiresAt: SERVER_TIME }),
     revokeMyAgentToken: async () => ok<AgentToken>({ tokenId: 'agt_1', expiresAt: SERVER_TIME }),
     agentTokens: async () => ok<AgentTokenPage>({ items: [], page: 1, size: 50, total: 0 }),
+    myAgentProxies: async () => ok<AgentProxyPage>({ items: [], page: 1, size: 50, total: 0 }),
+    createAgentProxy: async (body) => ok({ ...PROXY, auctionId: body.auctionId, budgetLimit: body.budgetLimit }),
+    revokeAgentProxy: async () => ok({ ...PROXY, status: 'REVOKED' as const }),
+    agentProxies: async () => ok<AgentProxyPage>({ items: [], page: 1, size: 50, total: 0 }),
   }
   world.api = { ...base, ...(overrides?.(world) ?? {}) }
   installDeps(world)
@@ -681,5 +708,151 @@ describe('商店：我的 AI 代理', () => {
     expect(store.issuedAgentToken).toBeNull()
     expect(store.myAgentTokens).toEqual([])
     expect(store.allAgentTokens).toEqual([])
+  })
+})
+
+describe('商店：托管 AI 代理（D-36）', () => {
+  it('只有草稿/进行中的场次可选，已有代理的场次会被标出来', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world)
+    world.api.auctions = async () =>
+      ok<AuctionPage>({
+        items: [
+          SNAPSHOT,
+          { ...SNAPSHOT, id: 'auc-draft', title: '待开拍', status: 'DRAFT' as const },
+          { ...SNAPSHOT, id: 'auc-done', title: '已结束', status: 'FINISHED' as const },
+        ],
+        page: 1,
+        size: 50,
+        total: 3,
+      })
+    world.api.myAgentProxies = async () => ok<AgentProxyPage>({ items: [PROXY], page: 1, size: 50, total: 1 })
+    await store.refreshAuctions()
+    await store.loadMyAgentProxies()
+
+    expect(store.proxyCandidates.map((item) => item.id)).toEqual(['auc-1', 'auc-draft'])
+    expect(store.hasProxyFor('auc-1')).toBe(true)
+    expect(store.hasProxyFor('auc-draft')).toBe(false)
+  })
+
+  it('创建只把场次与预算交给服务端（归属由服务端钉死），并刷新列表与钱包', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world)
+    let sent: unknown = null
+    world.api.createAgentProxy = async (body) => {
+      sent = body
+      return ok({ ...PROXY, status: 'PENDING' as const, auctionStatus: 'DRAFT' as const, budgetLimit: body.budgetLimit })
+    }
+    let listCalls = 0
+    let walletCalls = 0
+    world.api.myAgentProxies = async () => {
+      listCalls += 1
+      return ok<AgentProxyPage>({ items: [PROXY], page: 1, size: 50, total: 1 })
+    }
+    world.api.wallet = async () => {
+      walletCalls += 1
+      return ok(WALLET)
+    }
+
+    const created = await store.createAgentProxy({ auctionId: 'auc-1', budgetLimit: 500 })
+
+    expect(created).toBe(true)
+    expect(sent).toEqual({ auctionId: 'auc-1', budgetLimit: 500 })
+    // 归属与策略都不是前端的事：连字段都不存在，也就无从传错。
+    expect(sent).not.toHaveProperty('ownerUserId')
+    expect(sent).not.toHaveProperty('agentUserId')
+    expect(listCalls).toBe(1)
+    expect(walletCalls).toBe(1)
+    expect(store.notice?.text).toContain('自动进场')
+  })
+
+  it('创建失败（例如超出余额）不刷新列表，也不把错误当成成功', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world)
+    world.api.createAgentProxy = async () => {
+      throw new ApiError({ code: 'INSUFFICIENT_BALANCE', httpStatus: 409, serverMessage: '可用余额不足' })
+    }
+    let listCalls = 0
+    world.api.myAgentProxies = async () => {
+      listCalls += 1
+      return ok<AgentProxyPage>({ items: [], page: 1, size: 50, total: 0 })
+    }
+
+    const created = await store.createAgentProxy({ auctionId: 'auc-1', budgetLimit: 999_999 })
+
+    expect(created).toBe(false)
+    expect(listCalls).toBe(0)
+    expect(store.notice?.kind).toBe('error')
+  })
+
+  it('到达预算上限只在变化的那一次提醒（轮询重复拉不会重复喷）', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world)
+    let status: AgentProxySummary['status'] = 'BIDDING'
+    world.api.myAgentProxies = async () =>
+      ok<AgentProxyPage>({
+        items: [{ ...PROXY, status, budgetReached: status === 'BUDGET_REACHED' }],
+        page: 1,
+        size: 50,
+        total: 1,
+      })
+
+    await store.loadMyAgentProxies()
+    expect(store.notice).toBeNull()
+    store.clearNotice()
+
+    status = 'BUDGET_REACHED'
+    await store.loadMyAgentProxies()
+    expect(store.notice?.text).toContain('预算上限')
+
+    // 轮询会一直拉到同一个状态：提醒只属于“刚刚触顶”那一刻。
+    store.clearNotice()
+    await store.loadMyAgentProxies()
+    expect(store.notice).toBeNull()
+  })
+
+  it('结束时提醒输赢与成交价；撤销后刷新列表', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world)
+    let status: AgentProxySummary['status'] = 'BIDDING'
+    world.api.myAgentProxies = async () =>
+      ok<AgentProxyPage>({
+        items: [{ ...PROXY, status, won: true, finalPrice: 640 }],
+        page: 1,
+        size: 50,
+        total: 1,
+      })
+    await store.loadMyAgentProxies()
+    store.clearNotice()
+
+    status = 'FINISHED'
+    await store.loadMyAgentProxies()
+    expect(store.notice?.text).toContain('拍下')
+    expect(store.notice?.text).toContain('640')
+
+    let revoked: string | null = null
+    world.api.revokeAgentProxy = async (proxyId: string) => {
+      revoked = proxyId
+      return ok({ ...PROXY, status: 'REVOKED' as const })
+    }
+    status = 'REVOKED'
+    await store.revokeAgentProxy('agp_1')
+
+    expect(revoked).toBe('agp_1')
+    expect(store.notice?.text).toContain('不会再替你出价')
+    expect(store.myAgentProxies[0]?.status).toBe('REVOKED')
+  })
+
+  it('退出登录会清掉代理缓存（下一个账号不该看到上一个人的 AI）', async () => {
+    const world = makeWorld()
+    const store = await signedIn(world)
+    world.api.myAgentProxies = async () => ok<AgentProxyPage>({ items: [PROXY], page: 1, size: 50, total: 1 })
+    await store.loadMyAgentProxies()
+    expect(store.myAgentProxies).toHaveLength(1)
+
+    store.logout()
+
+    expect(store.myAgentProxies).toEqual([])
+    expect(store.allAgentProxies).toEqual([])
   })
 })

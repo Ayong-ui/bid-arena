@@ -1,5 +1,7 @@
 import type { ApiClient, ApiOk } from './client'
 import type {
+  AgentProxyPage,
+  AgentProxySummary,
   AgentToken,
   AgentTokenPage,
   AuctionPage,
@@ -11,6 +13,7 @@ import type {
   BidRequest,
   BidResult,
   CreateAuctionRequest,
+  CreateAgentProxyRequest,
   CreateMyAgentTokenRequest,
   LedgerPage,
   LoginRequest,
@@ -28,7 +31,8 @@ import type {
  *
  * 这里只封装 P4 需要的端点。`/agent/*`（独立端口 :8090、用 Agent Token 而不是 JWT）
  * **不在这里造占位实现**：那一组是给外部程序用的，前端加一层封装只会造出一个
- * “看起来能用”的假入口。面向用户的 Agent 授权走 `/me/agent-tokens`（自助，D-34）。
+ * “看起来能用”的假入口。面向用户的 Agent 授权走 `/me/agent-tokens`（自助，D-34），
+ * 而“不用写代码”的托管代理走 `/me/agent-proxies`（D-36）。
  */
 export interface AuctionApi {
   login(body: LoginRequest): Promise<ApiOk<AuthData>>
@@ -55,6 +59,13 @@ export interface AuctionApi {
   revokeMyAgentToken(tokenId: string): Promise<ApiOk<AgentToken>>
   /** 运营总览：全部已签发的凭证（ADMIN）。 */
   agentTokens(page?: number, size?: number): Promise<ApiOk<AgentTokenPage>>
+  /** 我托管的 AI 代理（服务端替这个用户跑，D-36）。 */
+  myAgentProxies(page?: number, size?: number): Promise<ApiOk<AgentProxyPage>>
+  /** 在一场草稿/进行中的拍卖上挂一个托管代理；归属由服务端钉死为当前用户。 */
+  createAgentProxy(body: CreateAgentProxyRequest): Promise<ApiOk<AgentProxySummary>>
+  revokeAgentProxy(proxyId: string): Promise<ApiOk<AgentProxySummary>>
+  /** 运营总览：全部托管代理（ADMIN）。 */
+  agentProxies(page?: number, size?: number): Promise<ApiOk<AgentProxyPage>>
 }
 
 export function createAuctionApi(client: ApiClient): AuctionApi {
@@ -87,5 +98,12 @@ export function createAuctionApi(client: ApiClient): AuctionApi {
       client.post<AgentToken>(`/me/agent-tokens/${encodeURIComponent(tokenId)}/revoke`),
     agentTokens: (page = 1, size = 50) =>
       client.get<AgentTokenPage>('/admin/agent-tokens', { query: { page, size } }),
+    myAgentProxies: (page = 1, size = 50) =>
+      client.get<AgentProxyPage>('/me/agent-proxies', { query: { page, size } }),
+    createAgentProxy: (body) => client.post<AgentProxySummary>('/me/agent-proxies', body),
+    revokeAgentProxy: (proxyId) =>
+      client.post<AgentProxySummary>(`/me/agent-proxies/${encodeURIComponent(proxyId)}/revoke`),
+    agentProxies: (page = 1, size = 50) =>
+      client.get<AgentProxyPage>('/admin/agent-proxies', { query: { page, size } }),
   }
 }

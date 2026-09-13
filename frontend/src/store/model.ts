@@ -14,6 +14,11 @@ export interface LiveAuction {
   /** 匿名标识：事件与展示统一用它（契约 §4 的可见性边界）。 */
   leaderAnon: string | null
   endsAt: string | null
+  /**
+   * 预告开拍时间（D-35）。为 null 就是“只等管理员手动开始”。
+   * 它只影响列表里那句“还有多久开拍”，不参与出价/延时/结算的任何判定。
+   */
+  startsAt: string | null
   extensionCount: number
   participantCount: number
   seq: number
@@ -45,6 +50,7 @@ export function toLive(snapshot: AuctionSnapshot, description: string, leaderAno
     currentPrice: snapshot.currentPrice,
     leaderAnon,
     endsAt: snapshot.endsAt ?? null,
+    startsAt: snapshot.startsAt ?? null,
     extensionCount: snapshot.extensionCount,
     participantCount: snapshot.participantCount,
     seq: snapshot.seq,
@@ -54,7 +60,9 @@ export function toLive(snapshot: AuctionSnapshot, description: string, leaderAno
 
 /** WS 快照 → 界面模型。事件里已经是匿名标识（契约 §4），不需要再转一次。 */
 export function liveFromPayload(payload: SnapshotPayload, description: string): LiveAuction {
-  return { ...payload, description }
+  // `startsAt` 在事件里是可选的（快照帧不一定带），这里补一个 null 让模型形状固定：
+  // 让下游去分辨“缺字段”和“确实是 null”只会逼出一堆无意义的判空。
+  return { ...payload, startsAt: payload.startsAt ?? null, description }
 }
 
 /**
@@ -73,6 +81,7 @@ export function toSnapshotPayload(snapshot: AuctionSnapshot, leaderAnon: string 
     currentPrice: snapshot.currentPrice,
     leaderAnon,
     endsAt: snapshot.endsAt ?? null,
+    startsAt: snapshot.startsAt ?? null,
     extensionCount: snapshot.extensionCount,
     participantCount: snapshot.participantCount,
     seq: snapshot.seq,

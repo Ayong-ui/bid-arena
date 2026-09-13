@@ -21,8 +21,8 @@
 由真实 MySQL 集成测试调用（`BidConcurrencyTest` 5 个、`BidServiceTest` 15 个、
 `SettlementConcurrencyTest` 5 个、`SettlementServiceTest` 13 个）。
 
-P2 追加 31 个用例；P3 再追加 53 个；架构守卫再追加 9 个；P5 再追加 62 个；P6 再追加 19 个
-（尾段博弈时间与成交主体 9 个，Agent 授权自助化 10 个），全量共 **206 个**，运行方式见 [`README.md` 一键验证](../README.md)：
+P2 追加 31 个用例；P3 再追加 53 个；架构守卫再追加 9 个；P5 再追加 62 个；P6 再追加 38 个
+（尾段博弈时间与成交主体 9 个、Agent 授权自助化 10 个、预告开拍与托管代理 19 个），全量共 **225 个**，运行方式见 [`README.md` 一键验证](../README.md)：
 
 | 测试类 | 数量 | 覆盖 |
 |---|---:|---|
@@ -37,6 +37,7 @@ P2 追加 31 个用例；P3 再追加 53 个；架构守卫再追加 9 个；P5 
 | `ArchitectureTest` | 9 | 架构守卫（不连库、秒级）：`domain` 只依赖 JDK + 共享内核（含禁 `java.sql`/`org.noear`/Jackson/slf4j 与 JDBC 助手）、`application` 不依赖入站适配器/装配/HTTP 封套、出站 `persistence` 不反向依赖、入站适配器不依赖 `bootstrap`、共享内核不依赖上下文、跨上下文 `domain` 与 `adapter` 不互引、上下文与层均无环 |
 | `AgentApiIntegrationTest` | 29 | P5：真库 + 真双端口（8080 与 8090）——签发只回一次明文且库里只有摘要、范围/权限/过期/吊销四类 401/403、限流 429、端口隔离（8090 上非 `/agent/**` 一律 404）、Agent 出价自动加入（`AGENT`）、与真人共用幂等重放、错误码全路径；P6 追加尾段博弈时间内 Agent 出价 403（`HUMAN_ONLY_PERIOD`）且真人仍可出价；D-34 追加自助授权五例：`/me/agent-tokens` 需要登录、签发出来的 Token 归属调用者、他人 Token 吊销 404、管理员总览不含明文且要求 ADMIN、请求体无 `agentUserId` 因而不能代签 |
 | `AgentTokenServiceTest` | 26 | P5：认证（摘要查找、过期、吊销、`trim`）、签发（范围/权限校验、限流上限、名称与过期时间校验）、授权（先权限后范围、403 带 `granted`）、吊销幂等与 404；D-34 追加自助五例：`issueForSelf` 忽略越权归属、非本人吊销抛 404、列表按 owner 过滤且 `status` 与 `activeAt` 同口径、摘要无明文字段、管理员列表覆盖全部 owner |
+| `AgentProxyIntegrationTest` | 19 | D-35/D-36：真库 + 真事务下的托管代理与预告开拍——草稿上创建（201/`PENDING`/下一手金额）、重复创建 409（带 `data.proxyId`）、预算超可用余额 409 且什么都没写库、非法/缺失/负数预算 400、未知场次 404、已结束场次 409、按最小加价跟价（领先者为 A、`bids.actor_type=AGENT`）、自己领先时不重复抬价也不花钱、预算触顶只记一次（`budgetReachedAt` 跳轮不变、之后不再出价）、博弈时间内 0 次动作且价格与领先者不变（真人仍可出价）、尾段过后恢复正常出价、结束时收尾（`FINISHED`/`won`/`finalPrice`）、`BUDGET_REACHED` 的代理同样能收尾、撤销后不再出价、重建复用同一行（同一 `proxyId`、`bidCount` 归零）、他人的代理撤销 404、`/admin/agent-proxies` 要求 ADMIN 且带 `ownerUserId`、预告开拍后自动进场、手动 `start` 后再扫描为 0 |
 | `AgentTokenTest` | 6 | P5：领域规则不可旁路——吊销/过期/范围/权限四项布尔判定与边界（到期时刻算过期、空范围不覆盖任何拍卖） |
 | `AgentScopesTest` | 4 | P5：权限字符串与枚举的解析/去重/拒绝未知值 |
 | `AgentRateLimiterTest` | 6 | P5：固定窗口上限、被拒请求不占配额、窗口滑过恢复、每 Token 独立计数 |
@@ -78,14 +79,14 @@ HTTP 集成测试与 WS 集成测试**共用同一个自启动的服务实例**�
 
 ### 前端（P4）
 
-前端不连库，单测用假 HTTP、假 socket、内存存储，覆盖“与边界打交道的那一层”：契约生成类型、HTTP 客户端、实时订阅状态机、Pinia store。共 **63 个用例**（`cd frontend && npm test`），类型检查与构建通过（`npm run typecheck` / `npm run build`）。
+前端不连库，单测用假 HTTP、假 socket、内存存储，覆盖“与边界打交道的那一层”：契约生成类型、HTTP 客户端、实时订阅状态机、Pinia store。共 **69 个用例**（`cd frontend && npm test`），类型检查与构建通过（`npm run typecheck` / `npm run build`）。
 
 | 测试文件 | 数量 | 覆盖 |
 |---|---:|---|
 | `src/api/client.test.ts` | 12 | 统一封套：`code` 为权威（不是 HTTP 状态）、`IDEMPOTENCY_REPLAY` 视为成功、非契约响应拒绝、鉴权头、出价幂等键头、超时中止、401 触发会话清理、`BID_TOO_LOW` 最低加价提示 |
 | `src/api/contract.test.ts` | 4 | 生成类型与 `openapi.yaml` 的关键字段/枚举对齐（D-26） |
 | `src/realtime/feed.test.ts` | 14 | `(auctionId, seq, type)` 去重、缺口拉 HTTP 快照并丢弃旧事件/补放新事件、无基线先缓存、快照持续落后时有限重试、重连换新票并重置基线、退避封顶、快照失败保留连接、握手原因码透出、坏帧忽略、`stop()` 后不再重连 |
-| `src/store/arena.test.ts` | 25 | 登录与 401 清会话、实时事件驱动价格/领先者/延时、倒计时用服务端时间校准、结算 404 不是错误、出价取服务端价格、重试复用幂等键/改金额换新键、`NOT_JOINED` 自动加入、`BID_TOO_LOW` 不复用键、运营台创建/开始/按场次查流水（含主体标识）、尾段博弈时间提示不拦真人、自助 AI 授权（列表无明文、请求不带 `agentUserId`、吊销后收走明文、`logout()` 清空） |
+| `src/store/arena.test.ts` | 31 | 登录与 401 清会话、实时事件驱动价格/领先者/延时、倒计时用服务端时间校准、结算 404 不是错误、出价取服务端价格、重试复用幂等键/改金额换新键、`NOT_JOINED` 自动加入、`BID_TOO_LOW` 不复用键、运营台创建/开始/按场次查流水（含主体标识）、尾段博弈时间提示不拦真人、自助 AI 授权（列表无明文、请求不带 `agentUserId`、吊销后收走明文、`logout()` 清空）、托管 AI 代理（候选场次只含草稿/进行中、创建只发 `{auctionId, budgetLimit}`、失败不刷新列表、触顶提醒只出现一次、结束时提醒输赢与成交价、撤销后刷新） |
 | `src/anonymous.test.ts` | 8 | 匿名标识确定性、与服务端固定向量一致（跨端契约） |
 
 真后端联调（先启动后端，再 `BID_ARENA_LIVE=1 npm run test:live`）**3/3 绿**：
@@ -175,6 +176,8 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 | A8 | 规则 8 通知边界 | 广播失败不回滚、快照可重同步 | `auction/domain/AuctionEventPublisher`（端口）+ `auction/adapter/WsEventBroadcaster` + 各命令服务的事务后发布；`WsTicketService` | `EventPublishingTest.broadcastFailureDoesNotRollbackCommittedBid`（发布器每次都抛异常，断言出价、领先者、冻结、流水四样都落库）、`WsIntegrationTest.reconnectSnapshotCatchesUp`、`handshakeSendsSnapshotThenConnectionState`（权威快照可重取） | ✅ |
 | A9 | 需求补充（有意偏离规则 6） | 尾段“博弈时间”（最后 20 秒）强制拒绝一切 Agent 出价，真人不受限；进入窗口即锁到结算 | `BidService.ensureBidderAllowedInFinalWindow`（事务内、数据库时间 + 拍卖行锁）+ `ErrorCode.HUMAN_ONLY_PERIOD` + 常量/环境变量 `AUCTION_FINAL_GAME_WINDOW_SECONDS`；窗口经 `AuctionSnapshot.finalGameWindowSeconds`（HTTP + WS）下发，前端仅作提示 | `BidServiceTest`（`agentBidInsideFinalGameWindowIsRejected`、`agentBidOutsideFinalGameWindowIsAccepted`、`humanBidInsideFinalGameWindowIsAccepted`、`agentStaysLockedOutAfterHumanExtension`）、`AgentApiIntegrationTest.agentBidInFinalGameWindowIsRejected`、`HttpApiIntegrationTest` / `WsIntegrationTest` 断言快照带窗口字段、前端 `arena.test.ts`（`inFinalGameWindow` 为真且真人 `canBid` 仍为真）；决策见 D-32 | ✅ |
 | A10 | 需求补充 | 成交主体可追溯（AI/人）且不泄露隐私 | `bids.actor_type`（V5）+ `settlements.winner_type` 快照 + `ledger_entries.actor_type`；`shared.ActorType`；`result.winnerType` 仅赢家/管理员可见；`GET /admin/auctions/{id}/ledger` | `SettlementServiceTest.settlementSnapshotsWinnerActorType` / `settlementRecordsAgentWinner`、`HttpApiIntegrationTest.winnerTypeVisibleOnlyToWinnerAndAdmin` / `adminAuctionLedgerRequiresAdminAndShowsActorType`、前端 `arena.test.ts`（管理员按场次流水保留每条 `actorType`）；决策见 D-33 | ✅ |
+| A11 | 需求补充 | 未开拍的拍卖要有预告机制，时间到自动开启（不再依赖运营在线） | `auctions.starts_at`（V6）+ `AuctionStartScheduler` + `AuctionCommandService.startDueScheduled`（复用同一个 `start`）+ 快照下发 `startsAt` | `AgentProxyIntegrationTest`（未预告不自动开拍、到点开拍后代理下一轮即出价、非法 `startsAt` 400、手动 `start` 后扫描为 0）；前端大厅/运营台显示“预告 mm:ss 后开拍”；决策见 D-35 | ✅ |
+| A12 | 需求补充 | “让 AI 替我出价”必须是普通用户可用（选场次 + 设定预算上限，托管执行） | `agent_proxies`（V6）+ `agentaccess.application.AgentProxyService`（单一策略：不领先就出 `currentPrice + minIncrement`，硬预算上限，无 D-32 例外）+ `AgentProxyScheduler`；接口 `GET/POST /me/agent-proxies`、`POST /me/agent-proxies/{proxyId}/revoke`、`GET /admin/agent-proxies`；复用 `BidService.placeBid(..., AGENT)`，主体标识由 D-33 自动正确 | `AgentProxyIntegrationTest` **19/19**（草稿创建 / 重复 409 / 超余额 409 不写库 / 跟价且 `actor_type=AGENT` / 领先不抬价 / 触顶只记一次 / 博弈时间内 0 动作且真人仍可出价 / 尾段后恢复 / 收尾 / 撤销 / 重建复用同行 / 他人撤销 404 / 管理员总览要 ADMIN）；前端 `store/arena.test.ts` 新增 6 例；决策见 D-36 | ✅ |
 
 ## B. 数据模型（原文 第 2~3 页）
 
@@ -203,16 +206,16 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| D1 | Agent Token | 字段齐全、只存摘要、明文仅一次、最小权限、独立凭据 | `db/migration/V4__agent_access.sql` + `agentaccess/domain/AgentToken`、`agentaccess/application/AgentTokenService`、`HttpAgentTokenController`（管理员签发/吊销 + 用户自助 `/me/agent-tokens`，D-34，归属由服务层钉死）、`AgentAuthFilter` + `AgentCaller` | `AgentTokenTest`/`AgentTokenServiceTest`/`AgentApiIntegrationTest`（共 61 个用例）；变异 G1~G7/G10/G12/G13 被杀；端到端 `tools/agent_sim.py`（**44/44**）；自助授权前端见 `store/arena.test.ts` 四例 | ✅ |
+| D1 | Agent Token | 字段齐全、只存摘要、明文仅一次、最小权限、独立凭据 | `db/migration/V4__agent_access.sql` + `agentaccess/domain/AgentToken`、`agentaccess/application/AgentTokenService`、`HttpAgentTokenController`（管理员签发/吊销 + 用户自助 `/me/agent-tokens`，D-34，归属由服务层钉死）、`AgentAuthFilter` + `AgentCaller`；面向普通用户的托管代理见 `agent_proxies` + `AgentProxyService`（D-36） | `AgentTokenTest`/`AgentTokenServiceTest`/`AgentApiIntegrationTest`（共 61 个用例）；变异 G1~G7/G10/G12/G13 被杀；端到端 `tools/agent_sim.py`（**44/44**）；自助授权前端见 `store/arena.test.ts` 四例，托管代理见 `AgentProxyIntegrationTest` 19 例 + 前端六例 | ✅ |
 
 ## E. 模拟脚本与自动化测试（原文 第 3~4 页）
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
 | E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `tools/agent_sim.py`（Agent 侧端到端）、`tools/auction_sim.py`（全链路） | `tools/agent_sim.py` **44/44**（真实双端口，开发库）；`tools/auction_sim.py` **52/52**（八个阶段，见上文“全链路模拟（E1）”）；真正“20 个不同 `user_id`”的并发由 `BidConcurrencyTest` 覆盖 | ✅ |
-| E2 | 自动化测试 | 覆盖原文列出的全部测试点 | 后端 `src/test`；前端 `frontend/src` | 后端 **206/206** 绿（`mvn clean verify`）；前端 **63 单测** + **3 真后端联调** + **16 变异 KILLED**；Agent 侧 71 个用例 + 14/14 变异 KILLED（P5/P6） | ✅ |
-| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：197 个用例跑在真实 MySQL 8.4 上（HTTP/WS/Agent 集成测试共用同一个自启动服务实例），另 9 个为纯静态架构守卫 | ✅ |
-| E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend/src/store/arena.test.ts`（Pinia store，25 个用例）+ `frontend/src/realtime/feed.test.ts`（14）+ `frontend/src/api/client.test.ts`（12）等 | 见上文「前端（P4）」：63 单测 + 3 真后端联调 + 16/16 变异；`npm run typecheck` 与 `vite build` 通过 | ✅ |
+| E2 | 自动化测试 | 覆盖原文列出的全部测试点 | 后端 `src/test`；前端 `frontend/src` | 后端 **225/225** 绿（`mvn clean verify`）；前端 **69 单测** + **3 真后端联调** + **16 变异 KILLED**；Agent 侧 71 个用例 + 14/14 变异 KILLED（P5/P6） | ✅ |
+| E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：216 个用例跑在真实 MySQL 8.4 上（HTTP/WS/Agent/托管代理集成测试共用同一个自启动服务实例），另 9 个为纯静态架构守卫 | ✅ |
+| E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend/src/store/arena.test.ts`（Pinia store，31 个用例）+ `frontend/src/realtime/feed.test.ts`（14）+ `frontend/src/api/client.test.ts`（12）等 | 见上文「前端（P4）」：69 单测 + 3 真后端联调 + 16/16 变异；`npm run typecheck` 与 `vite build` 通过 | ✅ |
 
 ## F. 快速启动与初始数据（原文 第 4 页）
 
@@ -228,10 +231,10 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
 | G1 | `AI_USAGE.md` | 分工、本人决定、未采用方案、真实错误、无法独立解释的代码 | `AI_USAGE.md` | 文档评审 | 🟨 骨架就位（结构 + 素材索引）；`【本人填写】` 段落待作者补齐 |
-| G2 | `DESIGN.md` | 边界、事务、结算、并发、恢复、丢消息策略 | `DESIGN.md` | 文档评审 | ⬜ |
-| G3 | `DECISIONS.md` | ≥3 项决策含代价与验证 | `DECISIONS.md` | 文档评审 | 🟨 已写 D-1~D-28（含候选/代价）；D-9 的验证结果待 P5 |
-| G4 | `DEBUG_LOG.md` | ≥2 个真实问题，禁止编造 | `DEBUG_LOG.md` | 与提交/日志对应 | ✅ 已写 21 条（DBG-1~DBG-21） |
-| G5 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 操作 Agent | `AGENT_TOOL_SPEC.md` | 文档评审 | 🟨 骨架就位（契约一致）；实现属 P5，尚不可用 |
+| G2 | `DESIGN.md` | 边界、事务、结算、并发、恢复、丢消息策略 | `DESIGN.md` | 文档评审 | ✅ 已同步 V1~V6、四个上下文的边界与依赖规则、出价/结算事务、恢复与丢消息策略、验证重点 |
+| G3 | `DECISIONS.md` | ≥3 项决策含代价与验证 | `DECISIONS.md` | 文档评审 | ✅ 已写 D-1~D-36（含背景/候选/选择/代价/验证结果），每条均有落地验证证据 |
+| G4 | `DEBUG_LOG.md` | ≥2 个真实问题，禁止编造 | `DEBUG_LOG.md` | 与提交/日志对应 | ✅ 已写 30 条（DBG-1~DBG-30） |
+| G5 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 操作 Agent | `AGENT_TOOL_SPEC.md` | 文档评审 | ✅ 已从“骨架”更新为 P5 已实现并验证：操作步骤、提示词模板、失败边界、验收清单已勾选并登记证据（`tools/agent_sim.py` 44/44）；另补充 D-34 自助 Token 与 D-36 托管代理的区别 |
 | G6 | Git 历史 | 有意义、非机械拆分、说明行为变化 | 提交历史 | `git log` | ⬜ |
 | G7 | 录屏 | 3~5 分钟覆盖关键流程 | 交付物 | 人工核验 | ⬜ |
 

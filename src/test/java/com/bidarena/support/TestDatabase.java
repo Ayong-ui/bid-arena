@@ -39,6 +39,7 @@ public final class TestDatabase {
             "auctions",
             "agent_token_auctions",
             "agent_tokens",
+            "agent_proxies",
             "wallets",
             "users");
 
