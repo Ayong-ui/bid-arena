@@ -52,11 +52,13 @@ mvn clean verify
 
 | job | 跑什么 | 失败意味着 |
 |---|---|---|
-| `backend` | 服务容器提供一次性 MySQL 8.4，`mvn clean verify`（**225/225**） | 领域/集成/架构有回归，或测试库前提被破坏 |
+| `backend` | 服务容器提供一次性 MySQL 8.4，`mvn clean verify`（**225/225**），并断言 surefire 总用例数 ≥ 225 | 领域/集成/架构有回归，或者用例数被过滤器悄悄减少 |
 | `frontend` | `npm ci` → `typecheck` → `npm test`（**73**）→ `VITE_WS_SAME_ORIGIN=1 npm run build` | 前端类型、单测或生产构建坏了 |
 | `e2e` | 真起后端（8080/8090/18080）跑 `tools/agent_sim.py`（**44/44**），复位演示数据后再跑 `tools/auction_sim.py`（**52/52**） | 端到端行为与 `docs/openapi.yaml` 描述不一致 |
 | `config` | `py_compile` 全部工具脚本、`docker compose config -q`、用 `nginx -t` 校验 `frontend/nginx.conf` | 部署编排或工具脚本语法坏了 |
-| `images` | `docker compose build`（后端 Maven+JRE、前端 Node+Nginx 两个镜像） | `Dockerfile` 构建不出来 |
+| `images` | `docker compose build` 两个镜像 → 断言镜像里有产物（`app.jar`/`index.html`）→ `docker compose up -d` 起整栈，验 `:8080` 健康端点、`:8088` 的静态页与 `/api` 反代 | `Dockerfile` 构建不出来，或者 D-37 的单 origin 编排真的跑不起来 |
+
+首次运行（[run #1](https://github.com/Ayong-ui/bid-arena/actions/runs/34802156957)）五个 job 全绿，整轮约 3.5 分钟。
 
 CI 里出现的库口令都是**一次性值**，只活在该次 run 的服务容器里，与任何真实环境无关；仓库里没有任何真实密钥。压测（`tools/stress_test.py`）与变异检查（`*_mutation_check.py`）**故意不进 CI**：前者在共享 runner 上拿不到可比的 QPS 数字，后者要反复改文件跑 Maven，留在提交前自检里做。
 
@@ -368,11 +370,12 @@ docker exec -i bid-arena-mysql-1 mysql --default-character-set=utf8mb4 \
   并发清场与吞吐另由 `tools/stress_test.py` 覆盖（博弈时间 `-c 100` 全拒、吞吐约 410 QPS 无 5xx）。
   唯一不能只靠 HTTP 复现的是“20 个**不同用户**并发”：公开 API 没有注册端点、种子只有 3 个演示账号，
   这部分由真实库上的 `BidConcurrencyTest` 覆盖（详见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md) E1）。
-- **Compose 的镜像已由 CI 构建，但还没有整栈拉起来跑过**。`backend`/`frontend` 两个 `Dockerfile` 与
-  `docker-compose.yml` 已就位，`docker compose config` 与 `frontend/nginx.conf` 的 `nginx -t` 均已校验，
-  CI 的 `images` job 每次提交都真的执行 `docker compose build`。本机 Docker daemon 在远程 VM 上且连不上
-  Docker Hub，本地镜像源也没有 node/maven/temurin 基础镜像，因此无法就地构建（已用 `ARG` 暴露基础镜像
-  供受限环境替换，D-37）；按仓库约定（不重建评测机上的容器），仍未实际 `docker compose up` 整栈验证。
+- **整栈（compose + 反代）已由 CI 每次拉起来验一遍，但没在浏览器里真点过**。`backend`/`frontend` 两个
+  `Dockerfile` 与 `docker-compose.yml` 每次提交都会 `docker compose build` + `docker compose up -d`，
+  并断言两个镜像里真有产物、`:8080` 健康端点、`:8088` 的静态页与 `/api` 反代都返回 200——D-37 的单 origin
+  编排第一次真的跑起来是在 CI 上。仍未做的：浏览器里的人工核对，以及在评测机上 `docker compose up`
+  （本机 Docker daemon 在远程 VM 且连不上 Docker Hub，本地镜像源也没有 node/maven/temurin 基础镜像，
+  已用 `ARG` 暴露基础镜像供受限环境替换；按仓库约定不在评测机上重建容器）。
 - **[AI_USAGE.md](AI_USAGE.md) 已填写**：工具与模型（`pi` + `deepseek-v4-flash`）、各模块人机分工与口径、
   四项本人设计决定、六项未采用方案、四项真实错误，以及七类目前仍不能独立解释/修改的代码；
   文末留三项「作者核对清单」（模型列表完整性、比例口径、决定归属）。
