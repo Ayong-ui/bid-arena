@@ -876,10 +876,10 @@ function pickProxyAuction(): void {
             <section class="table-panel">
               <div class="panel-heading"><h3>怎么把它交给你的程序</h3></div>
               <ol class="agent-steps">
-                <li>把上面那串 Token 存进程序的环境变量 <code>AUCTION_AGENT_TOKEN</code>，不要写进代码仓库（不想配也行，见第 4 条）。</li>
+                <li>把上面那串 Token 存进程序的环境变量 <code>AUCTION_AGENT_TOKEN</code>，不要写进代码仓库。</li>
                 <li>你的程序访问 <b>Agent 专用地址</b> <code>:8090</code>，带上 <code>Authorization: Bearer &lt;Token&gt;</code>，而不是你的登录令牌。</li>
                 <li>未带凭证 401、越权 403、超过频率 429；被吊销后立即失效。</li>
-                <li>想照着跑一遍：<code>python tools/agent_sim.py --agent-only --auction-id &lt;场次 ID&gt;</code>；环境变量没配也没关系，它会提示你粘贴（不回显、不进命令历史）。</li>
+                <li>想照着跑一遍：<code>python tools/agent_sim.py --agent-only --auction-id &lt;场次 ID&gt;</code>（该脚本只读环境变量，不会让你在终端粘贴 Token）。</li>
               </ol>
               <p class="hint">
                 隐私边界：你只能看到自己的授权；哪一笔成交是 AI、哪一笔是真人，只在自己的

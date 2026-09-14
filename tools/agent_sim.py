@@ -27,7 +27,7 @@
 
 只带一枚 Token 参与（评审把自己的 Token 交给 Agent 的路径，见 AGENT_TOOL_SPEC.md）：
     python tools/agent_sim.py --agent-only --auction-id auc_xxx [--bid]
-    # Token 来源：环境变量 AUCTION_AGENT_TOKEN → 没有则提示交互粘贴（不回显、不进 shell 历史）。
+    # Token 来源：环境变量 AUCTION_AGENT_TOKEN；没设就报错退 2（不做交互输入）。
 
 退出码：0 = 全部检查通过；1 = 有检查失败；2 = 前置条件不满足（缺数据，不是缺陷）。
 """
@@ -195,21 +195,21 @@ def agent_only_flow(args):
       - 因此它复现的是**权限与可见性**（这枚 Token 能读/能出价到什么程度），
         而不是业务正确性（后者由全流程模式与后端集成测试覆盖）。
 
-    Token 来源：AUCTION_AGENT_TOKEN 环境变量 → 没有且可交互则提示粘贴（`--no-prompt` 可关）。
+    Token 来源：环境变量 AUCTION_AGENT_TOKEN；没设就报错退 2（不做交互输入）。
     明文只停在进程内存里：本函数与 `resolve_agent_token` 都不会把它打出来。
     """
     report = Reporter()
 
-    token = resolve_agent_token(prompt=not args.no_prompt)
+    token = resolve_agent_token()
     if not token:
-        print("!! 没拿到 Agent Token。任选一种：\n"
-              "     1) 设好环境变量 %s=<明文 Token> 后重跑；\n"
-              "     2) 直接重跑本命令，按提示粘贴（不回显、不进 shell 历史）。\n"
+        print("!! 没拿到 Agent Token：请先设好环境变量 %s=<明文 Token> 再重跑。\n"
+              "   Windows PowerShell: $env:%s=\"<明文 Token>\"\n"
+              "   macOS / Linux / Git Bash: export %s=\"<明文 Token>\"\n"
               "   明文只在创建响应里出现一次；丢了就在前端「我的 AI 代理」页重新签发。"
-              % AGENT_TOKEN_ENV)
+              % (AGENT_TOKEN_ENV, AGENT_TOKEN_ENV, AGENT_TOKEN_ENV))
         return 2
 
-    auction_id = resolve_auction_id(args.auction_id, prompt=not args.no_prompt)
+    auction_id = resolve_auction_id(args.auction_id)
     if not auction_id:
         print("!! 还需要 auctionId：加 `--auction-id <id>`，或设置环境变量 %s。" % AUCTION_ID_ENV)
         return 2
@@ -265,14 +265,12 @@ def main():
     parser.add_argument("--skip-boundary", action="store_true",
                         help="跳过越权/过期/吊销/限流等边界检查（只跑一遍正向流程）")
     parser.add_argument("--agent-only", action="store_true",
-                        help="只扮演竞拍 Agent：用你自己的 Token（AUCTION_AGENT_TOKEN 或交互粘贴）"
+                        help="只扮演竞拍 Agent：用你自己的 Token（环境变量 AUCTION_AGENT_TOKEN）"
                              "对一场已存在的拍卖读状态/出价/读结果，不建场、不签发 Token")
     parser.add_argument("--auction-id", default=None,
                         help="配合 --agent-only：要参与的拍卖 ID；也可用环境变量 AUCTION_ID")
     parser.add_argument("--bid", action="store_true",
                         help="配合 --agent-only：额外尝试出一次价（当前价 + 最小加价）")
-    parser.add_argument("--no-prompt", action="store_true",
-                        help="禁止交互输入（CI 用）；拿不到 Token 就直接退出")
     args = parser.parse_args()
 
     args.agent_base = resolve_agent_base(args.agent_base)

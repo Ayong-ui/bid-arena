@@ -799,26 +799,24 @@
 
 **验证结果**：✅ `docker compose config` 通过（服务 `mysql/backend/frontend`，frontend 发布 `8088:80`，构建参数正确渲染）；`frontend/nginx.conf` 经本地 Nginx 镜像 `nginx -t` 语法与配置检查通过；前端 `npm run typecheck` 通过；`npm test` **73 绿**（新增 `socket.test.ts` 4 例：直连用 `wsPort`、同源用页面 host、HTTPS 升 `wss`、`auctionId` 编码）；`VITE_WS_SAME_ORIGIN=1 npm run build` 成功，产物中 `VITE_WS_SAME_ORIGIN` 已被 Vite 内联（不再残留字面量）。⏳ 未在本机 VM 真正构建镜像：Docker daemon 在远程 VM 上且**连不上 Docker Hub**，本地镜像源也没有 node/maven/temurin，故仍未 `docker compose up`（延续 §8 的 C-6）。
 
-## D-38　竞拍 Agent 凭据（API key）的来源顺序：环境变量优先，缺了交互输入
+## D-38　竞拍 Agent 凭据（API key）只从环境变量读：缺了就报错，不做交互输入
 
-**背景**：原文要求评审“通过环境变量 `AUCTION_AGENT_TOKEN`”把 Token 交给竞拍 Agent，并“不得写入命令历史或仓库”。但环境变量不总是设好了：评审手上已有 Token、直接跑 `tools/agent_sim.py` 时，若脚本只认环境变量，人就只能先 `export` / `$env:` 进 shell——那恰恰是原文想避免的（容易进命令历史与录屏）。同时“脚本自己签发 Token”的全流程模式必须继续可用，不能让“没配环境变量”变成新的启动门槛。
+**背景**：原文要求评审“通过环境变量 `AUCTION_AGENT_TOKEN`”把 Token 交给竞拍 Agent，并“不得写入命令历史或仓库”。实现时先加过一级“交互粘贴”（`getpass`）兜底，考虑是“评审手上有 Token、直接跑脚本时不必先 `export`”。但这级兜底与原文初衷相抵：Token 是**长效凭据**，让它经键盘/剪贴板进 shell，反而更容易落进命令历史、录屏与终端回滚缓冲；而“没配”本来就是一分钟能改好的配置问题，用交互兜底等于把配置错误藏成一段隐式流程，还给定重定向/CI 留了“卡在等输入”的隐患。故**去掉交互，只保留变量读取**（本轮修正）。
 
 | 决策点 | 方案 | 说明 | 代价 |
 |---|---|---|---|
-| 来源顺序 | 只读环境变量 | 实现最简 | 没配上就没有入口，用户只能改 shell / 脚本 |
-| 来源顺序 | **显式参数 → `AUCTION_AGENT_TOKEN` → 交互粘贴**（当前实现） | 三种场景都能用：脚本内部、CI、人手 | 多一个模块 `tools/agent_credentials.py` |
-| 输入方式 | 加 `--token <明文>` 参数 | 直观 | 明文进 shell 历史与进程列表，正是原文禁止的 |
-| 输入方式 | **`getpass` 交互粘贴**（当前实现） | 不回显、不进历史 | 需要一个终端；非终端时不能问 |
+| 来源顺序 | 只信任命令行参数 | 完全显式 | 明文进 shell 历史与进程列表 |
+| 来源顺序 | **显式参数 → 环境变量 `AUCTION_AGENT_TOKEN`**（当前实现） | 一句话能说清；脚本内部与 CI 走同一套 | 没配上就停下，用户必须先配好变量 |
+| 兜底 | `getpass` 交互粘贴 | 手上已有 Token 时少一步 `export` | 长效凭据经终端输入更易落进历史/录屏/回滚缓冲；非终端下行为不一致，CI 可能卡在等输入 |
+| 兜底 | **没有兜底：缺了就直接报错退 2**（当前实现） | 配置问题当场暴露，错误不藏在交互里 | 必须先在 shell / CI 里设好变量 |
 | 无凭据时 | 抛异常 / 退 1 | 一眼看出错了 | 把“没配置”报成“检查失败”，与 CI 里的真失败混淆 |
-| 无凭据时 | **返回 None：缺 Token 提示两种配置方式并退 2；缺 auctionId 单独提示**（当前实现） | 与仓库既有退出码约定一致（2 = 前置不满足） | 调用方要各自决定回退（全流程模式回退到自己签发） |
-| 非交互环境 | 也尝试读 stdin | 管道里能喂 Token | `getpass` 在非终端下行为不一，CI 可能卡住 |
-| 非交互环境 | **`stdin` 非终端或 `--no-prompt` 时不问**（当前实现） | CI 不会卡在等输入 | 非交互时无法粘贴，只能用环境变量 |
+| 无凭据时 | **返回 None，由调用方打印设法并退 2**（当前实现） | 与仓库既有退出码约定一致（2 = 前置不满足） | 调用方要各自组织提示文案 |
 
-**最终选择**：新增 `tools/agent_credentials.py`（`resolve_agent_token` / `resolve_auction_id` / `resolve_agent_base`）；`tools/agent_sim.py` 增加 `--agent-only --auction-id <id> [--bid] [--no-prompt]`，只用调用方给的凭据打 `:8090` 读状态/出价/读结果（不建场、不签发），让评审能直接“把自己的 Token 交给 Agent”；不带 `--agent-only` 的全流程模式保持自己签发，并在检测到该环境变量时提示两者区别。
+**最终选择**：`tools/agent_credentials.py` 只做“显式参数 → 环境变量”（`resolve_agent_token` / `resolve_auction_id` / `resolve_agent_base`），**不 import `getpass`、没有任何交互路径**；`tools/agent_sim.py` 的 `--agent-only --auction-id <id> [--bid]` 缺 Token 或缺 auctionId 时都打印设法并退 2（带 Windows PowerShell 与 Bash 两种写法）；前端「接入指引」与 `README.md` 同步到 `AUCTION_AGENT_TOKEN`，不再承诺任何“提示粘贴”。不带 `--agent-only` 的全流程模式仍自己签发，不受影响。
 
-**代价**：多一个模块与几个新参数；脚本要区分凭据来源（自己签发的 Token 与被提供的 Token 不能混用，故用独立的 `--agent-only` 分支，而不是把外部 Token 塞进原流程）。
+**代价**：评审手上已有 Token 时，必须先自己设好环境变量才能跑（设法已经印在报错里）；`--agent-only` 因而完全无状态——但这正是“凭据不进命令历史”的代价。
 
-**验证结果**：✅ `python -m py_compile` 通过；凭据解析 **8 条断言**通过（显式 > 环境、空白视为未设置、非终端不提问、`--no-prompt` 不提问、直接回车不产生空凭据、`AGENT_API_BASE`/`AUCTION_ID` 覆盖与默认值）；`--agent-only` 在无 Token（非交互）时打印两种配置方式并 **退出码 2**，在后端未启动时提示“先启动 :8080/:8090”并 **退出码 2**（不再是裸 traceback）；`--help` 正确渲染新参数。⏳ 有后端时的真实双端口实跑待 VM 开机后补（同 §8 C-6）。
+**验证结果**：✅ `python -m py_compile` 通过；凭据解析 **13 条断言**通过（显式 > 环境、空白/空串视为未设置、未设置返回 None、模块内已不存在 `_interactive` 与 `getpass`、`AUCTION_ID`/`AGENT_API_BASE` 的覆盖与默认值）；`--agent-only` 无 Token → 打印 PowerShell/Bash 两种设法并 **退出码 2**，有 Token 但无 auctionId → 提示后 **退出码 2**，后端未起 → 提示启动端口并 **退出码 2**（都不是裸 traceback）；`--help` 正确渲染。⏳ 有后端时的真实双端口实跑待 VM 开机后补（同 §8 C-6）。
 
 ---
 
@@ -880,9 +878,10 @@
 | 为代理重开一条私有 WebSocket 提醒 | 给一个低频、单用户的事件新增推送契约与可见性规则，收益远小于成本 | 前端轮询读模型并对比前后状态，只提醒一次（D-36） |
 | 让“开拍”始终由运营手动触发 | 运营不在线时用户与托管代理都只能空等，“到点自动进场”无从谈起 | 预告 `starts_at` + 到点扫描开拍（D-35） |
 | 为自动开拍再写一套状态流转 | 开拍规则被复制第二份，手动与自动两条路径迟早分叉 | 扫描器逐条调用已有的 `start(...)`（D-35） |
-| 脚本只读 `AUCTION_AGENT_TOKEN`、没配就没入口 | 评审手上已有 Token 时只能先塞进 shell，明文容易进命令历史与录屏 | 环境变量优先、缺了交互粘贴（D-38） |
-| 给脚本加 `--token <明文>` 参数 | 明文会进 shell 历史与进程列表，正是原文禁止的 | 用 `getpass` 交互输入（D-38） |
-| 非交互（CI）也尝试读 stdin 取 Token | `getpass` 在非终端下行为不一致，CI 可能卡在等输入 | stdin 非终端或 `--no-prompt` 时不提问、退回环境变量（D-38） |
+| 脚本只读 `AUCTION_AGENT_TOKEN`、没配就没入口 | （曾以为这是缺点）实测缺变量时脚本会打印两种设法并退 2，配置问题当场暴露 | 就这样（D-38） |
+| 给脚本加 `--token <明文>` 参数 | 明文会进 shell 历史与进程列表，正是原文禁止的 | 只读环境变量（D-38） |
+| 没配环境变量时用 `getpass` 交互粘贴兜底 | 长效凭据经键盘/剪贴板进 shell 更容易落进命令历史与录屏，非终端下行为还不一致（CI 可能卡在等输入） | 缺了就报错退 2、并把设法印在报错里（D-38） |
+| 把“没配置”当成检查失败退 1 | 与 CI 里的真失败混淆，看日志的人会先去查错代码 | 沿用退出码约定：2 = 前置不满足（D-38） |
 
 ---
 

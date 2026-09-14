@@ -52,9 +52,9 @@ Agent API 使用**独立凭据与独立端口**（`:8090`），与用户侧的 J
 1. **登录**（用户侧，`:8080`）拿到 JWT：自己要用就用普通账号；代签就用管理员账号。
 2. **签发 Token**：用户自己签走 `POST /api/v1/me/agent-tokens`，管理员代签走 `POST /api/v1/admin/agent-tokens`；
    记录响应里的 `token`（只出现这一次）。不会敲命令就走前端“我的 AI 代理”页。
-3. **把 Token 交给 Coding Agent**：优先走环境变量 `AUCTION_AGENT_TOKEN`；环境里**没有**时，
-   `tools/agent_sim.py --agent-only` 会提示你**交互式粘贴**（`getpass`，不回显、不进 shell 历史）。
-   无论如何**不要**把它写进命令历史、脚本或仓库（`CONTRIBUTING.md` §8.3）。
+3. **把 Token 交给 Coding Agent**：只走环境变量 `AUCTION_AGENT_TOKEN`（脚本**不做**交互输入）。
+   **不要**把它写进命令历史、脚本或仓库（`CONTRIBUTING.md` §8.3）；没设变量时脚本会明确
+   报错并退 2，不静默、不降级。
 4. Agent **查询状态**：`GET http://localhost:8090/api/v1/agent/auctions/{auctionId}`。
 5. Agent **决策并出价**：`POST .../auctions/{auctionId}/bids`，body 含 `requestId` 与 `amount`，
    并带 `Idempotency-Key` 头；重试必须沿用同一个 `requestId`（服务端幂等）。
@@ -63,17 +63,23 @@ Agent API 使用**独立凭据与独立端口**（`:8090`），与用户侧的 J
 ### 只想用自己手上的 Token 跑一遍（不建场、不签发）
 
 ```bash
-# 环境变量优先；没有就在终端按提示粘贴（输入不回显）
-AUCTION_AGENT_TOKEN=<明文> python tools/agent_sim.py --agent-only --auction-id <auctionId> [--bid]
-python tools/agent_sim.py --agent-only --auction-id <auctionId>        # 交互输入 Token
+export AUCTION_AGENT_TOKEN=<明文>          # Windows PowerShell: $env:AUCTION_AGENT_TOKEN="<明文>"
+python tools/agent_sim.py --agent-only --auction-id <auctionId> [--bid]
 ```
 
 该模式只用你给的凭据打 `:8090`，做三件事：读状态 →（带 `--bid` 时）出一次价（当前价 + 最小加价）→ 读结果。
 它**不**登录管理员、**不**建场、**不**签发 Token，因此复现的是“这枚 Token 的真实权限”，
 而不是业务正确性（后者仍由不带 `--agent-only` 的全流程模式与后端集成测试覆盖）。
 出价被 403/409/429 拒不会算作失败——那正是你要看的权限边界。
-`--no-prompt` 关闭交互（CI 用）；`AGENT_API_BASE` / `AUCTION_ID` 可替代同名参数；
-凭据获取顺序（显式参数 → 环境变量 → 交互输入）实现在 [`tools/agent_credentials.py`](tools/agent_credentials.py)。
+凭据只从环境变量（`AUCTION_AGENT_TOKEN`）与同名参数读，`AUCTION_ID` / `AGENT_API_BASE`
+可分别替代 `--auction-id` / `--agent-base`；读取顺序与空值处理见 [`tools/agent_credentials.py`](tools/agent_credentials.py)。
+没设变量、也没有 auctionId 时都以退出码 2 停下并告诉你该设什么：
+
+```text
+!! 没拿到 Agent Token：请先设好环境变量 AUCTION_AGENT_TOKEN=<明文 Token> 再重跑。
+   Windows PowerShell: $env:AUCTION_AGENT_TOKEN="<明文 Token>"
+   macOS / Linux / Git Bash: export AUCTION_AGENT_TOKEN="<明文 Token>"
+```
 
 > 本文件“契约”与“实现”的一致性由 `AgentApiIntegrationTest`（29 个用例）守住：
 > 范围、权限、过期、吊销、限流、端口隔离、幂等重放、错误码、尾段博弈时间拒绝 Agent，
@@ -125,8 +131,8 @@ Auction ID：{{AUCTION_ID}}
 - [x] Agent 出价与真人出价走同一套事务与幂等语义（复用 `BidService`，事务内自动加入，D-30；变异 G11 被杀）。
 - [x] 所有断言用脱敏后的 Token 值，报告与日志里搜不到明文（`SeededDemoCredentialsTest` 的思路同样覆盖凭据不落仓库）。
 - [x] 用户可以**自助**签发/吊销自己名下的授权；请求体无 `agentUserId`，他人 Token 吊销返回 404，列表与总览都无明文（D-34）。
-- [x] Token 来源不写死：`AUCTION_AGENT_TOKEN` 优先，环境里没有时交互粘贴（不回显、不进历史），
-      两者都没有则不静默失败；`--agent-only` 让评审直接用自己的 Token 参与一场已有拍卖
-      （`tools/agent_credentials.py`，8 条断言：显式 > 环境、空白视为未设置、非终端不问输入）。
+- [x] Token 只从环境变量 `AUCTION_AGENT_TOKEN`（或同名参数）读，不做交互输入；未设置时不静默失败，
+      而是打印 PowerShell/Bash 两种设法并退 2；`--agent-only` 让评审直接用自己的 Token 参与一场已有拍卖
+      （`tools/agent_credentials.py`，13 条断言：显式 > 环境、空白/空串视为未设置、模块内不再有 getpass）。
 
 > 以上验收项与 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) 的 D1、E1 对应，已在 P5 完成后勾选并登记证据（实现位置 `src/main/java/com/bidarena/agentaccess/`，测试 `src/test/java/com/bidarena/agentaccess/` 与 `AgentApiIntegrationTest`，变异 `tools/agent_mutation_check.py`）。
