@@ -66,7 +66,7 @@ jobs:
         # 用 clean 而不是 mvn test：迁移脚本在仓库根目录 db/migration，增量构建可能让应用
         # 跑到旧副本（DEBUG_LOG.md DBG-2）。断言消息含中文，日志按 UTF-8 看。
         run: mvn -B clean verify
-      - name: 断言用例数没有惄惄变少
+      - name: 断言用例数没有悄悄变少
         # 绿只说明“跑到的都过了”。用例数被过滤器/跳过悄悄减少时，绿色同样成立
         # （与 DBG-19 “永远为真的守卫”同类）。
         run: |

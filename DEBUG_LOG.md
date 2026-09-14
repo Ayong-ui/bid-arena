@@ -1938,3 +1938,76 @@ ComposeEntrypointTest.everyComposeEntrypointClassExistsWithMainMethod ... FAILUR
 这次还顺带验证了一个反面教材：把“入口类名”这种字符串同时写进 6 个文件（compose、javadoc、
 报错文案、三份文档），改一处漏五处是迟早的事；`ComposeEntrypointTest` 只盯住真正会被执行的那一处，
 文档里那几处仍靠人，但至少执行路径不会再错。
+
+## DBG-34：`migrate` 连不上 mysql——健康检查在“还没监听 3306”时就报了健康
+
+**现象**
+
+DBG-33 修好之后（CI run #6），`images` job 又栽在同一步“整栈起来跑一遍”。annotation 给出：
+
+```
+migrate-1 | Caused by: java.net.ConnectException: Connection refused
+容器状态：backend created|frontend created|migrate exited|mysql running
+compose：Container bid-arena-mysql-1 Started| Waiting| Healthy| migrate-1 Starting| Started| Waiting|
+         service "migrate" didn't complete successfully: exit 1
+```
+
+即 mysql 被 compose 判成 `Healthy`，紧接着起来的 `migrate` 连 `mysql:3306` 却被拒。
+DBG-33 那个 entrypoint 类名错误把这一层遮住了：修掉第一层，才轮到它登场。
+
+**原因**
+
+compose 里 mysql 的 healthcheck 是 `mysqladmin ping -h localhost`——**`localhost` 走 unix socket**，
+而 mysql 官方镜像初始化用的是带 `--skip-networking` 的临时 mysqld：socket 已经能连，但 3306 还没监听。
+于是“健康”和“能连”之间有一段窗口。实测（远程 VM、mysql:8.4.9、空数据卷，容器内两种探针每 0.2s 采样）：
+
+```
+  t= 0s  sock=no tcp=no
+  t= 5s  sock=OK tcp=no     ← 旧检查在这里判“健康”，可 3306 还没监听
+  t= 7s  sock=no tcp=no     ← 临时服务关了、真服务还没起
+  t=10s  sock=OK tcp=OK     ← 真服务开始监听
+```
+
+窗口约 5 秒，而 healthcheck 的 `interval` 也是 5 秒——第一次探测正好落在窗口里，
+`migrate` 一上来就撞上 `Connection refused`。D-39 之前只有 `backend` 一个消费者，
+它多花在 JVM 启动上的几秒恰好躲开了窗口；多了一个“起来就立刻连库”的一次性容器后，
+这个一直存在的坑才露出来。
+
+**修复**
+
+`docker-compose.yml` 的 healthcheck 改成走 TCP：`mysqladmin ping -h 127.0.0.1 --protocol=TCP`。
+`-h 127.0.0.1`（写成 IP 而不是 `localhost`）本身就会走 TCP，`--protocol=TCP` 只是把意图写死。
+
+顺带对齐了一处不一致：CI 两个 job 的 `services:` healthcheck 一直用的是
+`mysqladmin ping -h 127.0.0.1 -uroot -p...`（TCP），只有 compose 这份写成 `localhost`——
+同一件事两套写法，出问题的永远是没被跑过的那份。
+
+**验证**
+
+```
+# 容器内时间线（空数据卷，见上）：旧检查 t=5s 判健康，而 TCP 到 t=10s 才通
+# 同一镜像的 compose 级 A/B（替身：migrate 换成 mysql 客户端，仍走 depends_on: service_healthy）
+[OLD] compose up rc=0  migrate 退出码=0    # 竞态项，两次都没撞上窗口
+[NEW] compose up rc=0  migrate 退出码=0
+# 新探针 OK 的那一刻，容器内用应用用户走 TCP 查询返回 1（SELECT 1）
+```
+
+说明：compose 级 A/B 用的是替身（`mysql` 客户端代替真 `migrate`），两次都没撞上窗口——竞态本来就可能不触发，
+真正的证据是上面那条容器内时间线，以及 CI run #4~#6 里真实发生的 `Connection refused`。
+（VM 的本地镜像源没有 maven/node，真镜像只能在 CI 里构建，所以 compose 级只能这样验证。）
+
+**未采用**
+
+- 应用侧加“连不上就等几秒重试”：健康检查本来就该表达“应用现在能连上”，
+  把等待逻辑塞进应用只会让**配置写错**（host/密码错）也变成几十秒后才报出来的错；
+  修条件比修等待更符合 `depends_on: service_healthy` 的语义。
+- healthcheck 改成校验应用用户（`mysql -u$MYSQL_USER -p$MYSQL_PASSWORD -e 'SELECT 1'`）：
+  更严格，但一旦有人把 `MYSQL_USER` 设成 `root`（该用户不是镜像创建的）就会永远不健康；
+  “TCP 可达 + 用户由 entrypoint 在真服务启动前建好”这两条已经够用（实测已验证）。
+
+**工程结论**
+
+`mysqladmin ping -h localhost` 与 `-h 127.0.0.1` 只差一个词，语义却差一整个协议栈。
+健康检查必须检查“依赖方真正需要的那件事”：依赖方要走 TCP，检查就必须走 TCP；
+用一个 unix socket 去探一个“别人只能通过 TCP 到达”的服务，报出来的健康是假的。
+另外，**同一个东西在两处有不同写法时，先怀疑那份“从来没被真正跑过”的**（这次是 compose 那份）。

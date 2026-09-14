@@ -34,7 +34,12 @@ services:
       # 且 initdb 仅在空数据卷首次启动时执行，无法应用后续版本。详见 DECISIONS.md D-2/D-6/D-39。
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      # 必须走 TCP（DBG-34）：初始化阶段容器里的临时 mysqld 是带 --skip-networking 起的，
+      # 而 `mysqladmin ping -h localhost` 走 unix socket 照样能通 → 容器被判成“健康”，
+      # 但此刻 3306 还没监听，一次性迁移一上来就是 `Connection refused`（exit 1）→ 整栈起不来。
+      # 实测（远程 VM，mysql:8.4.9，空数据卷）：旧写法在 t=12s 判 healthy，同一时刻容器内
+      # 以 TCP 连 127.0.0.1:3306 报 `ERROR 2003 ... (111)`；改成下面这行后 healthy 时 TCP 查询成功。
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--protocol=TCP"]
       interval: 5s
       timeout: 5s
       retries: 20

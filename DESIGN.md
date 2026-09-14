@@ -198,7 +198,7 @@ com.bidarena
 - **结算入口只有一条**：定时扫描、启动后补齐、管理员取消全部调用同一个 `SettlementService`。因此进程是否分离**不影响正确性**——正确性来自拍卖行锁与 `settlements` 主键，而不是进程独占。
 - **重启无需恢复内存状态**：扫描器每一轮都回数据库查"已到期且仍为 `RUNNING`"的拍卖，不维护待结算队列；进程重启后第一轮就把没结的补上。
 - 原文要求的“两个实例同时触发结算”场景，由应用内定时器天然构成（每个实例都会扫），用**并发触发测试**即可验证，无需额外部署一个 worker。
-- **迁移不再是每个实例的启动职责**（D-39）：`bootstrap/MigrateMain` 就是上面说的“同一产物里的第二个 main 方法”（`java -cp app.jar:libs/* com.bidarena.bootstrap.MigrateMain`），compose 以一次性 `migrate` 服务跑它，`backend` 等它退出码 0 才启动。应用侧 `MIGRATE_ON_START` 默认仍为 `true`（本机与单实例零改动），部署里显式设 `false` 后应用**只校验**：库落后于代码就拒绝启动。于是多实例/滚动发布既不会在 `flyway_schema_history` 上互相抢锁，也不存在“新实例已改 schema、旧实例还在跑旧代码”的窗口。
+- **迁移不再是每个实例的启动职责**（D-39）：`bootstrap/MigrateMain` 就是上面说的“同一产物里的第二个 main 方法”（`java -cp app.jar:libs/* com.bidarena.bootstrap.MigrateMain`），compose 以一次性 `migrate` 服务跑它，`backend` 等它退出码 0 才启动。应用侧 `MIGRATE_ON_START` 默认仍为 `true`（本机与单实例零改动），部署里显式设 `false` 后应用**只校验**：库落后于代码就拒绝启动。于是多实例/滚动发布既不会在 `flyway_schema_history` 上互相抢锁，也不存在“新实例已改 schema、旧实例还在跑旧代码”的窗口。这套排序成立的前提是 `depends_on: service_healthy` 真的代表“依赖方连得上”：mysql 的 healthcheck 必须走 TCP（`-h 127.0.0.1 --protocol=TCP`），否则会在初始化、3306 还没监听的窗口里误报健康（DBG-34）。
 
 若后续确实需要资源隔离，只需增加一个启动入口（同一产物内第二个 main 方法），不动模块结构。
 
