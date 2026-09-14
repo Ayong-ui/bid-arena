@@ -167,7 +167,7 @@ public final class DatabaseBootstrap {
               + " 个迁移没有执行（最早未执行的是 V"
               + pending[0].getVersion()
               + "）。本次启动 MIGRATE_ON_START=false，不会代为迁移；"
-              + "请先跑一次性迁移（java -cp app.jar:libs/* com.bidarena.MigrateMain，或 compose 的 migrate 服务）再启动应用。");
+              + "请先跑一次性迁移（java -cp app.jar:libs/* com.bidarena.bootstrap.MigrateMain，或 compose 的 migrate 服务）再启动应用。");
     }
 
     try {

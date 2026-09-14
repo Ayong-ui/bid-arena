@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/Ayong-ui/bid-arena/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ayong-ui/bid-arena/actions/workflows/ci.yml)
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V6）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**尾段“博弈时间”强制拒绝 Agent 出价**、**成交主体（AI / 真人）可追溯且仅对赢家与管理员可见**、**预告开拍与到点自动开拍**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及两条 AI 路径：**面向普通用户的「托管 AI 代理」**（选进行中/未开拍的场次 + 设定预算上限，服务端到点自动进场并按最小加价跟价，D-36）与**面向开发者的竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流，用户可在“我的 AI 代理”页**自助签发自己名下的授权**，D-34）；另有**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）和**一份服务器压测脚本**（`tools/stress_test.py`，尾段博弈时间清场 + 持续吞吐）。全量 **232 个测试**（223 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
+这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V6）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**尾段“博弈时间”强制拒绝 Agent 出价**、**成交主体（AI / 真人）可追溯且仅对赢家与管理员可见**、**预告开拍与到点自动开拍**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及两条 AI 路径：**面向普通用户的「托管 AI 代理」**（选进行中/未开拍的场次 + 设定预算上限，服务端到点自动进场并按最小加价跟价，D-36）与**面向开发者的竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流，用户可在“我的 AI 代理”页**自助签发自己名下的授权**，D-34）；另有**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）和**一份服务器压测脚本**（`tools/stress_test.py`，尾段博弈时间清场 + 持续吞吐）。全量 **233 个测试**（224 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
@@ -52,7 +52,7 @@ mvn clean verify
 
 | job | 跑什么 | 失败意味着 |
 |---|---|---|
-| `backend` | 服务容器提供一次性 MySQL 8.4，`mvn clean verify`（**232/232**），并断言 surefire 总用例数 ≥ 232 | 领域/集成/架构有回归，或者用例数被过滤器悄悄减少 |
+| `backend` | 服务容器提供一次性 MySQL 8.4，`mvn clean verify`（**233/233**），并断言 surefire 总用例数 ≥ 233 | 领域/集成/架构有回归，或者用例数被过滤器悄悄减少 |
 | `frontend` | `npm ci` → `typecheck` → `npm test`（**73**）→ `VITE_WS_SAME_ORIGIN=1 npm run build` | 前端类型、单测或生产构建坏了 |
 | `e2e` | 真起后端（8080/8090/18080）跑 `tools/agent_sim.py`（**44/44**），复位演示数据后再跑 `tools/auction_sim.py`（**52/52**） | 端到端行为与 `docs/openapi.yaml` 描述不一致 |
 | `config` | `py_compile` 全部工具脚本、`docker compose config -q`、用 `nginx -t` 校验 `frontend/nginx.conf` | 部署编排或工具脚本语法坏了 |
@@ -98,7 +98,7 @@ cp .env.example .env      # 填好 JWT_SECRET（必须）
 docker compose up -d mysql backend
 ```
 
-`backend` 服务等你所说的那次**一次性迁移**跑完才启动：schema 变更由同样的镜像以另一个 entrypoint（`com.bidarena.MigrateMain`）执行，退出码非 0 时应用根本不会起（D-39）。
+`backend` 服务等你所说的那次**一次性迁移**跑完才启动：schema 变更由同样的镜像以另一个 entrypoint（`com.bidarena.bootstrap.MigrateMain`）执行，退出码非 0 时应用根本不会起（D-39）。
 它映射三个端口：`8080`（用户/管理）、`8090`（Agent）、`18080`（WebSocket）。
 只想建镜像：`docker build -t bid-arena-backend .`。
 

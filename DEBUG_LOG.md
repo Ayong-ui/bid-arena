@@ -1873,3 +1873,68 @@ $ cd frontend && python tools/mutation_check.py
 这条坑还有个不太友好的巧合：**能锁住 `target/libs` 的，正是跑 E2E 脚本所必需的那个后端**——
 也就是说“先跑 E2E、再跑变异验证”这个最自然的顺序，恰好会踩中它。跑变异脚本前先停后端，
 或者干脆把运行时依赖复制到 `target/libs` 之外的目录再启动。
+
+## DBG-33：一次性的 `migrate` 容器起不来——entrypoint 里的入口类少写了一层包名
+
+**现象**
+
+D-39 提交后，CI 的 `images` job 在“整栈起来跑一遍”这步失败，耗时 32 秒（健康检查等待上限是 120 秒，
+说明不是等到超时）。本机 `gh` 未登录、GitHub 又不允许匿名读日志正文，第一轮只拿到一行
+`Process completed with exit code 1`——**根因完全不可见**。
+
+于是先修可观测性：给 CI 补上“失败时把 `compose up` 自身的输出、容器状态与日志折进 annotation”
+（annotation 无需登录即可读取），再跑一轮，读到了真话：
+
+```
+migrate-1 | Error: Could not find or load main class com.bidarena.MigrateMain
+migrate-1 | Caused by: java.lang.ClassNotFoundException: com.bidarena.MigrateMain
+容器状态：backend created|frontend created|migrate exited|mysql running
+compose up 失败：... Container bid-arena-migrate-1 Created ... dependency failed to start
+```
+
+**原因**
+
+`MigrateMain` 在 `com.bidarena.bootstrap` 包里，而 `docker-compose.yml` 的 entrypoint 写成了
+`com.bidarena.MigrateMain`（少一层包名）。Maven 完全不认识 compose 文件：写错了照样编译、打包、
+通过 review，直到真的去跑那个容器才报错；而失败发生在“依赖条件”上——`backend` 等 `migrate`
+退出码 0，compose 直接放弃整个 `up`，于是**连 backend 的日志都没有**（这也是为什么第一轮除了
+“exit code 1”什么都看不到）。
+
+**修复**
+
+1. 改对类名（`docker-compose.yml`），并把文档与报错文案里同样写错的地方一起改掉
+   （`MigrateMain` javadoc、`DatabaseBootstrap.verifyOnly` 的报错提示、`.env.example`、
+   `README.md`、`DESIGN.md`、`DECISIONS.md`）。
+2. 补 `ComposeEntrypointTest`：从 `docker-compose.yml` 解析出 `- com.bidarena.*` 形式的入口类，
+   断言它们在 classpath 上真的存在、且带 `public static main(String[])`。把“编排文件”和“编译产物”
+   对起来只需一次 `forName`，不连库、不依赖 Docker，在 `backend` job 里几毫秒就能挡住这类错。
+3. CI 的失败诊断留在仓库里（annotation + `compose up` 输出落盘）：这次正是它把根因带出来的，
+   下次别人踩同一类坑不用再花一轮 CI 去猜。
+
+**验证**
+
+```
+$ mvn -B clean verify
+Tests run: 233, Failures: 0, Errors: 0, Skipped: 0
+
+$ sed -i 's/com.bidarena.bootstrap.MigrateMain/com.bidarena.MigrateMain/' docker-compose.yml
+$ mvn -B -Dtest=ComposeEntrypointTest test
+ComposeEntrypointTest.everyComposeEntrypointClassExistsWithMainMethod ... FAILURE
+  compose 的 entrypoint 指向了不存在的类：com.bidarena.MigrateMain（包名少写一层就会这样，见 DBG-33）
+  Caused by: java.lang.ClassNotFoundException: com.bidarena.MigrateMain
+（还原后绿）
+```
+
+**工程结论**
+
+静态检查的边界不是“源码”，而是**所有会被执行的东西**：编排文件、`Dockerfile` 的 `ENTRYPOINT`、
+脚本里的类名与命令名，都是编译器与 Maven 看不见的字符串。这类字符串要么在 CI 里真的跑一遍
+（这次确实是 CI 抓到的，说明“整栈起来跑一遍”这一步是值得的），要么用一条几毫秒的测试把它与真实产物
+对起来（这次补的 `ComposeEntrypointTest`）。
+
+另一条同样值得记：**“日志读不到”会直接变成“多烧一轮 CI”**。遇到不可观测的失败，先修可观测性
+（把关键输出搬进不需要登录就能看到的地方），再修 bug——顺序反过来就只是赌运气。
+
+这次还顺带验证了一个反面教材：把“入口类名”这种字符串同时写进 6 个文件（compose、javadoc、
+报错文案、三份文档），改一处漏五处是迟早的事；`ComposeEntrypointTest` 只盯住真正会被执行的那一处，
+文档里那几处仍靠人，但至少执行路径不会再错。

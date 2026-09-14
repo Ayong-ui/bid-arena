@@ -56,7 +56,7 @@ services:
       - -XX:MaxRAMPercentage=75
       - -cp
       - /app/app.jar:/app/libs/*
-      - com.bidarena.MigrateMain
+      - com.bidarena.bootstrap.MigrateMain
 
   backend:
     build: *backend-build

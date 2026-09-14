@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory;
 /**
  * 一次性迁移入口：把库迁移到最新版本，然后退出（D-39）。
  *
- * <p>用法：{@code java -cp "app.jar:libs/*" com.bidarena.MigrateMain}。
+ * <p>用法：{@code java -cp "app.jar:libs/*" com.bidarena.bootstrap.MigrateMain}。
  * {@code docker-compose.yml} 的 {@code migrate} 服务就是用它（覆盖 entrypoint 即可，
  * 与 backend 镜像同一个 jar，不需要第二份构建产物）。
  *

@@ -73,7 +73,7 @@
 - 预告开拍（D-35）：`auctions.starts_at`（可空）+ `AuctionStartScheduler` 到点自动开拍；自动开拍复用与管理员手动 `start` 完全相同的用例（不复制状态流转），时间基准取数据库时间（`Db.now`）；快照下发 `startsAt` 供前端预告。
 - 架构守卫：`ArchUnit` 九条分层/跨上下文/无环规则（§2.4）。
 - 前端：Vue 3 + Pinia 接入真实 HTTP/WS，类型从契约生成，金额/倒计时以服务端为准（P4）；P6 增补尾段“博弈时间”提示（依据快照下发的 `finalGameWindowSeconds`）、成交主体 `AI/真人` 徽标与管理员按场次流水面板（D-33），并把“智能体接入”整页换成用户向的“我的 AI 代理”——主路径是**创建托管代理**（选场次 + 预算上限）与在管列表，自助 Token 收进页底“高级”（D-34/D-36）；大厅与运营台显示“预告 mm:ss 后开拍”（用 `store.serverNow`，不用本机时钟，D-35）。
-- 证据：`mvn clean verify` 共 232 个测试全绿（真库集成 88 + 其余领域/身份/结算/事件/WS/Agent/迁移开关单元 135 + 架构守卫 9）；
+- 证据：`mvn clean verify` 共 233 个测试全绿（真库集成 88 + 其余领域/身份/结算/事件/WS/Agent/迁移开关单元 136 + 架构守卫 9）；
   关键路径另做变异测试反向确认确实会红（架构 9/9、Agent 14/14、前端 16/16）；前端另有 73 单测与 3 个真后端联调。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
 
 **尚未实现（如实声明）：** 只能靠 HTTP 复现的部分已全部有脚本——`tools/auction_sim.py` 覆盖并发同/邻价、`requestId`
@@ -198,7 +198,7 @@ com.bidarena
 - **结算入口只有一条**：定时扫描、启动后补齐、管理员取消全部调用同一个 `SettlementService`。因此进程是否分离**不影响正确性**——正确性来自拍卖行锁与 `settlements` 主键，而不是进程独占。
 - **重启无需恢复内存状态**：扫描器每一轮都回数据库查"已到期且仍为 `RUNNING`"的拍卖，不维护待结算队列；进程重启后第一轮就把没结的补上。
 - 原文要求的“两个实例同时触发结算”场景，由应用内定时器天然构成（每个实例都会扫），用**并发触发测试**即可验证，无需额外部署一个 worker。
-- **迁移不再是每个实例的启动职责**（D-39）：`bootstrap/MigrateMain` 就是上面说的“同一产物里的第二个 main 方法”（`java -cp app.jar:libs/* com.bidarena.MigrateMain`），compose 以一次性 `migrate` 服务跑它，`backend` 等它退出码 0 才启动。应用侧 `MIGRATE_ON_START` 默认仍为 `true`（本机与单实例零改动），部署里显式设 `false` 后应用**只校验**：库落后于代码就拒绝启动。于是多实例/滚动发布既不会在 `flyway_schema_history` 上互相抢锁，也不存在“新实例已改 schema、旧实例还在跑旧代码”的窗口。
+- **迁移不再是每个实例的启动职责**（D-39）：`bootstrap/MigrateMain` 就是上面说的“同一产物里的第二个 main 方法”（`java -cp app.jar:libs/* com.bidarena.bootstrap.MigrateMain`），compose 以一次性 `migrate` 服务跑它，`backend` 等它退出码 0 才启动。应用侧 `MIGRATE_ON_START` 默认仍为 `true`（本机与单实例零改动），部署里显式设 `false` 后应用**只校验**：库落后于代码就拒绝启动。于是多实例/滚动发布既不会在 `flyway_schema_history` 上互相抢锁，也不存在“新实例已改 schema、旧实例还在跑旧代码”的窗口。
 
 若后续确实需要资源隔离，只需增加一个启动入口（同一产物内第二个 main 方法），不动模块结构。
 
