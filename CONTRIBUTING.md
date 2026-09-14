@@ -201,3 +201,120 @@ python tools/arch_mutation_check.py   # 架构规则的反向确认（期望 9/9
 - [ ] 无密钥、Token、密码、构建产物
 - [ ] `git log --oneline` 能读懂行为变化
 
+### 9.4 现场核验演练（H 组：讲清并发事务 + 做临时变更）
+
+现场核验两问：**第一段**要讲清“并发出价事务 / 旧领先者释放 / 重复请求 / 结算 / 重启”，并能顺着日志把问题定位出来；**第二段**要接下四个临时变更（VIP 加价、取消释放、代理最高价、可配置延时），证明**扩展点清晰、迁移可加**。
+
+下面是照着自己点就能走完的稿子（H1 约 10 分钟，H2 约 15 分钟）。**不要在 `main` 上做临时变更**：改完就 `git checkout .` 还原——演练不是提交。
+
+#### 9.4.0 开演前 60 秒
+
+| 动作 | 命令 | 期望 |
+|---|---|---|
+| 起整栈 | `docker compose up -d --build`，浏览器开 `http://localhost:8088` | `docker compose ps` 里 `migrate` 已退出（0）；`mysql/backend/frontend` 为 Up |
+| 复位演示数据 | `mysql -h127.0.0.1 -P3307 -ubid_arena -p bid_arena < db/reset_demo_data.sql` | 演示账号余额回到种子值（脚本真花钱，见 DBG-31） |
+| 开两个终端 | ① `docker compose logs -f backend`；② 留着敲 SQL（`mysql -h127.0.0.1 -P3307 -ubid_arena -p bid_arena`） | ① 能实时看到 `出价成功`/`结算完成`；② 能验证不变量 |
+| 记住三句口述 | —— | 权威时钟是数据库（D-5）；唯一赢家靠“锁拍卖行 + 条件更新”（D-4/D-12）；事件在提交后发（D-20） |
+
+> 口令不得入镜、不得粘进终端历史（§8.3）：用 `-p` 时不加参数，让客户端交互式要口令。
+
+#### 9.4.1 H1：一个事务、六个步骤（讲解骨架）
+
+锚点都在 [`BidService.java`](src/main/java/com/bidarena/auction/application/BidService.java) 的类注释里（“一个事务，六个步骤”），逐条指着讲即可：
+
+| 步 | 代码锚点 | 要讲清的点 |
+|---|---|---|
+| 1 取数据库时间 | `doPlaceBid` 中 `Instant now = Db.now(conn);`（约 225 行） | 截止/延时判定不能用应用机器时钟——DBG-30 就是容器时钟慢 3 分钟那次 |
+| 2 锁拍卖行 | `AuctionRepository.lockAuction`（约 81 行，`... WHERE a.id = ? FOR UPDATE`） | 同一场拍卖的所有出价在这里**串行化**，这就是“唯一赢家”的全部依据 |
+| 3 判幂等 | `AuctionRepository.lockRequest`（约 184 行，按 `(auction_id, user_id, request_id)` 加锁）+ `insertRequestPending` 占位 + `markRequestDone` 收尾 | 重放**直接返回首次结果且不广播**（`publishAccepted` 里 `idempotent()` 早退）；失败也落终态（`upsertRejectedRequest`，约 217 行），所以重试拿到的是同一个错误码 |
+| 4 校验与旧主释放 | `long minimum = currentPrice + minIncrement`（约 277 行）；`releasePreviousLeader`（约 305 行调用，约 342 行实现） | 旧主在本场的冻结额必须**等于**当前最高价，不等就让本次出价失败（宁可报错也不带着错误前提算差额）；新领先者只冻结差额 `delta = amount - myFrozen` |
+| 5 锁资金 | `WalletRepository` 约 80/104/124 行，三处都带 `ORDER BY user_id FOR UPDATE` | 一次出价可能同时改两个用户，统一按 `user_id` 升序把死锁从“偶发”变成“不存在”（类注释有一节专讲） |
+| 6 写入并收尾 | 延时判定约 318–322 行（`EXTENSION_WINDOW_SECONDS=5` / `EXTENSION_SECONDS=10` / `MAX_EXTENSIONS=3`，常量在 55–59 行）；`AuctionRepository.applyBid`（约 95 行，`... AND seq = ? AND status = 'RUNNING'`） | 一次提交 = 一个 `seq`；`BID_ACCEPTED` 已经带上新的 `endsAt`，`AUCTION_EXTENDED` 只是补充视图（两者同 `seq`） |
+
+结算与重启，说这三点就够：
+
+- **结算唯一**：`SettlementService.settleIfDue`（约 97 行）先用 `SettlementRepository` 的 `... WHERE auction_id = ? FOR UPDATE`（约 36 行）锁结算行，再用 `UPDATE auctions SET status = ? WHERE id = ? AND status = ?`（`AuctionRepository` 约 256 行）做条件更新——第二个并发调用者影响行数为 0，于是返回**已有结果**而不是再算一遍（D-12/D-13）。
+- **到期扫描**：`findDueAuctionIds` 用 `status='RUNNING' AND ends_at <= now`（约 231 行）走 `idx_auctions_status_ends` 索引，不扫全表。
+- **重启不丢待办**：“该结算”这件事在**数据库里**（`status='RUNNING'` + `ends_at`），不在内存里；进程重启后下一轮扫描自动补上。
+
+#### 9.4.2 H1：照着日志定位（四个现场 drill）
+
+**A. 重复请求 = 幂等（既不报错、也不重复扣钱）**
+
+```bash
+for i in 1 2; do curl -s -X POST localhost:8080/api/auctions/<场次ID>/bids \
+  -H "Authorization: Bearer <Token>" -H 'Content-Type: application/json' \
+  -d '{"amount":120,"requestId":"demo-1"}'; echo; done
+```
+
+第二次**不应**出现新的 `出价成功 ... seq=...` 日志（重放不推进 `seq`、也不广播）。数据库侧对账：
+
+```sql
+SELECT status, result_code, result_price, result_seq FROM bid_requests
+ WHERE auction_id='<场次ID>' AND request_id='demo-1';
+SELECT COUNT(*) FROM bids WHERE auction_id='<场次ID>' AND request_id='demo-1';  -- 恒为 1
+SELECT user_id, total_balance, frozen_amount FROM wallets WHERE user_id='<用户ID>';  -- 冻结只发生一次
+```
+
+**B. 旧主释放对账（INV-1/INV-2）**
+
+```sql
+SELECT user_id, frozen_amount FROM auction_participants
+ WHERE auction_id='<场次ID>' ORDER BY user_id;
+```
+
+口述不变量：任一时刻全场 `auction_participants.frozen_amount` 之和 = 当前最高价（结束后清零），且每个用户 `frozen_amount <= total_balance`。同样的 SQL 就在 [`Invariants.java`](src/test/java/com/bidarena/support/Invariants.java)，集成测试每笔出价后都会跑。
+
+**C. 重启不丢待办（结算）**
+
+留一场“已到期但未结算”的场次 → `docker compose restart backend` → `docker compose logs -f backend | grep 结算完成`：下一轮扫描把它结算掉。再做一次反面：`SETTLE_SCHEDULER_ENABLED=false` 起后端（D-40），启动日志会 WARN “本实例不负责结算”，并且**不再**结算——说明“谁负责”是显式配置、不是猜的。
+
+**D. 广播失败不回滚（可选，5 秒）**
+
+把 `WS_PORT` 指向一个没人监听的端口再出价：出价**照样成功**，日志里只有 `事件广播失败，已提交的事务不受影响 ...`（D-20，对应 A8）。
+
+#### 9.4.3 H2：四个临时变更（每个改一处 + 一张迁移 + 一组测试）
+
+> 每个变更都问自己三句：**改了几处？要不要迁移？测试怎么证明没改坏？** 下面的答案就是“扩展点清晰、迁移可加”的证据。
+
+**① VIP 加价（最小加价按等级放大）**
+
+- 改：`BidService.java` 约 277 行 `long minimum = auction.currentPrice() + auction.minIncrement();`。系数来源二选一——只读用 `Env.intOr("VIP_INCREMENT_PERCENT", 100)`（不动库），或落库用 `users.vip_level`。
+- 迁移（选落库）：新增 `db/migration/V7__user_vip_level.sql`：`ALTER TABLE users ADD COLUMN vip_level INT NOT NULL DEFAULT 100 COMMENT '最小加价系数百分比；100 = 与旧行为一致';` + `CHECK (vip_level >= 100)`。**只加列、不回填**——默认值 100 就是旧行为，所以老数据零影响（与 `V5`/`V6` 加列同手法）。再在 `AuctionRepository` 读 `min_increment` 的那条 SELECT 旁边带出该列即可。
+- 测试：`BidServiceTest` 加“等级 200 → 最小加价翻倍”“等级 100 → 与现状一致”两例；`HttpApiIntegrationTest` 里 `BID_TOO_LOW` 的 `minimum` 字段断言跟着改。
+- 变异：把系数写死成 100，新用例必须变红（否则等于没测）。
+- 预计：20 分钟。
+
+**② 取消释放（改语义：取消时收 1% 手续费）**
+
+- 改：`SettlementService.cancel`（约 111 行）复用的资金分支（`SettlementReason.CANCELLED`，见 104 行注释）。
+- 迁移：**不需要**——这正是要讲的点：语义变更不一定等于迁移。但必须同步改 `Invariants.java` 里“取消后冻结清零”的断言与 `docs/STATUS.md` 的对账口径，否则测试会红（这是期望的：不变量变了，测试先叫）。
+- 测试：`SettlementServiceTest` 加“取消后冻结清零且扣 1%、流水出现 FEE”；`HttpApiIntegrationTest` 的取消快照断言（`frozenAmount` 回到 0）跟着改。
+- 验证：跑 `BidConcurrencyTest` + `SettlementConcurrencyTest`，证明并发语义没被顺手改坏。
+- 口述：取消与到期结算**共用同一套资金逻辑**（D-13），所以只改一个分支就能同时覆盖两条路径。
+
+**③ 代理最高价（预算上限语义调整）**
+
+- 改：`AgentProxy.java` 约 42 行 `return amount <= budgetLimit;`（`canAfford`）与 `AgentProxyRepository` 约 58 行的跟价计算 `currentPrice + minIncrement`。
+- 迁移：若要让上限随市场浮动，`V7` 给 `agent_proxies` 加 `max_follow_amount BIGINT NULL`（可空、不回填 = 旧行为）。
+- 测试：`AgentProxyIntegrationTest`（19 例）加“触顶后不再出价，且 `budget_reached_at` 只写一次”；改完跑一遍调度器每轮上限的用例。
+- 验证：真跑 `python tools/agent_sim.py --duration 30`，看代理出价次数与触顶时刻。
+- 口述：代理**没有自己的资金逻辑**（`V6` 头注释第 3 条）——它调的是同一个 `BidService.placeBid`，所以 `actor_type=AGENT`、博弈时间拒绝、冻结与释放语义自动一致。
+
+**④ 可配置延时（常量 → 每场可配）**
+
+- 改：`BidService.java` 55–59 行的 `EXTENSION_WINDOW_SECONDS` / `EXTENSION_SECONDS` / `MAX_EXTENSIONS`，以及 318–322 行的判定。
+- 迁移：`V7` 给 `auctions` 加 `extension_seconds INT NULL`、`max_extensions INT NULL`（可空 = 走常量默认，同样只加列不回填）。
+- 契约：`finalGameWindowSeconds` 已经在快照与响应里下发（D-32/V5），照同样方式把 `extensionSeconds` 加进快照与 `docs/openapi.yaml`；前端只读服务端下发值（D-27），不自己算。
+- 测试：`BidServiceTest` 的延时用例 + `WsIntegrationTest` 的 `AUCTION_EXTENDED` 断言。
+- 口述：**契约早就留了口子**——前端从不自己算延时，所以这属于“加两列 + 改一处判定”，不需要动前端逻辑。
+- 预计：25 分钟。
+
+#### 9.4.4 收尾（演练完必须回到基线）
+
+1. `git status` 必须干净；四个临时变更用 `git checkout .` 还原（演练不产生提交）。
+2. 若演练中真挖出问题：走 §4/§5 正常流程（先补测试、记 `DEBUG_LOG.md`、单独提交），**不要**把临时变更混进去。
+3. 复查基线仍是绿的：后端 `mvn clean verify`（**242/242**）、前端 `cd frontend && npm test`（**73**）。
+
+> 现场核验的视频**不能**替代代码、测试、Git 与文档核验；它只是把上面这些证据用嘴讲一遍、用手点一遍。
+

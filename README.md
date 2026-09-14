@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/Ayong-ui/bid-arena/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ayong-ui/bid-arena/actions/workflows/ci.yml)
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V6）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**尾段“博弈时间”强制拒绝 Agent 出价**、**成交主体（AI / 真人）可追溯且仅对赢家与管理员可见**、**预告开拍与到点自动开拍**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及两条 AI 路径：**面向普通用户的「托管 AI 代理」**（选进行中/未开拍的场次 + 设定预算上限，服务端到点自动进场并按最小加价跟价，D-36）与**面向开发者的竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流，用户可在“我的 AI 代理”页**自助签发自己名下的授权**，D-34）；另有**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）和**一份服务器压测脚本**（`tools/stress_test.py`，尾段博弈时间清场 + 持续吞吐）。三个后台扫描器（到期结算、预告开拍、托管代理）可用 `SETTLE_SCHEDULER_ENABLED` / `AUCTION_START_SCHEDULER_ENABLED` / `AGENT_PROXY_SCHEDULER_ENABLED` 按实例裁剪（D-40，缺省全开）。全量 **239 个测试**（230 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
+这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V6）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**尾段“博弈时间”强制拒绝 Agent 出价**、**成交主体（AI / 真人）可追溯且仅对赢家与管理员可见**、**预告开拍与到点自动开拍**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及两条 AI 路径：**面向普通用户的「托管 AI 代理」**（选进行中/未开拍的场次 + 设定预算上限，服务端到点自动进场并按最小加价跟价，D-36）与**面向开发者的竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流，用户可在“我的 AI 代理”页**自助签发自己名下的授权**，D-34）；另有**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）和**一份服务器压测脚本**（`tools/stress_test.py`，尾段博弈时间清场 + 持续吞吐）。三个后台扫描器（到期结算、预告开拍、托管代理）可用 `SETTLE_SCHEDULER_ENABLED` / `AUCTION_START_SCHEDULER_ENABLED` / `AGENT_PROXY_SCHEDULER_ENABLED` 按实例裁剪（D-40，缺省全开）。全量 **242 个测试**（233 个领域/集成/守卫用例 + 9 条架构规则；并发与结算相关用例跑在真实 MySQL 上）。尚未完成：演示录屏与现场核验素材。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
@@ -52,7 +52,7 @@ mvn clean verify
 
 | job | 跑什么 | 失败意味着 |
 |---|---|---|
-| `backend` | 服务容器提供一次性 MySQL 8.4，`mvn clean verify`（**239/239**），并断言 surefire 总用例数 ≥ 239 | 领域/集成/架构有回归，或者用例数被过滤器悄悄减少 |
+| `backend` | 服务容器提供一次性 MySQL 8.4，`mvn clean verify`（**242/242**），并断言 surefire 总用例数 ≥ 242 | 领域/集成/架构有回归，或者用例数被过滤器悄悄减少 |
 | `frontend` | `npm ci` → `typecheck` → `npm test`（**73**）→ `VITE_WS_SAME_ORIGIN=1 npm run build` | 前端类型、单测或生产构建坏了 |
 | `e2e` | 真起后端（8080/8090/18080）跑 `tools/agent_sim.py`（**44/44**），复位演示数据后再跑 `tools/auction_sim.py`（**52/52**） | 端到端行为与 `docs/openapi.yaml` 描述不一致 |
 | `config` | `py_compile` 全部工具脚本、`docker compose config -q`、用 `nginx -t` 校验 `frontend/nginx.conf` | 部署编排或工具脚本语法坏了 |
@@ -390,7 +390,7 @@ docker exec -i bid-arena-mysql-1 mysql --default-character-set=utf8mb4 \
 - **[AI_USAGE.md](AI_USAGE.md) 已填写**：工具与模型（`pi` + `deepseek-v4-flash`）、各模块人机分工与口径、
   四项本人设计决定、六项未采用方案、四项真实错误，以及七类目前仍不能独立解释/修改的代码；
   文末留三项「作者核对清单」（模型列表完整性、比例口径、决定归属）。
-- **没有线上地址、没有演示录屏**（两段式现场核验的素材）。
+- **没有线上地址、没有演示录屏**（两段式现场核验的素材）。两段核验已备好照着走就行的演练稿：第一段（并发出价事务/旧主释放/幂等/结算/重启的讲解骨架与四个现场定位 drill）与第二段（VIP 加价、取消释放、代理最高价、可配置延时的改动点/迁移/测试清单）见 [`CONTRIBUTING.md` §9.4](CONTRIBUTING.md)；录屏分镜与命令见 [§9.1.1](CONTRIBUTING.md)。视频与现场演示**不能**替代代码、测试、Git 与文档核验。
 
 已实现的边界：用户侧 HTTP 19 个端点 + Agent 侧 3 个业务端点与 2 个签发/吊销端点 + WebSocket 实时通道（P2/P3）、
 前端真实接入（P4）、Agent API 与端到端模拟（P5）、用户侧全链路模拟（E1）、架构守卫 9 条。

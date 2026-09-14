@@ -875,6 +875,31 @@
 
 ---
 
+## D-41　配置的可发现性也由测试守住：扫源码断言 `.env.example` 不漏键
+
+**背景**：最后一轮一致性校对时，把“代码里 `Env.*` 读的键”与“`.env.example` 写的键”逐一对了一遍，发现 4 个键后端会读、样例里却没有：`AGENT_SERVER_HOST`、`JWT_TTL_SECONDS`、`DB_CONNECTION_TIMEOUT_MS`、`DB_MAX_LIFETIME_MS`。它们都有默认值，所以代码能跑、全部测试绿——踩坑的只有“照着样例部署的人”：他不知道存在这些键，只能吃默认值，或者以为不可配。这正是 D-39/D-40 一直在处理的那类问题：**配置表面就是部署者对系统的全部认知**。
+
+| 决策点 | 方案 | 说明 | 代价 |
+|---|---|---|---|
+| 怎么保证不漏 | 靠 review / 提交清单 | 零成本 | 已经漏了 4 个；清单会过期，而过期的清单只给虚假的安全感 |
+| 怎么保证不漏 | **扫源码 + 断言（当前实现）** | 新增键时忘了写样例，`mvn clean verify` 直接变红 | 需要一条“读仓库文件”的测试（已有先例：`ComposeEntrypointTest` 读 compose、`ScannerBootstrapTest` 读 `.env.example`） |
+| 扫描的粒度 | 手工维护一份“键的清单”再比对 | 断言写法简单 | 清单本身也会过期——等于把同一个问题挪了一层 |
+| 扫描的粒度 | **正则扫 `Env.required/read/intOr/longOr/boolOr("KEY")` 字面量**（当前实现） | 不用维护清单，读代码即真相 | 常量传键的扫不到（目前只有三个扫描器开关），要显式登记；正则失效会静默放过 |
+| 守卫怎么证明没坏 | 只写正向断言 | 简单 | 正则或根目录一旦失效，守卫恒为真，比没有守卫更危险 |
+| 守卫怎么证明没坏 | **反向断言“确实抓到了一批已知键”+ 合成输入用例**（当前实现） | 守卫失效会先响 | 多两条用例 |
+| 只写在注释里的键算不算 | 算（一句 `contains("KEY=")`） | 实现最短 | `.env.example` 里 `#BID_ARENA_TEST_DB_URL=...` 这种“模板”会被当成已文档 |
+| 只写在注释里的键算不算 | **不算：只认非注释行上的 `KEY=`**（当前实现） | 与“照着样例的人能不能直接照抄”一致 | 实现多一点（要剥掉注释行） |
+
+**最终选择**：新增 `EnvDocumentationTest`（3 例）：① 扫 `src/main/java` 下所有 `Env.*("KEY")` 字面量、并入以常量传键的 `ScannerBootstrap` 三个开关，断言每个键在 `.env.example` 里都有一条非注释赋值；② 反向断言扫描确实抓到一批已知键（`DB_URL`/`JWT_SECRET`/`SETTLE_SCAN_INTERVAL_MS`/开关，且总数 ≥ 15），守住卫不会变成永远为真；③ 用合成输入证明“只写在注释里”会被判为缺失。同时按用途把那 4 个键补进 `.env.example`（连同默认值与“留空＝监听所有网卡”这类语义说明）。
+
+**代价**：多一个“读源码文本”的测试——它比行为测试脆（改目录结构或读取方式都可能影响它），所以那两条反向断言是必需的；另外它只覆盖 main 源码，测试专用的键（如 `BID_ARENA_TEST_DB_*`）不在范围内。
+
+**验证结果**：✅ 先把 4 个键补进 `.env.example`，后端 `mvn clean verify` **242/242** 绿。变异验证：把 `.env.example` 换回改动前的版本（`git show HEAD:.env.example > .env.example`）后，`everyKeyReadByTheBackendIsDocumented` 变红并**正好点名这 4 个键**（`AGENT_SERVER_HOST`/`DB_CONNECTION_TIMEOUT_MS`/`DB_MAX_LIFETIME_MS`/`JWT_TTL_SECONDS`），换回后全绿——即这条守卫在引入它之前就会拦住这次漂移。计数口径同步：真库集成 88→90（D-40 的 2 例真库对照改归此项）、扫描器开关纯策略 4、配置键守卫 3、其余单元 136、架构守卫 9，合计 242；README/DESIGN/STATUS/TRACEABILITY/AI_USAGE/`ci.yml`（断言总用例数 ≥ 242）已同步。
+
+---
+
+## 未采用方案汇总
+
 | 方案 | 未采用原因 | 如果重来会怎样 |
 |---|---|---|
 | 复用"校园跑腿"项目资产 | 该代码库并不存在于本仓库，`REUSE_MAP.md` 属空头承诺 | 已删除该文档，改为原创实现 |
@@ -886,6 +911,7 @@
 | Maven 多模块 + 独立 worker 进程 | 编译期强制与 ArchUnit 等价；进程分离不增加正确性证据 | 单模块 + 包边界 + ArchUnit（D-6） |
 | 后端托管前端静态资源 | Java 服务要为静态文件与 SPA fallback 负责，前端发版与后端发布耦合 | 独立 Nginx 容器（D-37） |
 | 拆 `App.vue`（960 行 SFC → 若干子组件） | 纯代码卫生，与“方便别人在本地部署”无关；更要紧的是前端**没有组件测试基建**（`@vue/test-utils`/jsdom 均未安装，73 个单测只覆盖 store/api/realtime 等纯 TS 模块），`App.vue` 本身零自动化覆盖——拆完 `npm test` 全绿也证明不了“行为零变化” | 仍值得拆，但要先补一个渲染冒烟测试（`@vue/server-renderer` 已在依赖里）当兜底，否则宁可不动 |
+| 靠 review 保证 `.env.example` 覆盖所有配置键 | 事实上已经漏了 4 个（`AGENT_SERVER_HOST`/`JWT_TTL_SECONDS`/`DB_CONNECTION_TIMEOUT_MS`/`DB_MAX_LIFETIME_MS`），而且漏了不会有任何信号——代码有默认值，测试全绿 | 扫源码 + 断言 + 反向断言（D-41）|
 | 浏览器直连 8080/8090/18080 三个端口 | 三个 origin：CORS、TLS 证书、WS 端口都要分别处理 | 反代收成单一 origin（D-37） |
 | Agent API 也经反代暴露 | 抹掉独立端口建立的爆炸半径隔离（D-9/D-29） | Agent 保持 :8090 直连（D-37） |
 | 为离线环境把镜像源写死进 Dockerfile | 把某个环境的私有地址固化进交付物 | 用 ARG + compose 变量覆盖（D-37） |

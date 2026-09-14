@@ -1,12 +1,12 @@
 # 持续集成：把“我机器上是绿的”变成“任何一台干净机器上都绿”。
 #
-# 为什么需要它：`mvn clean verify` 的 239 个用例跑在**真实 MySQL** 上（原文要求，见
+# 为什么需要它：`mvn clean verify` 的 242 个用例跑在**真实 MySQL** 上（原文要求，见
 # TestDatabase 的类注释），它成立的前提是“有一个独立测试库 + 正确导出的
 # BID_ARENA_TEST_DB_*”。在此之前，这条结论只在作者本机上成立：别人 clone 下来无法复现，
 # 提交时也没有任何东西能自动发现“只在我机器上绿”。
 #
 # 为什么分成 5 个 job 而不是一条 run 到底：失败时的含义不同，读日志的人应该一眼知道该去查什么。
-#   backend  —— 领域/集成/架构 239 个用例（服务容器提供一次性 MySQL 8.4）
+#   backend  —— 领域/集成/架构 242 个用例（服务容器提供一次性 MySQL 8.4）
 #   frontend —— 类型检查 + 73 单测 + 生产构建（含 D-37 的同源 WS 开关）
 #   e2e      —— 真起后端（8080/8090/18080）跑 tools/agent_sim.py 与 tools/auction_sim.py
 #   config   —— Python 脚本可编译、compose 配置可解析、前端 nginx.conf 语法
@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   backend:
-    name: 后端 239 用例（真实 MySQL）
+    name: 后端 242 用例（真实 MySQL）
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -71,8 +71,8 @@ jobs:
         # （与 DBG-19 “永远为真的守卫”同类）。
         run: |
           got=$(grep -ho 'tests="[0-9]*"' target/surefire-reports/*.xml | grep -o '[0-9]*' | awk '{s+=$1} END{print s}')
-          echo "surefire 总用例数：$got（期望 ≥ 239）"
-          test "$got" -ge 239
+          echo "surefire 总用例数：$got（期望 ≥ 242）"
+          test "$got" -ge 242
       - name: 失败时上传 surefire 报告
         if: failure()
         uses: actions/upload-artifact@v4
@@ -142,7 +142,7 @@ jobs:
           cache: maven
       - name: 打包后端并复制运行时依赖
         # 与 Dockerfile 第 1 阶段的构建方式一致：非 fat jar，用 java -cp 启动。
-        # 这里跳过测试：239 个用例已经由 backend job 负责，重复跑只会让反馈变慢。
+        # 这里跳过测试：242 个用例已经由 backend job 负责，重复跑只会让反馈变慢。
         run: |
           mvn -B -q -DskipTests package
           mvn -B -q dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/libs

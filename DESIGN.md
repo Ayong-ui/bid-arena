@@ -74,7 +74,7 @@
 - 架构守卫：`ArchUnit` 九条分层/跨上下文/无环规则（§2.4）。
 - 后台扫描器归属（D-40）：三个扫描器（结算/预告开拍/托管代理）由 `bootstrap/ScannerBootstrap` 按 `SETTLE_SCHEDULER_ENABLED` / `AUCTION_START_SCHEDULER_ENABLED` / `AGENT_PROXY_SCHEDULER_ENABLED` 决定是否在本实例启动，缺省全开、构造期生效；它只表达“本实例不跑”，不解决多实例自动分工。
 - 前端：Vue 3 + Pinia 接入真实 HTTP/WS，类型从契约生成，金额/倒计时以服务端为准（P4）；P6 增补尾段“博弈时间”提示（依据快照下发的 `finalGameWindowSeconds`）、成交主体 `AI/真人` 徽标与管理员按场次流水面板（D-33），并把“智能体接入”整页换成用户向的“我的 AI 代理”——主路径是**创建托管代理**（选场次 + 预算上限）与在管列表，自助 Token 收进页底“高级”（D-34/D-36）；大厅与运营台显示“预告 mm:ss 后开拍”（用 `store.serverNow`，不用本机时钟，D-35）。
-- 证据：`mvn clean verify` 共 239 个测试全绿（真库集成 88 + 扫描器开关 6〔D-40，其中 2 例动真库〕+ 其余领域/身份/结算/事件/WS/Agent/迁移开关单元 136 + 架构守卫 9）；
+- 证据：`mvn clean verify` 共 242 个测试全绿（真库集成 90 + 扫描器开关纯策略 4 + 配置键守卫 3〔`EnvDocumentationTest`：扫源码确保 `.env.example` 不漏键〕+ 其余领域/身份/结算/事件/WS/Agent/迁移开关单元 136 + 架构守卫 9）；
   关键路径另做变异测试反向确认确实会红（架构 9/9、Agent 14/14、前端 16/16）；前端另有 73 单测与 3 个真后端联调。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
 
 **尚未实现（如实声明）：** 只能靠 HTTP 复现的部分已全部有脚本——`tools/auction_sim.py` 覆盖并发同/邻价、`requestId`
