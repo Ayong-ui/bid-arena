@@ -1797,3 +1797,79 @@ $ python tools/agent_sim.py
 在客户端默认字符集为 `latin1` 时直接 `ERROR 1064`——同一份 UTF-8 文件里，**注释**里的中文没事，
 **标识符**里的中文就会炸。所以文件里刻意只用 ASCII 别名，并在用法中显式带上
 `--default-character-set=utf8mb4`。
+
+## DBG-32：变异脚本报 `0/9 KILLED`——不是规则失守，是 `mvn clean` 被文件锁挡住了
+
+**现象**
+
+交付验证复跑时，架构变异脚本从“9/9 KILLED”变成九条全部存活：
+
+```
+$ python tools/arch_mutation_check.py
+SURVIVED A1      rc=1 hit=NONE fired=NONE
+SURVIVED A2      rc=1 hit=NONE fired=NONE
+...
+SURVIVED A9      rc=1 hit=NONE fired=NONE
+---- total: 0/9 KILLED
+```
+
+这个结论很吓人——“架构守卫形同虚设”——但它与 A1~A9 各自的内容无关：九条全灭、连一条都不红，
+更像是**根本没跑到测试**。
+
+**定位**
+
+脚本判“存活”的依据是“退出码非 0 且命中了预期的规则字段”。这里 `rc=1` 却 `hit=NONE fired=NONE`：
+`fired` 为空说明 surefire 报告里**一条用例都没有**，报告文件压根没生成。手动执行脚本里那行命令：
+
+```
+$ mvn -o clean test -Dtest=ArchitectureTest -DfailIfNoSpecifiedTests=false
+[INFO] BUILD FAILURE
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-clean-plugin:3.2.0:clean
+        (default-clean) on project bid-arena-core: Failed to clean project:
+        Failed to delete ...\target\libs\solon-web-staticfiles-3.0.1.jar -> [Help 1]
+```
+
+根因和架构规则无关：验证 E2E 时需要本机起一个后端，我用的是
+`java -cp target/bid-arena-core-0.1.0-SNAPSHOT.jar;target/libs/* com.bidarena.Application`。
+Windows 不允许删除被进程打开的文件，于是 `mvn clean` 删 `target/libs/*.jar` 失败，
+Maven **在编译之前**就退出；没有编译、没有 surefire 报告，脚本的 `hit` 自然是空的——
+它把这个“空”读成了“变异存活”。报错信息里的关键词是 `Failed to delete`，与 `-o`（离线）无关
+（离线只影响依赖解析，而失败发生在 clean 阶段）。
+
+**修复**
+
+1. 停掉本地后端（释放 `target/libs/*.jar` 的文件锁）后重跑，九条全部恢复：
+
+```
+$ python tools/arch_mutation_check.py
+KILLED   A1      rc=1 hit=domainDependsOnlyOnItselfAndTheSharedKernel fired=domainDependsOnlyOnItselfAndTheSharedKernel
+...
+---- total: 9/9 KILLED
+```
+
+2. `tools/arch_mutation_check.py` 补一条“没跑起来”的判定：surefire 报告不存在时不再打 `SURVIVED`，
+   改打 `NO-RUN`、附上 Maven 输出的最后一行，并直接指出“先确认没有进程占用 `target/libs/*.jar`”。
+   `tools/agent_mutation_check.py` 早有同类处理（报告缺失时重试一轮并打印 Maven 尾部输出），
+   这次只是把架构脚本对齐到同一条口径上。
+
+**验证**
+
+```
+$ python tools/arch_mutation_check.py      # 停掉本地后端之后
+---- total: 9/9 KILLED
+$ python tools/agent_mutation_check.py
+---- total: 14/14 KILLED
+$ cd frontend && python tools/mutation_check.py
+全部 16 个变异都被杀死
+```
+
+**工程结论**
+
+“变异存活”与“这一轮没跑起来”是两种完全相反的结论，但在脚本眼里长得一模一样：一个非零退出码。
+凡是靠“退出码 + 报告文件”下判断的工具，都必须把**报告文件不存在**当成独立情形单独报出来，
+而不是让它落进默认分支（DBG-31 是同一道理的另一种形态：把“前提不成立”和“行为不符合预期”
+分成两种退出码）。
+
+这条坑还有个不太友好的巧合：**能锁住 `target/libs` 的，正是跑 E2E 脚本所必需的那个后端**——
+也就是说“先跑 E2E、再跑变异验证”这个最自然的顺序，恰好会踩中它。跑变异脚本前先停后端，
+或者干脆把运行时依赖复制到 `target/libs` 之外的目录再启动。

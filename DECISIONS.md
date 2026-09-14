@@ -816,7 +816,7 @@
 
 **代价**：评审手上已有 Token 时，必须先自己设好环境变量才能跑（设法已经印在报错里）；`--agent-only` 因而完全无状态——但这正是“凭据不进命令历史”的代价。
 
-**验证结果**：✅ `python -m py_compile` 通过；凭据解析 **13 条断言**通过（显式 > 环境、空白/空串视为未设置、未设置返回 None、模块内已不存在 `_interactive` 与 `getpass`、`AUCTION_ID`/`AGENT_API_BASE` 的覆盖与默认值）；`--agent-only` 无 Token → 打印 PowerShell/Bash 两种设法并 **退出码 2**，有 Token 但无 auctionId → 提示后 **退出码 2**，后端未起 → 提示启动端口并 **退出码 2**（都不是裸 traceback）；`--help` 正确渲染。⏳ 有后端时的真实双端口实跑待 VM 开机后补（同 §8 C-6）。
+**验证结果**：✅ `python -m py_compile` 通过；凭据解析 **13 条断言**通过（显式 > 环境、空白/空串视为未设置、未设置返回 None、模块内已不存在 `_interactive` 与 `getpass`、`AUCTION_ID`/`AGENT_API_BASE` 的覆盖与默认值）；`--agent-only` 无 Token → 打印 PowerShell/Bash 两种设法并 **退出码 2**，有 Token 但无 auctionId → 提示后 **退出码 2**，后端未起 → 提示启动端口并 **退出码 2**（都不是裸 traceback）；`--help` 正确渲染。**真实双端口实跑**（后端起在 8080/18080 与 `:8090`，连开发库）：用一枚真实签发、范围限定单场、带 `auction:read`/`auction:bid` 的 Token 跑 `--agent-only --auction-id <id> --bid` —— 读状态 200、**出价 200 `OK`**、读结果 404（未结算）→ **1/1 checks passed，退出码 0**；同一场景缺变量 → 退 2（不是连接错误）。同一次实跑里全流程 `tools/agent_sim.py` **44/44**、`tools/auction_sim.py` **52/52**、真后端联调 `npm run test:live` **3/3** 也一并复现。
 
 ---
 

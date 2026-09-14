@@ -69,6 +69,20 @@ def main():
             inject(path, snippet)
             proc = subprocess.run(CMD, shell=True, capture_output=True, text=True, errors="replace")
             report = io.open(REPORT, encoding="utf-8").read() if os.path.exists(REPORT) else ""
+            if not report:
+                # 没有 surefire 报告 = 这一轮根本没跑到测试，而不是“变异存活”。
+                # 最典型的原因在 Windows：有进程（例如手工起的
+                # `java -cp target/bid-arena-core-0.1.0-SNAPSHOT.jar;target/libs/*`）锁着
+                # target/libs/*.jar，maven-clean 删不掉文件，构建在编译前就失败（DBG-32）。
+                # 把它报成 SURVIVED，会把“没跑起来”读成“架构规则没守住”——结论正好相反。
+                verdicts.append((label, False))
+                detail = [line for line in (proc.stdout + proc.stderr).splitlines() if line.strip()]
+                print("NO-RUN   %-7s rc=%d <- 没生成 %s：这轮没跑到测试，不是变异存活"
+                      % (label, proc.returncode, REPORT))
+                if detail:
+                    print("      " + detail[-1].strip())
+                print("      先确认没有进程占用 target/libs/*.jar（见 DEBUG_LOG.md DBG-32）")
+                continue
             fired = re.findall(r"ArchitectureTest\.(\w+) -- Time", report)
             hit = [r for r in rules if r in fired]
             killed = proc.returncode != 0 and len(hit) == len(rules)
