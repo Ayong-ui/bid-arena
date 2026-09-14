@@ -105,6 +105,7 @@
 | 架构或技术选型 | `DESIGN.md` 与 `DECISIONS.md` |
 | 包结构 / 分层依赖规则 | `DESIGN.md` §2.2~§2.4 → `ArchitectureTest` 规则 → `tools/arch_mutation_check.py` 变异验证 → `docs/STATUS.md` |
 | 修复真实 bug | `DEBUG_LOG.md` |
+| 部署编排（`docker-compose.yml` / `Dockerfile` / `frontend/nginx.conf` / CI） | `README.md` 持续集成与未完成边界 → `docs/STATUS.md` §3 → `.github/workflows/ci.yml` |
 | 引入/放弃方案 | `DECISIONS.md` 与 `AI_USAGE.md` |
 | 交付范围、完成度、未完成项 | `README.md` 未完成边界 → `docs/STATUS.md` |
 | 任意一次提交 | `docs/STATUS.md`（进度与必交文档状态） |

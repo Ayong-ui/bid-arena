@@ -67,6 +67,7 @@ fix bug
 - [ ] `README.md` 的"未完成边界"已更新
 - [ ] [`docs/STATUS.md`](docs/STATUS.md) 已更新
 - [ ] 提交可独立编译、独立验证
+- [ ] CI 绿（`.github/workflows/ci.yml` 的 5 个 job；本机无法复现的项——例如镜像构建——以 CI 为准）
 
 > 关键：**接口先改 `openapi.yaml`，再改代码。** 契约是唯一裁决依据，不允许"代码先行、文档后补"。
 
@@ -80,6 +81,8 @@ mvn -q test-compile         # 后端可编译
 python tools/arch_mutation_check.py   # 架构规则的反向确认（期望 9/9 KILLED）
 # 前端变异：cd frontend; python tools/mutation_check.py（期望 16/16 KILLED）
 ```
+
+推上去之后看一眼 [Actions](https://github.com/Ayong-ui/bid-arena/actions/workflows/ci.yml)：`backend`/`frontend`/`e2e`/`config`/`images` 五个 job 对应上面这些命令，全绿才箥称“已验证”（详见 README 的「持续集成」）。
 
 逐项确认：
 

@@ -2,6 +2,8 @@
 
 仓库地址：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开启分支保护）
 
+[![CI](https://github.com/Ayong-ui/bid-arena/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ayong-ui/bid-arena/actions/workflows/ci.yml)
+
 这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V6）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**尾段“博弈时间”强制拒绝 Agent 出价**、**成交主体（AI / 真人）可追溯且仅对赢家与管理员可见**、**预告开拍与到点自动开拍**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及两条 AI 路径：**面向普通用户的「托管 AI 代理」**（选进行中/未开拍的场次 + 设定预算上限，服务端到点自动进场并按最小加价跟价，D-36）与**面向开发者的竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流，用户可在“我的 AI 代理”页**自助签发自己名下的授权**，D-34）；另有**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）和**一份服务器压测脚本**（`tools/stress_test.py`，尾段博弈时间清场 + 持续吞吐）。全量 **225 个测试**（216 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
@@ -43,6 +45,20 @@ mvn clean verify
 - 架构规则不连库（`ArchitectureTest`，秒级）；想反向确认这些规则真的会失败，跑 `python tools/arch_mutation_check.py`（逐条注入真实违规再还原，期望输出 `9/9 KILLED`）。
 
 当前断言内容与未验证部分见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
+
+## 持续集成（GitHub Actions）
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) 在每次 `main` 推送与 PR 上跑一遍，用的就是本文件里的那些命令——把「测试全绿」从「作者本机 + 手工建的测试库」变成任何一台干净机器上都能重放的日志：
+
+| job | 跑什么 | 失败意味着 |
+|---|---|---|
+| `backend` | 服务容器提供一次性 MySQL 8.4，`mvn clean verify`（**225/225**） | 领域/集成/架构有回归，或测试库前提被破坏 |
+| `frontend` | `npm ci` → `typecheck` → `npm test`（**73**）→ `VITE_WS_SAME_ORIGIN=1 npm run build` | 前端类型、单测或生产构建坏了 |
+| `e2e` | 真起后端（8080/8090/18080）跑 `tools/agent_sim.py`（**44/44**），复位演示数据后再跑 `tools/auction_sim.py`（**52/52**） | 端到端行为与 `docs/openapi.yaml` 描述不一致 |
+| `config` | `py_compile` 全部工具脚本、`docker compose config -q`、用 `nginx -t` 校验 `frontend/nginx.conf` | 部署编排或工具脚本语法坏了 |
+| `images` | `docker compose build`（后端 Maven+JRE、前端 Node+Nginx 两个镜像） | `Dockerfile` 构建不出来 |
+
+CI 里出现的库口令都是**一次性值**，只活在该次 run 的服务容器里，与任何真实环境无关；仓库里没有任何真实密钥。压测（`tools/stress_test.py`）与变异检查（`*_mutation_check.py`）**故意不进 CI**：前者在共享 runner 上拿不到可比的 QPS 数字，后者要反复改文件跑 Maven，留在提交前自检里做。
 
 ## 开发环境
 
@@ -352,10 +368,11 @@ docker exec -i bid-arena-mysql-1 mysql --default-character-set=utf8mb4 \
   并发清场与吞吐另由 `tools/stress_test.py` 覆盖（博弈时间 `-c 100` 全拒、吞吐约 410 QPS 无 5xx）。
   唯一不能只靠 HTTP 复现的是“20 个**不同用户**并发”：公开 API 没有注册端点、种子只有 3 个演示账号，
   这部分由真实库上的 `BidConcurrencyTest` 覆盖（详见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md) E1）。
-- **Compose 的镜像尚未在本机构建过**。`backend`/`frontend` 两个 `Dockerfile` 与 `docker-compose.yml` 已就位，
-  `docker compose config` 与 `frontend/nginx.conf` 的 `nginx -t` 均已校验；但按仓库约定（不重建评测机上的容器），
-  没有实际 `docker compose up` 过。本机 Docker daemon 在远程 VM 上且连不上 Docker Hub，本地镜像源也没有
-  node/maven/temurin 基础镜像，因此无法就地构建（已用 `ARG` 暴露基础镜像供受限环境替换，D-37）。
+- **Compose 的镜像已由 CI 构建，但还没有整栈拉起来跑过**。`backend`/`frontend` 两个 `Dockerfile` 与
+  `docker-compose.yml` 已就位，`docker compose config` 与 `frontend/nginx.conf` 的 `nginx -t` 均已校验，
+  CI 的 `images` job 每次提交都真的执行 `docker compose build`。本机 Docker daemon 在远程 VM 上且连不上
+  Docker Hub，本地镜像源也没有 node/maven/temurin 基础镜像，因此无法就地构建（已用 `ARG` 暴露基础镜像
+  供受限环境替换，D-37）；按仓库约定（不重建评测机上的容器），仍未实际 `docker compose up` 整栈验证。
 - **[AI_USAGE.md](AI_USAGE.md) 已填写**：工具与模型（`pi` + `deepseek-v4-flash`）、各模块人机分工与口径、
   四项本人设计决定、六项未采用方案、四项真实错误，以及七类目前仍不能独立解释/修改的代码；
   文末留三项「作者核对清单」（模型列表完整性、比例口径、决定归属）。
