@@ -152,6 +152,31 @@ python tools/arch_mutation_check.py   # 架构规则的反向确认（期望 9/9
 
 提交方式：将**仓库地址、姓名、联系方式**发送至原文指定邮箱。
 
+#### 9.1.1 录屏分镜（3~5 分钟，供本人录制）
+
+原文要求覆盖五件事：**真人加入、脚本用户并发、Agent 出价、最后五秒延时、结算与资金结果**。下表把每一拍落到具体的画面与命令上，照着点即可；总时长约 4 分 30 秒。
+
+**开录前（不录进视频）**
+
+1. `cp .env.example .env` 并填好 `JWT_SECRET`，然后 `docker compose up -d --build`，浏览器开 `http://localhost:8088`（D-37 单 origin：只暴露一个端口，`/api` 与 `/ws` 由 Nginx 反代）。
+2. 复位演示数据（脚本会**真的在库里花钱**）：`mysql -h127.0.0.1 -P3307 -ubid_arena -p bid_arena < db/reset_demo_data.sql`。
+3. **关掉所有可能露出真实口令的窗口**：开着 `.env` 的编辑器、带 `-p<口令>` 的终端标签、`GITHUB` secrets 页——`JWT_SECRET`／数据库口令／Agent Token 明文都不得入镜（§8.3）。终端先 `chcp 65001` 并把字号调大。
+4. 演示账号：`admin@example.com / Admin123456!`、`bidder_a@example.com`／`bidder_b@example.com`（密码均为 `Test123456!`）。
+
+| 时间 | 画面 | 操作 | 要体现的点 |
+|---|---|---|---|
+| 0:00–0:25 | 仓库 + 终端 | `git log --oneline` 滚两屏；`docker compose ps` 显示 `mysql / migrate / backend / frontend` | 有分阶段的真实提交历史；`migrate` 已退出（退出码 0） |
+| 0:25–1:10 | 浏览器 | 用 `bidder_a` 登录 → 拍卖大厅 → 进一场进行中的拍卖 → **加入本场** → 出价（可用「+ 最小加价」） | 真人加入；出价后余额被**冻结**、领先者与 `seq` 实时前进（数字全来自服务端） |
+| 1:10–2:10 | 第二个终端 | `python tools/auction_sim.py --keep`（八阶段全跑；**阶段 2~4 的 20 条并发/幂等重试是重点**） | 并发同/邻价只有合法的那几笔成交、`requestId` 重试不重复冻结；等待段可在剪辑时倍速或剪掉 |
+| 2:10–2:55 | 浏览器「我的 AI 代理」 | 选一场进行中/未开拍的场次 → 填预算 → **创建 AI 代理**，旁边终端可另开 `python tools/agent_sim.py --duration 60` | 普通用户不写代码就能让服务端 AI 出价（D-36）；Agent 走独立端口/独立 Token（D-34/D-9） |
+| 2:55–3:40 | 浏览器详情页 | 盯到**剩余 ≤ 5 秒**时手动出价一次 | 最后五秒出价触发 **+10 秒延时**，`已延时 N 次` 增加、倒计时重置（尾盘狙击） |
+| 3:40–4:20 | 浏览器 | 等结算完成后：详情页「结算」区看中标者与 `AI 代理/真人` 徽章 →「我的资金」看**冻结释放 + 成交扣款**流水 → 管理员看运营台「场次流水」 | 结算与资金结果可对账，成交主体（AI/真人）可追溯 |
+| 4:20–4:30 | 终端 | `python tools/stress_test.py --mode game-window -c 100` 滚出一片 `403 / HUMAN_ONLY_PERIOD` | 博弈时间真的把 Agent 挡在外面，真人不受影响（D-32） |
+
+**备选镜头**（时间不够时二选一）：`python tools/agent_sim.py --agent-only --auction-id <场次ID>` 只用 `AUCTION_AGENT_TOKEN` 参与已有拍卖（对应 `AGENT_TOOL_SPEC.md` 的“把 Token 交给 Coding Agent”路径）；或 `python tools/stress_test.py --mode throughput -c 50 --seconds 10` 展示吞吐。
+
+**录完自检**：① 五个必考点都有镜头；② 画面里没有任何密钥/Token 明文；③ 文件 3~5 分钟；④ 随提交邮件附上（视频**不能**替代代码、测试、Git 与文档核验）。
+
 ### 9.2 要持续更新什么
 
 | 触发 | 必须更新的内容 |
