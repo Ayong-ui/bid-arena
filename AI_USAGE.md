@@ -7,7 +7,7 @@
 > 作者复核后定稿；凡属推断的地方都显式标注，不做"事后美化"。
 >
 > 证据来源：`PI_*` 环境变量（工具与模型）、会话记录 `~/.pi/agent/sessions/.../2026-09-13T11-47-29-184Z_01a09a98-...jsonl`、
-> `git log`（截至部署优化一轮共 59 个提交）、[`DECISIONS.md`](DECISIONS.md)（D-1~D-39）、[`DEBUG_LOG.md`](DEBUG_LOG.md)（DBG-1~DBG-34）、
+> `git log`（截至部署优化一轮共 60 个提交）、[`DECISIONS.md`](DECISIONS.md)（D-1~D-39）、[`DEBUG_LOG.md`](DEBUG_LOG.md)（DBG-1~DBG-34）、
 > 以及测试/脚本的实跑输出（后端 233/233、前端 73、E2E 44/44 与 52/52、压测 11/11、手工核验 27/27）。
 > 需要作者本人确认的少量事实集中在文末「作者核对清单」。
 

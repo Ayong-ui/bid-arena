@@ -58,7 +58,7 @@ mvn clean verify
 | `config` | `py_compile` 全部工具脚本、`docker compose config -q`、用 `nginx -t` 校验 `frontend/nginx.conf` | 部署编排或工具脚本语法坏了 |
 | `images` | `docker compose build` 两个镜像 → 断言镜像里有产物（`app.jar`/`index.html`）→ `docker compose up -d` 起整栈，验 `:8080` 健康端点、`:8088` 的静态页与 `/api` 反代 → 断言一次性 `migrate` 服务退出码为 0、应用侧走的是“只校验”（D-39） | `Dockerfile` 构建不出来，或者 D-37 的单 origin 编排、D-39 的迁移收敛真的跑不起来 |
 
-目前最近一次运行五个 job 全绿，整轮约 2 分钟：`14270e0`（[run #7](https://github.com/Ayong-ui/bid-arena/actions/runs/34806342084)，第一次真正跑通“整栈起来”与 D-39 的迁移断言）。更早的 `d265c55`（[run #1](https://github.com/Ayong-ui/bid-arena/actions/runs/34802156957)）与 `74d3e07`（[run #2](https://github.com/Ayong-ui/bid-arena/actions/runs/34802520376)）也是五个 job 全绿。中间 run #4~#6 连续挂在 `images` 的“整栈起来跑一遍”，挖出两个只在容器里才会现形的错（入口类名少一层包名、mysql 健康检查误报健康），复盘见 `DEBUG_LOG.md` DBG-33/DBG-34。
+每个提交都会触发一轮（约 2 分钟，五个 job 各自独立报结论）。最近一次核对过全绿的是 `14270e0`（[run #7](https://github.com/Ayong-ui/bid-arena/actions/runs/34806342084)，第一次真正跑通“整栈起来”与 D-39 的迁移断言）。更早的 `d265c55`（[run #1](https://github.com/Ayong-ui/bid-arena/actions/runs/34802156957)）与 `74d3e07`（[run #2](https://github.com/Ayong-ui/bid-arena/actions/runs/34802520376)）也是五个 job 全绿。中间 run #4~#6 连续挂在 `images` 的“整栈起来跑一遍”，挖出两个只在容器里才会现形的错（入口类名少一层包名、mysql 健康检查误报健康），复盘见 `DEBUG_LOG.md` DBG-33/DBG-34。
 
 CI 里出现的库口令都是**一次性值**，只活在该次 run 的服务容器里，与任何真实环境无关；仓库里没有任何真实密钥。压测（`tools/stress_test.py`）与变异检查（`*_mutation_check.py`）**故意不进 CI**：前者在共享 runner 上拿不到可比的 QPS 数字，后者要反复改文件跑 Maven，留在提交前自检里做。
 
