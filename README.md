@@ -58,7 +58,7 @@ mvn clean verify
 | `config` | `py_compile` 全部工具脚本、`docker compose config -q`、用 `nginx -t` 校验 `frontend/nginx.conf` | 部署编排或工具脚本语法坏了 |
 | `images` | `docker compose build` 两个镜像 → 断言镜像里有产物（`app.jar`/`index.html`）→ `docker compose up -d` 起整栈，验 `:8080` 健康端点、`:8088` 的静态页与 `/api` 反代 | `Dockerfile` 构建不出来，或者 D-37 的单 origin 编排真的跑不起来 |
 
-首次运行（[run #1](https://github.com/Ayong-ui/bid-arena/actions/runs/34802156957)）五个 job 全绿，整轮约 3.5 分钟。
+首次与目前最近一次运行均五个 job 全绿，整轮约 2 分钟：`d265c55`（[run #1](https://github.com/Ayong-ui/bid-arena/actions/runs/34802156957)）、`74d3e07`（[run #2](https://github.com/Ayong-ui/bid-arena/actions/runs/34802520376)，含上表的镜像构建与整栈验证）。
 
 CI 里出现的库口令都是**一次性值**，只活在该次 run 的服务容器里，与任何真实环境无关；仓库里没有任何真实密钥。压测（`tools/stress_test.py`）与变异检查（`*_mutation_check.py`）**故意不进 CI**：前者在共享 runner 上拿不到可比的 QPS 数字，后者要反复改文件跑 Maven，留在提交前自检里做。
 
