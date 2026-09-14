@@ -1,449 +1,698 @@
 # Bid Arena（拍卖间）
 
-仓库地址：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开启分支保护）
+一个**并发安全的在线拍卖系统**：真人竞拍、AI 代拍、实时推送、资金冻结与结算对账。
+Java 17 + Solon 3（不用 Spring）+ MySQL 8.4 + Flyway；前端 Vue 3 + TypeScript + Vite，由 Nginx 收成**一个入口**。
 
 [![CI](https://github.com/Ayong-ui/bid-arena/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ayong-ui/bid-arena/actions/workflows/ci.yml)
+仓库：<https://github.com/Ayong-ui/bid-arena>（公开，含完整提交历史；`main` 已开分支保护）
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V6）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**尾段“博弈时间”强制拒绝 Agent 出价**、**成交主体（AI / 真人）可追溯且仅对赢家与管理员可见**、**预告开拍与到点自动开拍**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及两条 AI 路径：**面向普通用户的「托管 AI 代理」**（选进行中/未开拍的场次 + 设定预算上限，服务端到点自动进场并按最小加价跟价，D-36）与**面向开发者的竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流，用户可在“我的 AI 代理”页**自助签发自己名下的授权**，D-34）；另有**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）和**一份服务器压测脚本**（`tools/stress_test.py`，尾段博弈时间清场 + 持续吞吐）。三个后台扫描器（到期结算、预告开拍、托管代理）可用 `SETTLE_SCHEDULER_ENABLED` / `AUCTION_START_SCHEDULER_ENABLED` / `AGENT_PROXY_SCHEDULER_ENABLED` 按实例裁剪（D-40，缺省全开）。全量 **242 个测试**（233 个领域/集成/守卫用例 + 9 条架构规则；并发与结算相关用例跑在真实 MySQL 上）。尚未完成：演示录屏与现场核验素材。
-
-实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
-
-## 一键验证
-
-并发与结算相关测试跑在**真实 MySQL** 上，不依赖内存 Mock。准备一个独立测试库（切勿指向开发库）：
-
-```sql
-CREATE DATABASE IF NOT EXISTS bid_arena_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-GRANT ALL PRIVILEGES ON bid_arena_test.* TO 'bid_arena'@'%';
-FLUSH PRIVILEGES;
-```
-
-指定测试库并运行：
-
-```powershell
-# Windows PowerShell
-$env:BID_ARENA_TEST_DB_URL = "jdbc:mysql://主机:3307/bid_arena_test?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8"
-$env:BID_ARENA_TEST_DB_USER = "bid_arena"
-$env:BID_ARENA_TEST_DB_PASSWORD = "<本地口令>"
-mvn clean verify
-```
+**5 分钟跑起来**（本机只要有 Docker，浏览器只开一个端口）：
 
 ```bash
-# Git Bash / Linux
-export BID_ARENA_TEST_DB_URL="jdbc:mysql://主机:3307/bid_arena_test?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&characterEncoding=UTF-8"
-export BID_ARENA_TEST_DB_USER="bid_arena"
-export BID_ARENA_TEST_DB_PASSWORD="<本地口令>"
-mvn clean verify
+git clone https://github.com/Ayong-ui/bid-arena.git
+cd bid-arena
+cp .env.example .env          # 只需改里面两处 CHANGE_ME
+docker compose up -d --build  # 首次会构建两个镜像；MySQL 初始化 + 迁移约 1~2 分钟
+# 打开 http://localhost:8088 ，用下面「演示账号」登录
 ```
 
-说明：
+演示账号（种子数据，服务起来就已存在）：
 
-- 用 `clean` 而不是 `mvn test`：迁移脚本位于仓库根目录 `db/migration/`，增量构建可能让应用跑到旧副本（见 `DEBUG_LOG.md` DBG-2）。
-- 测试会自动建表、执行 Flyway 迁移，并在每个用例前清空业务表；库名不得与开发库相同，否则拒绝启动。
-- HTTP 与 WebSocket 集成测试**共用同一个自启动的服务实例**（随机空闲端口，不会是 8080），整轮测试结束时停掉；因此跑测试不需要先手动起后端。
-- 断言消息含中文；Windows 控制台若乱码，执行 `chcp 65001`，或直接看 `target/surefire-reports/` 下的报告。
-- 架构规则不连库（`ArchitectureTest`，秒级）；想反向确认这些规则真的会失败，跑 `python tools/arch_mutation_check.py`（逐条注入真实违规再还原，期望输出 `9/9 KILLED`）。
+| 角色 | 账号 | 口令 | 能做什么 |
+|---|---|---|---|
+| 管理员 | `admin@example.com` | `Admin123456!` | 创建/开始/取消拍卖，看全场流水与授权总览 |
+| 竞拍者 A | `bidder_a@example.com` | `Test123456!` | 加入拍卖、出价、建托管 AI 代理 |
+| 竞拍者 B | `bidder_b@example.com` | `Test123456!` | 同上（开两个窗口就能互相加价） |
 
-当前断言内容与未验证部分见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
+> 这三个账号写在种子迁移 `db/migration/V2__identity_wallet_ledger.sql` 里，改种子的同时记得改本表。
 
-## 持续集成（GitHub Actions）
+## 目录
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) 在每次 `main` 推送与 PR 上跑一遍，用的就是本文件里的那些命令——把「测试全绿」从「作者本机 + 手工建的测试库」变成任何一台干净机器上都能重放的日志：
+- [1. 这是什么](#1-这是什么)
+- [2. 快速启动（推荐路径）](#2-快速启动推荐路径)
+  - [2.1 前置条件](#21-前置条件)
+  - [2.2 复制环境变量（唯一必做的配置）](#22-复制环境变量唯一必做的配置)
+  - [2.3 一条命令起整栈](#23-一条命令起整栈)
+  - [2.4 打开并登录](#24-打开并登录)
+- [3. 小教程：八步走完整条链路](#3-小教程八步走完整条链路)
+  - [第 1~2 步：起栈并确认初始化](#第-12-步起栈并确认初始化)
+  - [第 3 步：管理员开始演示拍卖](#第-3-步管理员开始演示拍卖)
+  - [第 4 步：两个浏览器用户加入并互相加价](#第-4-步两个浏览器用户加入并互相加价)
+  - [第 5 步：20 并发模拟脚本](#第-5-步20-并发模拟脚本)
+  - [第 6 步：创建 Agent Token，让竞拍 Agent 参与](#第-6-步创建-agent-token让竞拍-agent-参与)
+  - [第 7 步：查看成交、钱包与流水](#第-7-步查看成交钱包与流水)
+  - [第 8 步：运行自动化测试](#第-8-步运行自动化测试)
+  - [卡住了看这里](#卡住了看这里)
+- [4. 部署教材](#4-部署教材)
+  - [4.1 服务拓扑与端口](#41-服务拓扑与端口)
+  - [4.2 环境变量速查](#42-环境变量速查)
+  - [4.3 常见部署形态](#43-常见部署形态)
+  - [4.4 迁移与初始化](#44-迁移与初始化)
+  - [4.5 多实例部署](#45-多实例部署)
+  - [4.6 排错手册](#46-排错手册)
+  - [4.7 停止 / 清库 / 复位演示数据](#47-停止--清库--复位演示数据)
+- [5. 本地开发（源码方式，不用 Docker 跑应用）](#5-本地开发源码方式不用-docker-跑应用)
+  - [5.1 后端](#51-后端)
+  - [5.2 前端](#52-前端)
+  - [5.3 前端联调测试](#53-前端联调测试)
+- [6. 测试与持续集成](#6-测试与持续集成)
+  - [6.1 一键测试命令](#61-一键测试命令)
+  - [6.2 后端 242 个用例怎么构成](#62-后端-242-个用例怎么构成)
+  - [6.3 守卫与变异验证](#63-守卫与变异验证)
+  - [6.4 CI（五个 job，失败含义各自独立）](#64-ci五个-job失败含义各自独立)
+- [7. 工具脚本（`tools/`）](#7-工具脚本tools)
+- [8. API 与实时通道（速览）](#8-api-与实时通道速览)
+- [9. 项目结构](#9-项目结构)
+- [10. 文档地图](#10-文档地图)
+- [11. 未完成边界（如实声明）](#11-未完成边界如实声明)
+- [12. 公开仓库约定](#12-公开仓库约定)
 
-| job | 跑什么 | 失败意味着 |
+## 1. 这是什么
+
+- **业务**：管理员创建拍品（可预填开拍时间，到点自动开拍）→ 竞拍者在倒计时内出价 → 价高者得，结算后钱包与流水可对账。
+- **必须做对的三件事**：① 同一瞬间的并发出价只能有一笔成交；② 同一用户的重复请求（`requestId` 重放）只扣一次钱；③ 结算只有一次，进程重启也不能漏结算或重复结算。
+- **两条 AI 路径**：面向普通用户的**托管 AI 代理**（填个预算上限，服务端自动跟价）与面向开发者的**竞拍 Agent API**（独立端口 + 独立 Token，可交给脚本或 Coding Agent）。
+- **实时**：WebSocket 推送价格、领先者、剩余时间与延时；用 `seq` 检测缺口，断线重连先取权威快照。
+
+| 层 | 选型 | 说明 |
 |---|---|---|
-| `backend` | 服务容器提供一次性 MySQL 8.4，`mvn clean verify`（**242/242**），并断言 surefire 总用例数 ≥ 242 | 领域/集成/架构有回归，或者用例数被过滤器悄悄减少 |
-| `frontend` | `npm ci` → `typecheck` → `npm test`（**73**）→ `VITE_WS_SAME_ORIGIN=1 npm run build` | 前端类型、单测或生产构建坏了 |
-| `e2e` | 真起后端（8080/8090/18080）跑 `tools/agent_sim.py`（**44/44**），复位演示数据后再跑 `tools/auction_sim.py`（**52/52**） | 端到端行为与 `docs/openapi.yaml` 描述不一致 |
-| `config` | `py_compile` 全部工具脚本、`docker compose config -q`、用 `nginx -t` 校验 `frontend/nginx.conf` | 部署编排或工具脚本语法坏了 |
-| `images` | `docker compose build` 两个镜像 → 断言镜像里有产物（`app.jar`/`index.html`）→ `docker compose up -d` 起整栈，验 `:8080` 健康端点、`:8088` 的静态页与 `/api` 反代 → 断言一次性 `migrate` 服务退出码为 0、应用侧走的是“只校验”（D-39） | `Dockerfile` 构建不出来，或者 D-37 的单 origin 编排、D-39 的迁移收敛真的跑不起来 |
+| 后端 | Java 17 + Solon 3 | 手写分层（domain / application / adapter / persistence），无框架魔法，启动约 2 秒 |
+| 数据库 | MySQL 8.4 + Flyway | 迁移 `db/migration/V1~V6`；并发靠行锁 + 条件更新，不靠应用内锁 |
+| 前端 | Vue 3 + TypeScript + Pinia + Vite | 类型由 `docs/openapi.yaml` 生成；价与剩余时间以服务端快照为准，前端只做倒计时插值，不自己定价 |
+| 部署 | Docker Compose + Nginx | 单 origin：`/api` 与 `/ws` 反代，浏览器只访问一个端口 |
 
-每个提交都会触发一轮（约 2 分钟，五个 job 各自独立报结论）。最近一次核对过全绿的是 `14270e0`（[run #7](https://github.com/Ayong-ui/bid-arena/actions/runs/34806342084)，第一次真正跑通“整栈起来”与 D-39 的迁移断言）。更早的 `d265c55`（[run #1](https://github.com/Ayong-ui/bid-arena/actions/runs/34802156957)）与 `74d3e07`（[run #2](https://github.com/Ayong-ui/bid-arena/actions/runs/34802520376)）也是五个 job 全绿。中间 run #4~#6 连续挂在 `images` 的“整栈起来跑一遍”，挖出两个只在容器里才会现形的错（入口类名少一层包名、mysql 健康检查误报健康），复盘见 `DEBUG_LOG.md` DBG-33/DBG-34。
+## 2. 快速启动（推荐路径）
 
-CI 里出现的库口令都是**一次性值**，只活在该次 run 的服务容器里，与任何真实环境无关；仓库里没有任何真实密钥。压测（`tools/stress_test.py`）与变异检查（`*_mutation_check.py`）**故意不进 CI**：前者在共享 runner 上拿不到可比的 QPS 数字，后者要反复改文件跑 Maven，留在提交前自检里做。
+### 2.1 前置条件
 
-## 开发环境
+- Docker 与 Docker Compose v2（`docker compose version`）。
+- 端口空闲：`8088`（浏览器入口）、`8080` / `8090` / `18080`（后端）、`3307`（MySQL）。被占了改 `.env`，见 [§4.2](#42-环境变量速查)。
+- 不需要装 JDK / Node / Maven——都在镜像里。
 
-已提供最小开发环境骨架：Solon 3.x 后端（含 HTTP 接口与鉴权）、Vue 3 + TypeScript + Vite 前端，以及 MySQL 8 Docker Compose。
-
-```powershell
-# Windows PowerShell
-Copy-Item .env.example .env
-# 把 .env 里的 CHANGE_ME 换成真实值，然后导出为环境变量（后端进程读环境变量，不读 .env 文件）
-docker compose up -d mysql
-mvn -q test-compile
-cd frontend
-npm install
-npm run dev
-```
+### 2.2 复制环境变量（唯一必做的配置）
 
 ```bash
-# macOS / Linux / Git Bash
-cp .env.example .env
-# 同上：把 CHANGE_ME 换成真实值，并把里面的变量导出到当前 shell
-docker compose up -d mysql
-mvn -q test-compile
-cd frontend && npm install && npm run dev
+cp .env.example .env         # Windows PowerShell: Copy-Item .env.example .env
 ```
 
-- 后端已接入 HTTP 接口层（统一下面一节的启动方式），`Application` 启动时会同时启动到期结算扫描。
-- 前端开发地址：`http://localhost:5173`。后端不在 `8080`（或想换 Vite 端口）**不用改源码**：导出
-  `VITE_DEV_API_TARGET` / `VITE_DEV_PORT`，或写在 `frontend/.env.local` 里即可（见 `frontend/vite.config.ts`）。
-- 健康检查：`GET http://localhost:8080/api/v1/health`（公开，无需令牌）
+打开 `.env`，把**两处** `CHANGE_ME` 换成随机值：
 
-也可以用容器起后端（本机只需要 Docker，不需要装 JDK/Maven）：
-
-```bash
-cp .env.example .env      # 填好 JWT_SECRET（必须）
-docker compose up -d mysql backend
+```dotenv
+MYSQL_PASSWORD=你自己的一串口令
+JWT_SECRET=至少32字节的随机串          # 生成：openssl rand -base64 48
 ```
 
-`backend` 服务等你所说的那次**一次性迁移**跑完才启动：schema 变更由同样的镜像以另一个 entrypoint（`com.bidarena.bootstrap.MigrateMain`）执行，退出码非 0 时应用根本不会起（D-39）。
-它映射三个端口：`8080`（用户/管理）、`8090`（Agent）、`18080`（WebSocket）。
-只想建镜像：`docker build -t bid-arena-backend .`。
+> `.env` 已被 `.gitignore` 排除；仓库里只有 `.env.example`，**没有任何真实密钥**。
+> 其余键都有可用默认值，想调再看 [§4.2](#42-环境变量速查)。
 
-**一条命令起完整栈（单 origin，推荐）**：前面那个方式还要自己想办法托管前端、把 CORS 与 WS 端口对上；直接把 `frontend` 也交给 compose 即可（D-37）：
+### 2.3 一条命令起整栈
 
 ```bash
-cp .env.example .env          # 至少填 JWT_SECRET；WEB_PORT 默认 8088
-# 网络受限时可先指定前端基础镜像源（见 .env.example 的 FRONTEND_*_IMAGE）
 docker compose up -d --build
-# 浏览器访问 http://localhost:8088
 ```
 
-浏览器只看到一个 origin：`frontend` 容器用 Nginx 托管前端产物，并把 `/api` 与 `/ws` 反代到后端的
-`8080`/`18080`，因此**不需要配 `CORS_ORIGINS`，也不用让浏览器直连 18080**。
-`backend` 的端口保留发布只是方便本机 `curl` 与 E2E/压测脚本直连。
-Agent API 仍是独立端口 `:8090`，**刻意不经反代**（保留 D-9/D-29 的爆炸半径隔离，理由写在 `frontend/nginx.conf` 顶部）。
+四个服务各司其职——这也是它比“手动起三样东西”省事的原因：
 
-`migrate` 是一次性服务（`restart: "no"`），迁完就退出；重跑 `docker compose up -d` 时它会再跑一次，但已是最新版本时是空转。
-只想先把库对齐、再决定要不要起应用：`docker compose up --build migrate`。
-迁移结论只在 `docker compose logs migrate` 里（`migrate` 与 `backend` 是两个容器）。
-（注：“镜像能不能构建、整栈能不能起来”已由 CI 每次提交真验一遍（含上面那条迁移断言），见「持续集成」；
-按仓库约定不在评测机上重建容器，见 [docs/STATUS.md](docs/STATUS.md) 的 C-6。）
-
-### 已实现的 HTTP 接口
-
-所有响应都是同一个封套 `{ code, message, data, requestId }`，完整契约（含每个字段与错误码）见 [docs/openapi.yaml](docs/openapi.yaml)。除下表标注「公开」的两个接口外，其余一律需要 `Authorization: Bearer <token>`（默认拒绝，见 `DECISIONS.md` D-15）。
-
-| 方法 | 路径 | 说明 |
+| 服务 | 作用 | 起完的状态 |
 |---|---|---|
-| GET | `/api/v1/health` | 公开。健康检查 |
-| POST | `/api/v1/auth/login` | 公开。登录换取 JWT；响应用 `data.token` |
-| GET | `/api/v1/users/me` | 当前用户（`id` / `email` / `role` / `name`） |
-| GET | `/api/v1/wallets/me` | 我的钱包（总余额、冻结、**可用余额**） |
-| GET | `/api/v1/wallets/me/ledger` | 我的资金流水（分页） |
-| GET | `/api/v1/auctions` | 拍卖列表（按状态过滤 + 分页） |
-| GET | `/api/v1/auctions/{id}` | 拍卖快照（前端唯一事实来源） |
-| POST | `/api/v1/auctions/{id}/join` | 加入拍卖（幂等，重复加入不报错） |
-| GET | `/api/v1/auctions/{id}/bids` | 出价记录（分页） |
-| POST | `/api/v1/auctions/{id}/bids` | 出价（body 含 `requestId` 幂等键与 `amount`） |
-| GET | `/api/v1/auctions/{id}/result` | 成交结果（未结算时 404） |
-| POST | `/api/v1/admin/auctions` | 管理员：创建拍卖（201；可选 `startsAt` 预告开拍，到点由扫描器自动开拍） |
-| POST | `/api/v1/admin/auctions/{id}/start` | 管理员：开始拍卖 |
-| POST | `/api/v1/admin/auctions/{id}/cancel` | 管理员：取消并释放全部冻结 |
-| GET | `/api/v1/admin/auctions/{id}/ledger` | 管理员：该场全部资金流水（含每条的主体 `actorType`：HUMAN/AGENT） |
-| POST | `/api/v1/auth/ws-tickets` | 领一张一次性 WebSocket 入场券（60 秒有效，见下节） |
-| POST | `/api/v1/admin/agent-tokens` | 管理员：为某个用户签发 Agent Token（明文**只在本次响应**出现） |
-| POST | `/api/v1/admin/agent-tokens/{tokenId}/revoke` | 管理员：吊销 Token（幂等；不存在则 404） |
-| GET | `/api/v1/admin/agent-tokens` | 管理员：全部 Agent 授权总览（不含明文） |
-| GET | `/api/v1/me/agent-tokens` | 用户：**自己名下**的 Agent 授权列表（含派生 `status`，不含明文） |
-| POST | `/api/v1/me/agent-tokens` | 用户：为自己签发一份授权（body **没有** `agentUserId`，归属由服务端钉死） |
-| POST | `/api/v1/me/agent-tokens/{tokenId}/revoke` | 用户：吊销自己的 Token（不是自己的一律 404，不泄露存在性） |
-| GET | `/api/v1/me/agent-proxies` | 用户：**自己名下**的托管 AI 代理列表（含 `status`/`nextBidAmount`/`leading`，不含明文） |
-| POST | `/api/v1/me/agent-proxies` | 用户：在指定拍卖上创建一个托管 AI 代理（body 只有 `auctionId` + `budgetLimit`，归属由服务端钉死） |
-| POST | `/api/v1/me/agent-proxies/{proxyId}/revoke` | 用户：撤销自己的托管代理（不是自己的一律 404） |
-| GET | `/api/v1/admin/agent-proxies` | 管理员：全部托管 AI 代理总览（只读，带 `ownerUserId`） |
-| GET | `/api/v1/agent/auctions/{id}` | Agent（`:8090`）：拍卖快照（需 `auction:read` 且在该 Token 的拍卖范围内） |
-| POST | `/api/v1/agent/auctions/{id}/bids` | Agent（`:8090`）：出价（需 `auction:bid`；body 含 `requestId` 与 `amount`） |
-| GET | `/api/v1/agent/auctions/{id}/result` | Agent（`:8090`）：成交结果（未结算时 404） |
+| `mysql` | MySQL 8.4，数据在 `mysql_data` 卷里 | `healthy` |
+| `migrate` | **一次性**跑 Flyway 迁移 + 种子数据（D-39） | 退出码 `0`，容器停住 |
+| `backend` | 常驻应用：用户/管理 API、Agent API、WebSocket | `Up`，并且**只校验不迁移**（`MIGRATE_ON_START=false`） |
+| `frontend` | Nginx 托管前端产物，并把 `/api`、`/ws` 反代到后端 | `Up` |
 
-演示账号（种子数据，与原文一致）：`admin@example.com / Admin123456!`、`bidder_a@example.com / Test123456!`、`bidder_b@example.com / Test123456!`。
-
-### 已实现的实时通道（WebSocket）
-
-事件信封（`auctionId` / `seq` / `serverTime` / `type` / `payload`）、七种事件类型、可见范围、序号语义与客户端重同步规则见 [docs/REALTIME_AND_COMMAND_FLOW.md](docs/REALTIME_AND_COMMAND_FLOW.md)，自动化验证汇总见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md) 的 A8/C3/C4/C5。
-
-两步接入（也可直接用任意 WS 客户端）：
+确认迁移真的成功（应用不会对着旧 schema 提供服务）：
 
 ```bash
-# 1. 用已登录的 JWT 换一张一次性票（不要去猜 WS 端口，响应会告诉你）
-curl -s -X POST http://localhost:8080/api/v1/auth/ws-tickets \
+docker compose ps                       # migrate 应显示 Exited (0)
+docker compose logs migrate | tail -5   # 应看到 "Successfully applied ..." 或 "up to date"
+```
+
+### 2.4 打开并登录
+
+浏览器访问 **<http://localhost:8088>**，用演示账号里的 `admin@example.com / Admin123456!` 登录。
+
+- 后端健康检查（公开，无需令牌）：<http://localhost:8080/api/v1/health>
+- 看某个服务在说什么：`docker compose logs -f backend`（`frontend` / `mysql` / `migrate` 同理）。
+
+## 3. 小教程：八步走完整条链路
+
+从零到“看见成交与流水”。照着做即可，每步都写了**你会看到什么**和**怎么自己验证**。
+
+| 步 | 做什么 | 关键点 |
+|---|---|---|
+| 1 | 起栈（复制环境变量 → Compose 启动依赖） | 见 [§2](#2-快速启动推荐路径) |
+| 2 | 自动迁移与初始化 | `migrate` 退出码 0；演示账号与 DRAFT 拍品就绪 |
+| 3 | 管理员开始演示拍卖 | 种子里那场**不会自动倒计时**，必须手动开始 |
+| 4 | 两个浏览器用户加入并互相加价 | 冻结/释放、领先者、`seq` 实时变化 |
+| 5 | 20 并发模拟脚本 | 同价并发只成交一笔；重试不重复扣钱 |
+| 6 | 创建 Agent Token，让竞拍 Agent 参与 | 独立端口 `:8090`；尾段 20 秒被拒 |
+| 7 | 查看成交、钱包与流水 | 结算一次；钱对得上 |
+| 8 | 运行自动化测试 | 后端 + 前端 + 端到端脚本 |
+
+### 第 1~2 步：起栈并确认初始化
+
+```bash
+cp .env.example .env && docker compose up -d --build
+docker compose logs migrate | tail -5
+```
+
+**会看到**：迁移日志以 “Successfully applied N migrations” 或 “up to date” 收尾。
+“初始化”就是这次迁移自带的种子：3 个演示账号（各 1000 积分）+ 1 件 `DRAFT` 演示拍品
+`auc_demo_0001`（“演示拍品 · 复古机械键盘”，起拍 100、最小加价 10、时长 180 秒）。
+它**有意不自动倒计时**（`ends_at` 为 NULL），等你点开始才进入倒计时。
+
+### 第 3 步：管理员开始演示拍卖
+
+浏览器（`admin@example.com` 登录）→ 侧边栏 **⚙ 运营台** → 那件 `DRAFT` 拍品的**「开始」**。命令行等价：
+
+```bash
+TOKEN=$(curl -s -X POST localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"admin@example.com","password":"Admin123456!"}' \
+  | python -c "import sys,json;print(json.load(sys.stdin)['data']['accessToken'])")
+
+curl -s -X POST localhost:8080/api/v1/admin/auctions/auc_demo_0001/start \
   -H "Authorization: Bearer $TOKEN"
-# → {"code":"OK","data":{"ticket":"...","expiresAt":"...","wsPath":"/ws/auctions/{auctionId}","wsPort":18080}}
-
-# 2. 连上去（把 {auctionId} 换成真 ID，把 ticket 填进去）
-#    ws://localhost:18080/ws/auctions/{auctionId}?ticket=<ticket>
 ```
 
-连接成功后先收到一帧权威快照（`type=AUCTION_SNAPSHOT`，带当前 `seq`），再收到 `CONNECTION_STATE`。之后：
+**会看到**：状态从 `DRAFT` 变 `RUNNING`，倒计时开始（180 秒），`seq` 前进一位。
 
-- 只有**参与者**（或 ADMIN）能收到该场事件；未加入会收到 `NOT_JOINED` 并断开。
-- 事件里的用户标识是匿名值（`anon-` + SHA-256 前 8 位），不是原始 `user_id`；详见 D-21。
-- `seq` 是“已提交状态变更的版本号”：一次命令 +1，被拒的出价不推，一次提交的多个事件共用一个 `seq`。发现缺口就重取 `GET /api/v1/auctions/{id}`，不要猜测。
-- **发往服务端的消息会被忽略**：命令入口只有 HTTP（D-22）。
+### 第 4 步：两个浏览器用户加入并互相加价
 
-## 竞拍 Agent API（`:8090`，P5）
+1. 开一个**无痕窗口**，用 `bidder_a@example.com` 登录 → 进这场拍卖 → **加入本场** → 出价（点「+ 最小加价」最快）。
+2. 再开一个无痕窗口，用 `bidder_b@example.com` 做同样的事，但出更高的价。
 
-竞拍 Agent（脚本、外部程序）用一个**独立于用户 JWT 的凭据**、在**独立端口**上读状态与出价。
-为什么分开：Agent 需要长时间无人看管地运行，把用户 JWT 交给它等于把整张用户权限表交出去（D-9）。
-评审可直接看 [AGENT_TOOL_SPEC.md](AGENT_TOOL_SPEC.md)（操作步骤、提示词模板、失败边界）。
-
-三步上手（授权 → Agent 使用 → 随时吊销）。**普通用户不需要找管理员**：登录后在“我的 AI 代理”页点“新建授权”即可，等价于下面的第 1 步（`POST /api/v1/me/agent-tokens`，不传 `agentUserId`）。
+**会看到**：价格、领先者、剩余时间**实时**跳动（走 WebSocket，不是轮询）；`bidder_a` 的钱包出现**冻结**；
+`bidder_b` 反超后，`bidder_a` 的冻结被**释放**，而 `bidder_b` 只冻结差额。命令行等价：
 
 ```bash
-# 1a. 用户自助签发（JWT 即登录令牌；归属就是调用者，请求体里没有 agentUserId）
-curl -s -X POST http://localhost:8080/api/v1/me/agent-tokens \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"sniping-bot","scopes":["auction:read","auction:bid"],\
-       "auctionIds":["1"],"expiresAt":"2030-01-01T00:00:00Z","rateLimitPerMinute":60}'
-# → data.token 即 Agent Token（前缀类似 agt_...；只在这里出现一次）
-
-# 1b. 或由管理员代为签发（多一个 agentUserId）
-curl -s -X POST http://localhost:8080/api/v1/admin/agent-tokens \
-  -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"name":"sniping-bot","agentUserId":2,"scopes":["auction:read","auction:bid"],\
-       "auctionIds":["1"],"expiresAt":"2030-01-01T00:00:00Z","rateLimitPerMinute":60}'
-
-# 2. Agent 读快照与出价（注意端口是 8090，不是 8080）
-#    变量名沿用原文与 tools/agent_credentials.py：AUCTION_AGENT_TOKEN
-curl -s http://localhost:8090/api/v1/agent/auctions/1 \
-  -H "Authorization: Bearer $AUCTION_AGENT_TOKEN"
-curl -s -X POST http://localhost:8090/api/v1/agent/auctions/1/bids \
-  -H "Authorization: Bearer $AUCTION_AGENT_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"requestId":"bot-0001","amount":1200}'
-
-# 3. 吊销（幂等；不存在或不是自己的均为 404）
-curl -s -X POST http://localhost:8080/api/v1/me/agent-tokens/1/revoke \
-  -H "Authorization: Bearer $TOKEN"
-# 管理员版同理：POST /api/v1/admin/agent-tokens/1/revoke
+BT=$(curl -s -X POST localhost:8080/api/v1/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"bidder_a@example.com","password":"Test123456!"}' \
+  | python -c "import sys,json;print(json.load(sys.stdin)['data']['accessToken'])")
+curl -s -X POST localhost:8080/api/v1/auctions/auc_demo_0001/join -H "Authorization: Bearer $BT"
+curl -s -X POST localhost:8080/api/v1/auctions/auc_demo_0001/bids -H "Authorization: Bearer $BT" \
+  -H 'Content-Type: application/json' -d '{"requestId":"demo-1","amount":110}'
 ```
 
-> 库里只存 sha256 摘要，明文**只在签发响应出现一次**；列表接口（含管理员总览）永远不会回明文。
-> 用户只能看到自己的授权，管理员可在前端“我的 AI 代理”页底部看到全局总览。
+`requestId` 是幂等键：把它连着发两次，第二次会返回**首次的结果**而不会再扣一次钱。
 
-几个容易踩的点（都有测试与决策记录）：
-
-- **范围缺省即拒绝**：不写 `auctionIds` 不是“允许全部”，而是空集合、什么都访问不了（D-29）。
-  越权访问返回 **403**（说明“换张 Token”，而不是 401“你的 Token 不行”）。
-- **只读 Token 不能出价**：`scopes` 里没有 `auction:bid` 就 403（变异 G4/G13 守住）。
-- **同一个出价事务**：Agent 出价不是第二条写入路径，它调的就是用户出价用的 `BidService.placeBid`，
-  与真人共享 `bid_requests` 幂等表；首次出价会在**同一个事务**里自动补参与记录（D-30）。
-- **端口是真隔离**：`:8090` 上只有 `/api/v1/agent/**`，其它路径（包括 `/api/v1/health`）一律 404 封套（DBG-22）。
-- **尾段“博弈时间”禁止 Agent**：截止前最后 20 秒（`AUCTION_FINAL_GAME_WINDOW_SECONDS`）内，一切 Agent 出价被拒（**403 `HUMAN_ONLY_PERIOD`**），真人仍可出价；判定在出价事务内用数据库时间完成，进入即清场到结算（D-32，有意收紧原文规则 6）。窗口长度通过快照 `finalGameWindowSeconds`（HTTP 与 WS 同构）下发给前端，前端只用它渲染“博弈时间”提示，**不承担判定职责**。
-- **吊销/过期立即失效**；超频返回 **429 `RATE_LIMITED`**。
-
-一键实跑（扮演管理员与两个竞拍 Agent，逐条对比“期望 vs 实际”，任一条不符立即非零退出）：
+### 第 5 步：20 并发模拟脚本
 
 ```bash
-# 需要后端已在 8080/8090 上运行（可用开发库）
-python tools/agent_sim.py            # 完整流程 + 全部失败边界
-python tools/agent_sim.py --skip-boundary   # 只看主链路
-python tools/agent_sim.py --duration 60     # 拍卖持续秒数（默认 300）
+python tools/auction_sim.py            # 八个阶段全跑（约 1 分钟）
+python tools/auction_sim.py --quick    # 跳过最慢的狙击等待（省约 35 秒）
+python tools/auction_sim.py --keep     # 结束后不取消拍卖，方便你在前端接着看
 ```
 
-脚本只用 Python 标准库（不需要 `pip install`）；每次运行自己创建拍卖与 Token，结束后默认清理（`--keep` 可保留供手工核对）。
+**会看到**：逐条打印“期望 vs 实际”，最后 `52/52 checks passed`。
+它演的就是第 4 步的“20 个人同时抢”：**20 条同价并发只有一笔成交**、同一 `requestId` 并发 20 次只冻结一次、
+最后 5 秒出价触发 +10 秒延时（最多 3 次）、断线重连的第一帧是权威快照、结算后钱包对得上。
+（脚本把并发“打满”用的是种子账号，不是 20 个不同用户——公开 API 没有注册端点。这一点如实写在 [§11](#11-未完成边界如实声明)。）
 
-**想用自己的 Token，而不是让脚本自己签发**（评审“把 Token 交给 Agent”的路径）：
+> 脚本会**真的花钱**。连跑几轮后余额花光，之后的出价全是 `INSUFFICIENT_BALANCE`——
+> 那是“数据用完了”，不是缺陷：跑 `db/reset_demo_data.sql` 复位（见 [§4.7](#47-停止--清库--复位演示数据)）。
+
+### 第 6 步：创建 Agent Token，让竞拍 Agent 参与
+
+普通用户不需要管理员：侧边栏 **🤖 我的 AI 代理 → 「新建授权」** 就能自助签发（等价于下面这条命令）。
+（页面上的另一个入口是**托管 AI 代理**，见本节末。）
 
 ```bash
-export AUCTION_AGENT_TOKEN=<明文>          # Windows PowerShell: $env:AUCTION_AGENT_TOKEN="<明文>"
-python tools/agent_sim.py --agent-only --auction-id <auctionId> [--bid]
+# 用第 4 步的 $BT，为 bidder_a 自己签发一枚「只能在这一场上出价」的令牌
+curl -s -X POST localhost:8080/api/v1/me/agent-tokens -H "Authorization: Bearer $BT" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"demo-agent","scopes":["auction:read","auction:bid"],
+       "auctionIds":["auc_demo_0001"],"expiresAt":"2030-01-01T00:00:00Z","rateLimitPerMinute":600}'
+# → data.token 就是 Agent Token；明文只在这里出现一次，库里只存 sha256 摘要
 ```
 
-这个模式不建场、不签发 Token，只用你给的凭据读状态 /（`--bid` 时）出一次价 / 读结果，
-因此它复现的是“这枚 Token 的真实权限”，被 403/409/429 拒也算预期。
-凭据只从环境变量读（脚本不做交互输入），没设就以退出码 2 停下并打印 PowerShell/Bash 两种设法；
-`AGENT_API_BASE` / `AUCTION_ID` 可分别替代 `--agent-base` / `--auction-id`。
-
-## 托管 AI 代理（前端「AI 代理」页，D-36）
-
-上一条是**给开发者**的 Agent API；普通用户不需要写程序、也不需要开服务器：登录后点侧边栏 **「AI 代理」→「创建 AI 代理」**，选一场**进行中或尚未开拍**的拍卖、填一个**预算上限**，剩下的由服务端完成。
-
-- **策略只有一条**（可预测、可断言）：只要自己不是领先者，就出 `当前价 + 最小加价`；达到预算上限就停手并提醒一次。不预冻结资金，钱只在真正出价时按既有出价事务冻结（D-30）。
-- **到点自动进场**：若目标拍卖还没开始，需要它有预告时间（管理员创建时填 `startsAt`，或在库中直接设置）；`AuctionStartScheduler` 到点自动开拍（与管理员手动 `start` 复用完全相同的开拍逻辑，D-35），`AgentProxyScheduler` 随即开始跟价。前端大厅与运营台会显示“预告 mm:ss 后开拍”（用服务端时间校准，不用本机时钟）。
-- **一人一场只能挂一个代理**（`uk_proxy_owner_auction`）；撤销后可重建，复用同一条记录。
-- **尾段“博弈时间”没有例外**：托管代理同样是 Agent，最后 20 秒内同样被 `HUMAN_ONLY_PERIOD` 拒；这是产品规则（D-32），不是故障。
-- **提醒走轮询**（仅在“AI 代理”页每 3 秒拉一次列表并对比前后状态），不新增私有 WebSocket 事件。
-
-相关后台配置（都可在 `.env` 里覆盖，见 [`.env.example`](.env.example)）：`AGENT_PROXY_TICK_INTERVAL_MS`（默认 500）、`AGENT_PROXY_BATCH_SIZE`（默认 50）、`AUCTION_START_SCAN_INTERVAL_MS`（默认 1000）、`AUCTION_START_BATCH_SIZE`（默认 50）。三个扫描器是否由**本实例**负责另由 `SETTLE_SCHEDULER_ENABLED` / `AUCTION_START_SCHEDULER_ENABLED` / `AGENT_PROXY_SCHEDULER_ENABLED` 决定（都默认 `true`，D-40）。
+让一个“外部 Agent”用它参与（这就是原文“把 Token 交给 Coding Agent”的那条路径）：
 
 ```bash
-# 等价的最小 curl（先登录拿 $TOKEN）
-curl -s -X POST http://localhost:8080/api/v1/me/agent-proxies \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"auctionId":"1","budgetLimit":1200}'
-curl -s http://localhost:8080/api/v1/me/agent-proxies -H "Authorization: Bearer $TOKEN"
-curl -s -X POST http://localhost:8080/api/v1/me/agent-proxies/1/revoke -H "Authorization: Bearer $TOKEN"
+export AUCTION_AGENT_TOKEN=<上一步的 data.token>      # PowerShell: $env:AUCTION_AGENT_TOKEN="..."
+python tools/agent_sim.py --agent-only --auction-id auc_demo_0001 --bid
 ```
 
-> 托管代理与 Agent Token 是**两条并列的路径**：“AI 代理”页把托管做成主路径，Token 那一套收进页面底部的“高级”（自己写程序的人用）。两者共用同一个出价事务与同一套 D-32 规则。
+**会看到**：Agent 在**独立端口 `:8090`** 上读快照、出价成功，流水里的主体标成 AI（只有本人与管理员看得到）。
+把它留到**最后 20 秒**再出价，会拿到 `403 HUMAN_ONLY_PERIOD`——这是产品规则（D-32，“博弈时间”只允许真人），
+真人在这 20 秒里照常能出。不想写代码就用页面上的**托管 AI 代理**：选这场 + 填预算上限，
+服务端会按最小加价跟价、触顶停手。
 
-## 全链路模拟脚本（并发 / 狙击 / 断线快照 / 结算核对）
+### 第 7 步：查看成交、钱包与流水
 
-`tools/agent_sim.py` 覆盖 Agent 一侧；面向**用户侧**全链路的是 `tools/auction_sim.py`，
-它把“只有并发才成立”的那批事实变成一条可复现命令——20 条并发同/邻价、`requestId` 重试、
-拒绝场景、最后五秒狙击、WebSocket 断线快照、到期结算与钱包对账，共八个阶段。
+等倒计时结束（或管理员点取消）后：
+
+- **拍卖详情页**：结果与成交价，成交主体带 `AI / 真人` 徽章。
+- **我的资金**（侧边栏 **◎ 我的资金**）：流水里有每一笔冻结（`FREEZE`）、释放（`RELEASE`）、成交扣款（`SETTLE`）。
+  对账口径：**总余额减少 = 冻结释放 = 成交价**。
+- **运营台**（管理员）：该场全部资金流水与主体，以及全部 AI 代理总览。
+
+命令行核对（结算后应是 `total = 原值 - 成交价`、`frozen = 0`）：
 
 ```bash
-# 需要后端已在 8080/8090/18080 上运行（可用开发库）
-python tools/auction_sim.py            # 八个阶段全跑（含狙击等待，约 1 分钟）
-python tools/auction_sim.py --quick    # 跳过最慢的狙击阶段（约省 35 秒）
-python tools/auction_sim.py --keep     # 结束时不取消拍卖，便于在前端观察
+curl -s localhost:8080/api/v1/wallets/me -H "Authorization: Bearer $BT"
+curl -s localhost:8080/api/v1/auctions/auc_demo_0001/result -H "Authorization: Bearer $BT"
 ```
 
-同样只用标准库，**含一个最小 RFC 6455 WebSocket 客户端**（约 100 行），因此不需要 `websocket-client`。
-实测 **52/52，退出码 0**（逐条对比“期望 vs 实际”）；它断言的不变量：
-
-- **同价并发恰好一笔成交**（20 条同价 → `OK=1`，其余 `BID_TOO_LOW`）；
-- **邻价并发以最高价收尾**（邻价**允许**成交两笔：先 120 后 130；同价位至多一笔）；
-- **幂等键含 `user_id`**（D-31）：同一用户同 `requestId` 并发 20 次 = 1 写 + 19 重放且只冻结一次；
-  另一用户复用同一串**不算重放**；
-- **最后五秒狙击**：出价触发 +10 秒延时，`MAX_EXTENSIONS=3` 达上限后**不再延时但出价照常接受**；
-- **尾段“博弈时间”**（P6，D-32）：截止前最后 20 秒（`AUCTION_FINAL_GAME_WINDOW_SECONDS`）拒绝一切 Agent 出价（`HUMAN_ONLY_PERIOD`），真人不受限；模拟脚本用真人账号，因此不受影响，Agent 侧边界由 `BidServiceTest` 与 `AgentApiIntegrationTest` 覆盖；
-- **断线快照**：连上第一帧是权威快照，提交后收到 `BID_ACCEPTED`（领先者为匿名值），换新票重连能对齐到最新价；
-- **结算对账**：`FINISHED`/`TIMEOUT` 后，钱包“总余额减少 = 冻结释放 = 成交价”。
-
-**局限（如实声明）**：公开 API 没有注册端点，种子只有 3 个演示账号，因此“20 个**不同用户**并发”
-无法只靠 HTTP 复现；脚本用“20 条并发出价请求（跨可用账号 + 唯一 `requestId`）”等价模拟并发压力，
-真正 20 个不同 `user_id` 的并发由真实库上的 `BidConcurrencyTest` 覆盖。
-
-## 压测脚本（尾段清场 / 持续吞吐）
-
-`tools/auction_sim.py` 关心“流程对不对”、`tools/agent_sim.py` 关心“Agent 边界对不对”，
-两者并发都很小。真正只在并发下才成立的两件事由 `tools/stress_test.py` 覆盖：
+### 第 8 步：运行自动化测试
 
 ```bash
-# 需要后端已在 8080/8090/18080 上运行（可用开发库）
-python tools/stress_test.py                              # 博弈时间清场，50 并发（默认）
-python tools/stress_test.py -c 300                       # 拉高并发再验一次
-python tools/stress_test.py --mode throughput -c 50 --seconds 10
+# 后端：需要一个独立测试库（绝不能是开发库）
+docker exec -i bid-arena-mysql-1 mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e \
+  "CREATE DATABASE IF NOT EXISTS bid_arena_test CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+   GRANT ALL PRIVILEGES ON bid_arena_test.* TO 'bid_arena'@'%'; FLUSH PRIVILEGES;"
+
+export BID_ARENA_TEST_DB_URL='jdbc:mysql://localhost:3307/bid_arena_test?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&allowPublicKeyRetrieval=true&useSSL=false&characterEncoding=UTF-8'
+export BID_ARENA_TEST_DB_USER=bid_arena
+export BID_ARENA_TEST_DB_PASSWORD=<你的 MYSQL_PASSWORD>
+mvn clean verify          # 期望：242/242，BUILD SUCCESS
+
+# 前端：不需要后端
+cd frontend && npm ci && npm test && npm run typecheck
 ```
 
-- `--mode game-window`（默认）：等剩余时间进入尾段窗口后，把 `--concurrency` 条 Agent 出价**同时**
-  打进 `:8090`，断言 **100% 403 `HUMAN_ONLY_PERIOD`**（把测试 Token 限流拉满到 6000，确保看到的是
-  “窗口拒了每一条”而不是“限流先拒了一半”）；紧接着一条真人出价必须被接受，并核对出价记录与
-  管理员流水里**没有留下任何 Agent 痕迹**。
-- `--mode throughput`：在 `--seconds` 秒内用 `--concurrency` 个 worker 做读写混合（3:1），
-  打印 QPS、P50/P95/P99、状态码/错误码分布；出现 5xx 或连接失败即失败。
+**会看到**：后端 `Tests run: 242, Failures: 0, Errors: 0`；前端 `73 passed`。
+用例为什么这么分组、数字为什么可信，见 [§6](#6-测试与持续集成)。
 
-实测（本机开发库，单场拍卖）：博弈时间 `-c 100` → **100/100 全拒（403）**、11/11 通过；
-吞吐 `-c 50 --seconds 10` → **约 410 QPS，P50≈109ms / P95≈243ms / P99≈315ms，0 个 5xx**。
-409 全部是 `BID_TOO_LOW`（并发抢价必然结果），不是错误。
+### 卡住了看这里
 
-同样只用标准库；每次运行自建拍卖与 Token，结束后默认取消（`--keep` 可保留）。
+| 症状 | 先看 | 原因与办法 |
+|---|---|---|
+| 停在 `migrate`，`backend` 没起 | `docker compose logs migrate` | 迁移失败。最常见是 `.env` 里 `MYSQL_PASSWORD` 与 `DB_PASSWORD` 不一致 |
+| 启动报 `JWT_SECRET 必须在 .env 里显式配置` | `.env` | 没填，或不足 32 字节 |
+| 端口被占用 | `docker compose ps` | 改 `.env` 的 `MYSQL_PORT` / `SERVER_PORT` / `WEB_PORT`（别动容器内的 3306/8080） |
+| `:8088` 打不开但 `:8080/api/v1/health` 是 200 | `docker compose logs frontend` | 前端镜像或反代有问题；看 `frontend` 是否 Up |
+| 改完 `.env` 不生效 | —— | 环境变量只在**创建容器**时注入：`docker compose up -d --force-recreate` |
+| PowerShell 里连接串少了参数 | —— | PowerShell 不展开 `${}`；直接用 `.env.example` 里写好的具体值 |
+| Windows 控制台中文乱码 | —— | `chcp 65001`，或直接看 `target/surefire-reports/` |
 
-### 重复运行前：演示数据的恢复（`db/reset_demo_data.sql`）
+## 4. 部署教材
 
-三个脚本都跑在开发库上，并且会**真的花钱**（真冻结、真成交）。连跑几轮之后种子余额（各 1000）
-会被花完，此后的出价全是 `INSUFFICIENT_BALANCE`——那是“数据用完了”，不是缺陷。恢复种子状态：
+### 4.1 服务拓扑与端口
+
+```text
+                        浏览器
+                          │  http://localhost:8088   ← 唯一入口
+                          ▼
+            ┌─────────────────────────────┐
+            │ frontend (Nginx)            │
+            │   /      → 前端静态产物      │
+            │   /api/**→ backend:8080     │
+            │   /ws/** → backend:18080    │
+            └──────────────┬──────────────┘
+                           │ compose 内部网络
+            ┌──────────────▼──────────────┐      ┌───────────────┐
+            │ backend（常驻）              │◀─────│ migrate（一次性）│
+            │   :8080 用户/管理 HTTP       │ 退0  │ 跑 Flyway 后退出 │
+            │   :8090 Agent HTTP（独立凭据）│ 才放行└───────┬───────┘
+            │   :18080 WebSocket          │              │
+            └──────────────┬──────────────┘              │
+                           └───────────┬─────────────────┘
+                                       ▼
+                             mysql:3306（宿主机 3307）
+```
+
+| 端口 | 谁用 | 必须对外吗 |
+|---|---|---|
+| `8088`（`WEB_PORT`） | 浏览器 | **是**，唯一入口 |
+| `8080` | 用户/管理 HTTP | 不必（前端反代）；发布只为本机 `curl` 与工具脚本 |
+| `8090` | 竞拍 Agent API | 交给外部 Agent 时才需要。**刻意不经反代**（隔离爆炸半径，理由在 `frontend/nginx.conf` 顶部） |
+| `18080` | WebSocket | 不必（前端反代）；本机工具直连才需要 |
+| `3307`（`MYSQL_PORT`） | MySQL | 不必；**切勿暴露到公网** |
+
+### 4.2 环境变量速查
+
+完整清单与逐条解释在 [`.env.example`](.env.example)——**每一个后端会读的键都在那里**，
+有测试守着不让它漏（见 [§6.3](#63-守卫与变异验证)）。这里只列你大概率想改的：
+
+| 变量 | 默认 | 什么时候改 |
+|---|---|---|
+| `MYSQL_PASSWORD` / `JWT_SECRET` | `CHANGE_ME...` | **必改**。`JWT_SECRET` 至少 32 字节 |
+| `MYSQL_PORT` | `3307` | 本机 3307 被占用时（容器内始终 3306） |
+| `WEB_PORT` | `8088` | 8088 被占用时 |
+| `SERVER_PORT` / `AGENT_SERVER_PORT` / `WS_PORT` | `8080` / `8090` / `18080` | 与别的服务撞端口时（三者必须互不相同） |
+| `DB_URL` / `DB_USER` / `DB_PASSWORD` | 指向 `localhost:3307/bid_arena` | **只在“后端不跑容器”时使用**；compose 里后端连的是 `mysql:3306` |
+| `MIGRATE_ON_START` | `true` | 多实例/滚动发布设 `false`（只校验，库落后就拒绝启动） |
+| 三个 `*_SCHEDULER_ENABLED` | 全 `true` | 多实例时关掉非后台实例，见 [§4.5](#45-多实例部署) |
+| `AUCTION_FINAL_GAME_WINDOW_SECONDS` | `20` | 调整“尾段博弈时间”长度（Agent 在此期间一律被拒） |
+| `AGENT_PROXY_TICK_INTERVAL_MS` | `500` | 想让 AI 跟价更灵敏、或更省数据库 |
+| `CORS_ORIGINS` | `http://localhost:5173` | 只在**跨源**访问时需要（单 origin 下页面同源，不受影响） |
+| `FRONTEND_NODE_IMAGE` / `FRONTEND_NGINX_IMAGE` | 官方镜像 | 内网/离线：换成自己的镜像源 |
+| `BID_ARENA_TEST_DB_*` | 注释掉 | 只跑测试时需要（见 [§6.1](#61-一键测试命令)） |
+
+> 布尔类开关（`MIGRATE_ON_START` 与三个 `*_SCHEDULER_ENABLED`）**只认 `true/false/1/0`**：
+> 写成 `yes`/`on` 之类会直接启动失败，而不是悄悄按默认值跑——拼错必须立刻看得见。
+
+### 4.3 常见部署形态
 
 ```bash
-docker exec -i bid-arena-mysql-1 mysql --default-character-set=utf8mb4 \
-  -ubid_arena -p"$DB_PASSWORD" bid_arena < db/reset_demo_data.sql
+# ① 全栈（推荐；“评审五分钟跑起来”就是这条）
+docker compose up -d --build               # → http://localhost:8088
+
+# ② 只要数据库，后端在 IDE/命令行里跑（调后端最顺手）
+docker compose up -d mysql
+
+# ③ 起后端但不托管前端（前端用 npm run dev，改代码热更新）
+docker compose up -d mysql migrate backend # → API :8080 / Agent :8090 / WS :18080
+
+# ④ 只把库对齐，再决定要不要起应用
+docker compose up --build migrate && docker compose logs migrate
+
+# ⑤ 内网/离线：换基础镜像源（前端已用 ARG 暴露；后端改 Dockerfile 顶部两行 FROM）
+#    .env 里写：FRONTEND_NODE_IMAGE=<镜像源>/node:22-alpine
+#              FRONTEND_NGINX_IMAGE=<镜像源>/nginx:1.27-alpine
+docker compose up -d --build
 ```
 
-该脚本只动数据（清空竞拍相关表、钱包写回 1000/0、重建那场 `DRAFT` 演示拍品；`users` 保留），
-不改 schema、不碰 `flyway_schema_history`，最后回显钱包与拍品供人核对。
+**用已有的外部 MySQL**（不想用 compose 里的 `mysql` 容器）：加一个 `docker-compose.override.yml`，
+覆盖库连接（同名键以覆盖文件为准）：
 
-三个脚本自己也会在开跑前检查可用余额：不足时**在阶段 0 停下**并打印上面这条命令，
-退出码 `2`（`0` = 全绿 / `1` = 有检查失败 / `2` = 缺数据）。这样“跑不完”的原因永远出现在
-第一个失败点上，而不是以一排与本因无关的 `INSUFFICIENT_BALANCE` 或一个裸的 WS 超时收场
-（见 [DEBUG_LOG.md](DEBUG_LOG.md) DBG-31）。
+```yaml
+# docker-compose.override.yml
+services:
+  migrate:
+    environment: &db-override
+      DB_URL: jdbc:mysql://your-db-host:3306/bid_arena?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&allowPublicKeyRetrieval=true&useSSL=false&characterEncoding=UTF-8
+      DB_USER: bid_arena
+      DB_PASSWORD: 你的口令
+  backend:
+    environment: *db-override
+```
 
-## 设计与决策
+改完先 `docker compose config` 看渲染结果，再 `up`。两点提醒：① 本地 `mysql` 容器仍会被
+`depends_on` 拉起（不想要就一并覆盖 `depends_on`）；② `DB_URL` 的时区参数
+`connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true` **不能省**，否则 TIMESTAMP 读写会漂移，
+倒计时与结算时间跟着错。
 
-- 业务全景（角色、主链路、四条不变式）、分层与一致性方案见 [DESIGN.md](DESIGN.md)。
-- 技术选型与取舍（背景、候选、代价、验证结果）见 [DECISIONS.md](DECISIONS.md)。
-- HTTP 契约见 [docs/openapi.yaml](docs/openapi.yaml)。
-- WebSocket 事件与 `seq` 恢复见 [docs/REALTIME_AND_COMMAND_FLOW.md](docs/REALTIME_AND_COMMAND_FLOW.md)。
-- 领域边界与不变量见 [docs/DOMAIN_DESIGN.md](docs/DOMAIN_DESIGN.md)。
-- 资金冻结、锁顺序与幂等见 [docs/FUNDING_AND_CONCURRENCY.md](docs/FUNDING_AND_CONCURRENCY.md)。
-- 页面与交互原型见 [docs/PRODUCT_PROTOTYPE.md](docs/PRODUCT_PROTOTYPE.md)。
-- 进度看板见 [docs/STATUS.md](docs/STATUS.md)，文档地图与权威边界见 [docs/DOCS.md](docs/DOCS.md)。
-- 提交与交付规范见 [CONTRIBUTING.md](CONTRIBUTING.md)，验收追溯见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
+### 4.4 迁移与初始化
 
-文档明确区分目标架构与当前实现状态；前端已经接入真实 HTTP/WebSocket（见下文「前端」），不再有本地 Mock 事实来源。资金的正确性由真实 MySQL 集成测试与变异测试验证。
+- **迁移是一次性的一步**（D-39）：`migrate` 与 `backend` 用**同一个镜像**、只换 entrypoint
+  （`com.bidarena.bootstrap.MigrateMain`），跑完退出；`backend` 依赖它**退出码为 0** 才启动，
+  自身 `MIGRATE_ON_START=false`（只校验）。这样多实例不会同时抢迁移锁，滚动发布也不会出现
+  “新实例改了 schema，旧实例还在跑旧代码”。
+- **为什么不用 `docker-entrypoint-initdb.d`**：那个目录只在**空数据卷首次启动**时执行，
+  后续版本的迁移根本跑不到（D-2/D-6）。
+- **种子数据随迁移写入**：3 个演示账号 + 各 1000 积分 + 1 件 `DRAFT` 演示拍品（不自动倒计时）。
+- **库落后于代码时 `backend` 会拒绝启动**并说明落后在哪——这是有意的：宁可拒绝服务，也不要带着错的 schema 跑。
+- **回滚**：Flyway 不做自动回滚。真需要就准备反向 SQL 自己执行，并同步 `flyway_schema_history`。
 
-## 未完成边界（如实声明）
+### 4.5 多实例部署
 
-目前**还不能**做到的事，以及对应的原因：
+三个后台扫描器（**到期结算 / 预告开拍 / 托管代理**）都只回数据库查“该做什么”，谁跑都不会算错；
+但“能跑”不等于“应该跑”，所以每个都有独立开关（D-40，缺省全开）：
 
-- **模拟脚本已覆盖两侧**。`tools/agent_sim.py` 跑通 Agent 的「签发 → 读 → 出价 → 幂等重放 →
-  越权/过期/吊销/限流边界 → 结果」（**44/44**）；`tools/auction_sim.py` 跑通用户侧全链路——
-  并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结算对账（**52/52**）。
-  并发清场与吞吐另由 `tools/stress_test.py` 覆盖（博弈时间 `-c 100` 全拒、吞吐约 410 QPS 无 5xx）。
-  唯一不能只靠 HTTP 复现的是“20 个**不同用户**并发”：公开 API 没有注册端点、种子只有 3 个演示账号，
-  这部分由真实库上的 `BidConcurrencyTest` 覆盖（详见 [docs/TRACEABILITY.md](docs/TRACEABILITY.md) E1）。
-- **整栈（compose + 反代）已由 CI 每次拉起来验一遍，但没在浏览器里真点过**。`backend`/`frontend` 两个
-  `Dockerfile` 与 `docker-compose.yml` 每次提交都会 `docker compose build` + `docker compose up -d`，
-  并断言两个镜像里真有产物、`:8080` 健康端点、`:8088` 的静态页与 `/api` 反代都返回 200，以及一次性 `migrate` 服务退出码为 0、应用侧走的是“只校验不迁移”（D-39）——D-37 的单 origin
-  编排第一次真的跑起来是在 CI 上。仍未做的：浏览器里的人工核对，以及在评测机上 `docker compose up`
-  （本机 Docker daemon 在远程 VM 且连不上 Docker Hub，本地镜像源也没有 node/maven/temurin 基础镜像，
-  已用 `ARG` 暴露基础镜像供受限环境替换；按仓库约定不在评测机上重建容器）。
-- **多实例/滚动发布的“扫描器开关”已补上，但真正的自动分工仍未做（D-40）**。三个后台扫描器
-  （到期结算、预告开拍、托管代理）现在各有一个 `*_SCHEDULER_ENABLED` 开关（缺省全开），
-  部署者可以让某些实例只对外服务、不承担后台任务。它**只**表达“本实例不跑”，
-  不表达“别人一定在跑”——真要多实例，缺的仍是“哪个实例负责扫描”的自动分工
-  （选主/分片；Redis 分布式锁一类方案已被明确拒绝），所以关掉开关时必须由部署者保证
-  还有实例在跑对应任务，否则相关到期动作会静默停摆（启动日志会以 WARN 提醒）。
-- **[AI_USAGE.md](AI_USAGE.md) 已填写**：工具与模型（`pi` + `deepseek-v4-flash`）、各模块人机分工与口径、
-  四项本人设计决定、六项未采用方案、四项真实错误，以及七类目前仍不能独立解释/修改的代码；
-  文末留三项「作者核对清单」（模型列表完整性、比例口径、决定归属）。
-- **没有线上地址、没有演示录屏**（两段式现场核验的素材）。两段核验已备好照着走就行的演练稿：第一段（并发出价事务/旧主释放/幂等/结算/重启的讲解骨架与四个现场定位 drill）与第二段（VIP 加价、取消释放、代理最高价、可配置延时的改动点/迁移/测试清单）见 [`CONTRIBUTING.md` §9.4](CONTRIBUTING.md)；录屏分镜与命令见 [§9.1.1](CONTRIBUTING.md)。视频与现场演示**不能**替代代码、测试、Git 与文档核验。
+```dotenv
+# 只对外服务的那个实例
+SETTLE_SCHEDULER_ENABLED=false
+AUCTION_START_SCHEDULER_ENABLED=false
+AGENT_PROXY_SCHEDULER_ENABLED=false
+```
 
-已实现的边界：用户侧 HTTP 19 个端点 + Agent 侧 3 个业务端点与 2 个签发/吊销端点 + WebSocket 实时通道（P2/P3）、
-前端真实接入（P4）、Agent API 与端到端模拟（P5）、用户侧全链路模拟（E1）、架构守卫 9 条。
-完整的逐项状态与证据见 [docs/STATUS.md](docs/STATUS.md) 与 [docs/TRACEABILITY.md](docs/TRACEABILITY.md)。
+关掉的项在该实例**静默不执行**（启动日志会 WARN 提醒）。它**不是**自动分工：
+必须保证至少有一个实例负责每一项，否则到期结算/自动开拍/代理跟价会停摆。
+为什么不做自动选主，见 [§11](#11-未完成边界如实声明)。
 
-## 公开仓库约定
+### 4.6 排错手册
 
-原始评测 PDF、`.env`、依赖目录、构建产物和本地运行数据不会提交。需求原文和业务分析以 Markdown 形式保留，便于审阅和版本追踪。提交前执行 `git status --short`，确认没有 Token、密码或个人配置。
+```bash
+docker compose ps                     # 谁 Up、谁退出了（含退出码）
+docker compose logs -f backend        # 应用日志；启动时会打印“本实例负责哪些扫描器”
+docker compose logs migrate           # 迁移结论：成功 / 失败在哪一版
+docker compose logs mysql | tail -20  # 初始化与连接问题
+docker compose exec backend env | grep -E 'DB_|MIGRATE|SCHEDULER'   # 容器里实际生效的配置
+curl -s localhost:8080/api/v1/health  # 应用活着吗
+```
 
-## 前端（Vue 3 + TypeScript + Pinia）
+| 症状 | 先看 | 常见根因 |
+|---|---|---|
+| 整栈起不来 | `logs migrate` | 库口令不匹配 / `JWT_SECRET` 没填 / 旧数据卷与迁移历史冲突 |
+| `backend` 反复重启 | `logs backend` | 端口被占、库连不上、库版本落后（会被明确拒绝） |
+| 出价一直 `BID_TOO_LOW` | 前端显示的价格 | 别人先出价了；或 `requestId` 被复用（幂等返回首次结果） |
+| 出价 `INSUFFICIENT_BALANCE` | `GET /wallets/me` | 演示数据花完了 → 跑 `reset_demo_data.sql` |
+| AI 代理不动 | `logs backend` | 尾段 20 秒按规则拒绝 Agent；或已触预算上限；或它本来就是领先者 |
+| 页面一直“重连中” | 浏览器控制台 | WS 不通（单 origin 下应走同源 `/ws`） |
 
-前端位于 `frontend/`，**接入真实后端**：类型由 `docs/openapi.yaml` 生成（`npm run gen:api`，D-26）；
-金额、状态、倒计时全部来自 HTTP 快照与 WebSocket 事件，本地不再自己算（D-27/D-28）。
+### 4.7 停止 / 清库 / 复位演示数据
 
-```powershell
-# 1. 先启动后端（见上文），确认 8080 与 18080 可访问
-# 2. 启动前端
+```bash
+docker compose stop                 # 停服务，保留数据
+docker compose down                 # 删容器与网络，保留数据卷（mysql_data）
+docker compose down -v              # 连数据卷一起删：下次 up 会重新迁移 + 重放种子
+
+# 复位演示数据：清空竞拍相关表、钱包写回 1000/0、重建那件 DRAFT 拍品（users 保留）
+# 口令从容器自己的环境变量里取，不必在宿主机上写明文
+docker compose exec -T mysql sh -c \
+  'mysql --default-character-set=utf8mb4 -u"$MYSQL_USER" -p"$MYSQL_PASSWORD" "$MYSQL_DATABASE"' \
+  < db/reset_demo_data.sql
+```
+
+两个细节都是踩过的坑：`--default-character-set=utf8mb4` 不能省（脚本含中文，客户端默认字符集若是 latin1 会直接报语法错）；
+不要把 `.env` 用 `. ./.env` 读进 shell（`DB_URL` 里的 `&` 会被当控制符），要么让容器自己取，要么手打口令。
+脚本只动数据，不改 schema、不碰 `flyway_schema_history`，最后回显钱包与拍品供你核对。
+
+## 5. 本地开发（源码方式，不用 Docker 跑应用）
+
+需要 JDK 17、Maven 3.9+、Node 20+。数据库仍建议用容器（一条命令，省得装 MySQL）：
+
+```bash
+docker compose up -d mysql && docker compose logs mysql | tail -3
+```
+
+### 5.1 后端
+
+后端只读环境变量，**不读 `.env` 文件**，要把值导进当前 shell（`DB_URL` 里的 `&` 不能直接 `source`，
+逐行 `export` 最稳）：
+
+```bash
+export DB_URL='jdbc:mysql://localhost:3307/bid_arena?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&allowPublicKeyRetrieval=true&useSSL=false&characterEncoding=UTF-8'
+export DB_USER=bid_arena DB_PASSWORD='你的口令' JWT_SECRET='至少32字节'
+mvn -q compile && mvn -q dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/libs
+java -Dfile.encoding=UTF-8 -cp "target/classes;target/libs/*" com.bidarena.Application
+# macOS/Linux：类路径分隔符用 ':' → "target/classes:target/libs/*"
+```
+
+**会看到**：8080（HTTP + WS）、8090（Agent API）、18080（WebSocket）各自就绪，Flyway 打印
+`up to date（当前版本 6）`，并列出本实例负责的后台扫描器。停止用 `Ctrl+C`。
+
+> 注意：`target/classes` 与 `target/libs` 是 Maven 的输出目录，**跑着后端时 `mvn clean` 删不掉**
+> 它们，会导致变异脚本之类的“先改文件再编译”流程整体失效（见 `DEBUG_LOG.md` DBG-32）。
+> 要跑 `mvn clean verify` 请先停后端。
+
+### 5.2 前端
+
+```bash
 cd frontend
-npm install
-npm run dev        # http://localhost:5173/
+npm ci
+npm run dev          # → http://localhost:5173 ，/api 代理到 localhost:8080
 ```
 
-页面用种子里的三个演示账号登录（与原文一致）：
+dev 端口与代理目标可覆盖：`VITE_DEV_PORT`（默认 5173）、`VITE_DEV_API_TARGET`（默认 `http://localhost:8080`）。
+`VITE_WS_SAME_ORIGIN=1` 时前端走同源 `/ws`（容器里的前端就是这样构建的）；本机 dev 默认按票据里返回的 `wsPort`
+直连 18080。
 
-- `admin@example.com / Admin123456!`：管理员，可创建、开始、取消拍卖。
-- `bidder_a@example.com / Test123456!`、`bidder_b@example.com / Test123456!`：两名竞拍者。
+### 5.3 前端联调测试
 
-建议验证路径：管理员登录创建并开始拍卖（也可以在创建时填一个**预告开拍时间**，到点自动开拍）→ 换成 `bidder_a` 加入并出价 → 查看钱包冻结与流水 →
-另开一个浏览器用 `bidder_b` 加价，`bidder_a` 的详情页会通过 WebSocket 实时更新价格、领先者与剩余时间 →
-等待倒计时结束查看结果。倒计时以服务端时间为准；断线时页面显示“重连中/正在恢复快照”，恢复后由权威快照对齐。
-想看 AI 那侧：用 `bidder_a` 打开侧边栏 **「AI 代理」**，选一场进行中的拍卖创建一个托管代理，看它按最小加价跟价、钱包出现冻结与流水（流水里主体为 AI，只有你自己与管理员看得到）；等到最后 20 秒它会按规则停手。
-
-前端自测（不需要后端）：
-
-```powershell
-cd frontend
-npm test           # 73 个单测（api client / realtime feed / socket / store / anonymous）
-npm run typecheck  # vue-tsc
-npm run build      # vite build
+```bash
+cd frontend && npm run test:live    # 需要后端已在 8080 跑起来：3/3
 ```
 
-联调测试（需要后端已在 8080 运行）：
+## 6. 测试与持续集成
 
-```powershell
-cd frontend
-$env:BID_ARENA_LIVE="1"
-$env:BID_ARENA_DEMO_ADMIN_EMAIL="admin@example.com";     $env:BID_ARENA_DEMO_ADMIN_PASSWORD="Admin123456!"
-$env:BID_ARENA_DEMO_BIDDER_EMAIL="bidder_a@example.com"; $env:BID_ARENA_DEMO_BIDDER_PASSWORD="Test123456!"
-npm run test:live  # HTTP 契约 2 个 + WebSocket 事件流 1 个
+结论先给：**后端 242/242、前端 73、端到端脚本 44/44 与 52/52、架构守卫 9/9、压测 11/11**，
+全部在真实 MySQL 上跑过（不是 H2、不是 mock）。
+
+### 6.1 一键测试命令
+
+| 范围 | 命令 | 期望 |
+|---|---|---|
+| 后端 | `mvn clean verify`（先按 [第 8 步](#第-8-步运行自动化测试) 设好 `BID_ARENA_TEST_DB_*`） | `Tests run: 242, Failures: 0, Errors: 0` |
+| 前端 | `cd frontend && npm test` | `73 passed`（+ `npm run typecheck` 干净） |
+| 端到端 | 后端起来后 `python tools/agent_sim.py` / `python tools/auction_sim.py` | `44/44` / `52/52 checks passed` |
+| 压测 | `python tools/stress_test.py --mode game-window -c 100` | `11/11 checks passed`（尾段 100 个 Agent 全被 403 拒绝） |
+| 压测 | `python tools/stress_test.py --mode throughput -c 50 --seconds 10` | 实测 ~410 QPS、P50≈109ms / P95≈243ms / P99≈315ms、**0 个 5xx** |
+| 变异 | `python tools/agent_mutation_check.py` / `tools/arch_mutation_check.py` / `tools/mutation_check.py` | `14/14` / `9/9` / `16/16 KILLED` |
+
+测试库必须**独立于开发库**：`BID_ARENA_TEST_DB_URL` 指向 `bid_arena_test`，
+测试基座会自己推倒重建它；它还会从 `DB_URL` 反推开发库名，一旦发现你指着开发库就直接拒绝运行（防误清）。
+
+### 6.2 后端 242 个用例怎么构成
+
+| 分组 | 数量 | 守的是什么 |
+|---|---|---|
+| 真库集成 | 90 | HTTP 21 + WebSocket 14 + Agent 29 + 拒绝后连接复用 2 + 托管代理与预告开拍 19 + 迁移开关 3 + 扫描器真库对照 2（共用同一个自启动服务实例） |
+| 架构守卫 | 9 | 分层/跨上下文/无环：domain 不依赖框架、adapter 不互相调、包之间无环 |
+| 扫描器开关纯策略 | 4 | 缺省全开 / 单项关闭 / 拼错报错 / 与 `.env.example` 一致 |
+| 配置键守卫 | 3 | 扫源码里每个 `Env.*("KEY")`，断言 `.env.example` 里有它（反向断言防“守卫真空”） |
+| 其余单元 | 136 | 领域规则、身份、结算、事件、WS 广播、票、匿名、Agent、迁移开关、编排自检 |
+
+### 6.3 守卫与变异验证
+
+只写“正确的话能被通过”的测试是不够的，所以关键守卫都做了**变异验证**：改坏一行代码，
+测试必须变红；把改动还原，必须变绿。三个脚本合计 39 个变异体，目前全部 KILLED——
+这证明测试不是“恒真断言”凑数。
+
+其中最容易被忽略的一条：**“代码会读的配置键 ⊆ `.env.example` 写明的键”**。
+新增 `EnvDocumentationTest` 之前，已经有 4 个真实键（`AGENT_SERVER_HOST`、`JWT_TTL_SECONDS`、
+`DB_CONNECTION_TIMEOUT_MS`、`DB_MAX_LIFETIME_MS`）处在“代码读、文档没写”的漂移状态；
+现在是会失败的断言（D-41）。这道守卫自己也有反向断言：往 `.env.example` 里塞一个只有注释、
+没有赋值行的键，它必须报缺失。
+
+### 6.4 CI（五个 job，失败含义各自独立）
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml)，每次推 `main` 或提 PR 都跑：
+
+| job | 内容 | 失败说明什么 |
+|---|---|---|
+| `backend` | 一次性 MySQL 8.4 服务容器 + `mvn clean verify`，并断言总用例数 ≥ 242 | 后端逻辑/真库并发回归，或用例数被悄悄删少 |
+| `frontend` | `npm ci` → `typecheck` → 73 单测 → `VITE_WS_SAME_ORIGIN=1` 构建 | 前端类型、状态机或构建坏了 |
+| `e2e` | 真起 8080/8090/18080 跑 `agent_sim.py` 44/44，复位数据后再跑 `auction_sim.py` 52/52 | 真实链路（含 Agent 鉴权与并发）坏了 |
+| `config` | 全部工具脚本 `py_compile` + `docker compose config -q` + `nginx -t` | 编排/反代配置或脚本语法错了 |
+| `images` | `docker compose build` → 断言镜像里有产物 → `docker compose up -d` 起整栈，验 `:8080` 健康端点与 `:8088` 静态页/`/api` 反代，并断言 `migrate` 退出码 0 | **交付形态**坏了（镜像构建、迁移步骤、反代） |
+
+CI 里跑过一次的实证：`images` job 连挂三轮，挖出两个真问题——`migrate` 的 entrypoint 少写一层包名
+（`com.bidarena.MigrateMain`，容器 `ClassNotFoundException` 退出，compose 于是在依赖条件上放弃整个 `up`），
+以及 MySQL healthcheck 用 `-h localhost` 走 unix socket、在“3306 还没监听”的窗口里误报健康
+（迁移一上来就 `Connection refused`）。两个都已修，并各自补了守卫（`ComposeEntrypointTest`、
+TCP healthcheck 注释）。详见 `DEBUG_LOG.md` DBG-33 / DBG-34。
+
+**压测与变异检查有意不进 CI**：共享 runner 上 QPS 不可比；变异要反复改文件跑 Maven，
+属于“提交前自检”。所以文档里的 242/73/44/52 以本地实跑为准，CI 保证的是
+**同一套命令在干净机器上同样全绿**。
+
+## 7. 工具脚本（`tools/`）
+
+只用 Python 标准库（含一个手写的 RFC 6455 客户端），不需要 `pip install`。
+
+| 脚本 | 用途 | 典型命令 |
+|---|---|---|
+| `auction_sim.py` | 全链路模拟：20 条并发同/邻价、幂等重试、拒绝场景、最后五秒狙击、WS 断线快照、结束核对 | `python tools/auction_sim.py`（`--quick` / `--keep` / `--base`） |
+| `agent_sim.py` | Agent 视角：登录 → 建场开拍 → 签发多枚 Token → 读/出价/重放 → 逐条验证 401/403/429/404 与端口隔离 | `python tools/agent_sim.py`（`--duration` / `--agent-only --auction-id <id>` / `--skip-boundary`） |
+| `stress_test.py` | 尾段博弈时间压测 / 吞吐与延迟分位 | `--mode game-window -c 100`、`--mode throughput -c 50 --seconds 10` |
+| `preconditions.py` | 上面三个脚本共用的**阶段 0 前置检查**：余额不够就直接停并指向复位脚本 | 被自动调用 |
+| `agent_credentials.py` | Agent 凭据只从**显式参数或 `AUCTION_AGENT_TOKEN`** 读，不做交互输入；缺失就打印“怎么拿到”并退 2 | 被自动调用 |
+| `agent_mutation_check.py` / `arch_mutation_check.py` / `mutation_check.py` | 变异验证（后端 Agent / 架构规则 / 前端） | 见 [§6.1](#61-一键测试命令) |
+
+演示账号可以不改脚本就换人：读环境变量 `BID_ARENA_DEMO_ADMIN_EMAIL` / `BID_ARENA_DEMO_ADMIN_PASSWORD` 等，
+默认值就是种子账号。退出码约定：`0` 全通过、`1` 有检查失败、`2` 缺数据/缺参数（不是缺陷，是让你先复位）。
+
+## 8. API 与实时通道（速览）
+
+契约以 [`docs/openapi.yaml`](docs/openapi.yaml) 为准（前端类型就是从这里生成的，D-26）。
+鉴权一律 `Authorization: Bearer <JWT>`；写接口需要幂等键（`requestId` 或 `Idempotency-Key` 头，两者都给必须一致）。
+
+<details>
+<summary><b>点开：主要接口一览</b></summary>
+
+**鉴权只有两条白名单**：`POST /api/v1/auth/login` 与 `GET /api/v1/health`；其余 `/api/v1/**` 一律要 JWT
+（Agent 那组走独立端口 + Agent Token）。**没有注册端点**——账号来自迁移种子，见 [§11](#11-未完成边界如实声明)。
+
+| 方法 | 路径 | 谁 | 说明 |
+|---|---|---|---|
+| `POST` | `/api/v1/auth/login` | 公开 | 登录 → `data.accessToken` |
+| `GET` | `/api/v1/health` | 公开 | 健康检查（探活不依赖登录） |
+| `GET` | `/api/v1/users/me` | 登录 | 当前用户与角色 |
+| `GET` | `/api/v1/auctions` | 登录 | 拍卖列表（大厅） |
+| `GET` | `/api/v1/auctions/{id}` | 登录 | 快照：`currentPrice`、`leader`、`seq`、`status`、`serverTime`+`endsAt`、`participantCount` |
+| `POST` | `/api/v1/auctions/{id}/join` | 登录 | 加入本场（未加入不能出价） |
+| `GET` | `/api/v1/auctions/{id}/bids` | 登录 | 出价记录（分页） |
+| `POST` | `/api/v1/auctions/{id}/bids` | 登录 | 出价，体 `{requestId, amount}` |
+| `GET` | `/api/v1/auctions/{id}/result` | 登录 | 成交结果；`winnerType`（AI/真人）是隐私，只对赢家本人与管理员返回，其他人恒为 `null` |
+| `POST` | `/api/v1/auth/ws-tickets` | 登录 | 换一次性 WS 票据（体 `{auctionId}` → `ticket` / `wsPort`） |
+| `GET` | `/api/v1/wallets/me` | 登录 | 我的余额与冻结 |
+| `GET` | `/api/v1/wallets/me/ledger` | 登录 | 我的流水（`FREEZE`/`RELEASE`/`SETTLE`） |
+| `GET`/`POST` | `/api/v1/me/agent-tokens` | 登录 | 自助列出/签发 Agent Token（`auctionIds` 省略 = 默认拒绝） |
+| `POST` | `/api/v1/me/agent-tokens/{id}/revoke` | 登录 | 吊销 |
+| `GET`/`POST` | `/api/v1/me/agent-proxies` | 登录 | 托管 AI 代理：列表 / 创建（体 `{auctionId, budgetLimit}`） |
+| `POST` | `/api/v1/me/agent-proxies/{id}/revoke` | 登录 | 撤销（位置释放） |
+| `POST` | `/api/v1/admin/auctions` | 管理员 | 创建（可带 `startsAt` 预告开拍） |
+| `POST` | `/api/v1/admin/auctions/{id}/start` | 管理员 | 开始（种子里那件必须手动开始） |
+| `POST` | `/api/v1/admin/auctions/{id}/cancel` | 管理员 | 取消（释放全部冻结） |
+| `GET` | `/api/v1/admin/auctions/{id}/ledger` | 管理员 | 该场全部资金流水与主体 |
+| `GET`/`POST` | `/api/v1/admin/agent-tokens` | 管理员 | 列出全部 / 签发给指定用户 |
+| `POST` | `/api/v1/admin/agent-tokens/{id}/revoke` | 管理员 | 吊销 |
+| `GET` | `/api/v1/admin/agent-proxies` | 管理员 | 全部托管代理总览（运营台） |
+| `GET` | `/api/v1/agent/auctions/{id}` | Agent | **都在 `:8090` 上**，用 Agent Token 读快照 |
+| `POST` | `/api/v1/agent/auctions/{id}/bids` | Agent | 用 Agent Token 出价（同一套并发与幂等规则） |
+| `GET` | `/api/v1/agent/auctions/{id}/result` | Agent | 读结果 |
+
+</details>
+
+<details>
+<summary><b>点开：WebSocket 怎么接</b></summary>
+
+1. `POST /api/v1/auth/ws-tickets`（体 `{"auctionId":"..."}`）拿一次性票据，响应里有 `ticket` 与 `wsPort`。
+2. 连 `ws://<host>:<wsPort>/?auctionId=...&ticket=...`（单 origin 前端走同源 `/ws`）。
+3. 服务端推的每条消息都带递增 `seq`；客户端**只看 `seq` 是否连续**：缺号就重新拉一次 `GET /auctions/{id}`
+   快照，不做增量猜测（D-28）。票据是一次性的、60 秒有效（`WS_TICKET_TTL_SECONDS`）。
+
+票据走 query 参数、而不是长连接里再鉴权，是为了让鉴权在**连接建立前**完成；
+客户端发来的任何消息一律忽略（服务端只推不收），避免把长连接变成第二套 API。
+
+</details>
+
+## 9. 项目结构
+
+```text
+bid-arena/
+├── src/main/java/com/bidarena/
+│   ├── auction/        # 拍卖：出价、结算、状态机、定时任务（domain/application/adapter/persistence）
+│   ├── identity/       # 账号、登录、JWT、WS 票据
+│   ├── wallet/         # 钱包、冻结/释放/扣款、资金流水
+│   ├── agentaccess/    # Agent Token、Agent API、托管 AI 代理
+│   ├── bootstrap/      # 启动装配：Env（读环境变量）、Services、ScannerBootstrap、MigrateMain
+│   ├── shared/         # 错误码、统一响应封套、业务异常
+│   └── api/            # 出价入口共用的幂等键解析等
+├── src/test/java/com/bidarena/   # 单元 + 真库集成 + architecture/ 架构守卫
+├── frontend/           # Vue 3 + TS + Pinia；src/api/schema.d.ts 由 openapi.yaml 生成
+├── db/migration/V1~V6  # Flyway 迁移（含种子）；db/reset_demo_data.sql 复位演示数据
+├── tools/              # 模拟、压测、变异验证脚本（纯标准库）
+├── docs/               # openapi.yaml、STATUS、TRACEABILITY、DOCS、演示脚本
+└── docker-compose.yml  # mysql / migrate / backend / frontend
 ```
 
-这四个 `BID_ARENA_DEMO_*` 变量 `tools/agent_sim.py` / `tools/auction_sim.py` / `tools/stress_test.py` 也认（默认值就是种子账号），
-换了种子口令时不必去改脚本。`auction_sim.py` 还会用到 `BID_ARENA_DEMO_BIDDER_B_EMAIL` / `..._BIDDER_B_PASSWORD`。
+## 10. 文档地图
 
-测试有效性同样经过变异验证（`python tools/mutation_check.py`，16/16 KILLED），证据汇总见
-[`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) 的「前端（P4）」一节。
+| 文件 | 讲什么 | 什么时候看 |
+|---|---|---|
+| `README.md` | 快速启动、八步教程、部署教材、测试证据 | 你在这里 |
+| [`docs/STATUS.md`](docs/STATUS.md) | 逐项交付清单、当前进度、已知边界 | 想知道“做到哪一步了” |
+| [`DECISIONS.md`](DECISIONS.md) | **42 条决策**：背景、候选方案、为什么选它、代价、验证结果（含未采用方案汇总） | 想知道某个设计为什么长这样 |
+| [`DESIGN.md`](DESIGN.md) | 架构分层、并发与幂等的实现路径、数据模型 | 想改代码 |
+| [`DEBUG_LOG.md`](DEBUG_LOG.md) | **34 条**真实缺陷：现象、根因、修法与守卫 | 想找“这类坑怎么防” |
+| [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) | 原文要求 ↔ 实现 ↔ 测试证据的对照表 | 想核对“哪条要求由哪个用例守着” |
+| [`docs/openapi.yaml`](docs/openapi.yaml) | 接口契约（前端类型的来源） | 写客户端 |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | 提交前自检、密钥与数据规范、录屏分镜、现场核验演练 | 你要提交代码 |
+| [`AI_USAGE.md`](AI_USAGE.md) | AI 参与方式与人工复核点 | 想知道哪些是机写、谁审的 |
+| [`docs/DOCS.md`](docs/DOCS.md) | 文档本身的维护规则（谁说什么、改哪个文件） | 改文档前 |
+
+## 11. 未完成边界（如实声明）
+
+写清楚没做的部分，比含糊过去更省双方时间：
+
+1. **没有自动选主/分片**：多实例下后台扫描器的开关要人工设（[§4.5](#45-多实例部署)），
+   没有租约或选主机制。
+2. **没有注册/找回口令**：账号只来自迁移种子（公开 API 里只有 `login`，删除或新增用户目前要直接写库）。
+   要多人演示就预先在种子里加账号，或用同一个账号在多窗口跑。
+3. **没有支付网关**：钱包是积分账本，不对接真实资金；没有退款流程（取消拍卖是释放冻结，不是退款）。
+4. **没有图片存储**：拍品只有文字描述，没有上传/对象存储/CDN。
+5. **没有管理后台的账号 CRUD**：管理员能做拍卖与授权，不能停用/删除用户。
+6. **端到端脚本的并发是“同账号高并发”**：公开 API 无批量建号手段，所以 20 并发是同一批种子账号打满，
+   不是 20 个真实不同用户；并发正确性的断言（只成交一笔、只冻结一次）不受影响。
+7. **单机部署规模**：压测数字（~410 QPS / P95≈243ms）来自本机单实例 + 单 MySQL，
+   不代表横向扩展后的容量。
+8. **评测机上没跑过 `docker compose up --build`**：那台机器的 Docker daemon 在远程且连不上 Docker Hub
+   （本地镜像源也没有 node/maven 基础镜像），所以按约束只做了“只读 Docker 检查”。
+   镜像构建与整栈启动由 CI 的 `images` job 每次提交真跑一遍（[§6.4](#64-ci五个-job失败含义各自独立)）。
+   受限网络下前端基础镜像可用 `FRONTEND_NODE_IMAGE` / `FRONTEND_NGINX_IMAGE` 替换，
+   后端需改 `Dockerfile` 顶部两行 `FROM`。
+9. **H 组“现场核验”与演示视频**（原文的两项“讲清 / 演示”要求）：稿子已备好照着走就行——
+   录屏分镜在 `CONTRIBUTING.md` §9.1.1，现场讲解与四个 drill、四个临时变更 playbook 在 §9.4。
+   视频与现场演示**不能替代**代码、测试、Git 与文档核验。
+
+## 12. 公开仓库约定
+
+- **分支保护**：`main` 禁止强推与删除；提交历史上每一条都能对上一个 CI run。
+- **密钥不入库、不入镜、不入日志**（`CONTRIBUTING.md` §8.3）：仓库里只有 `.env.example`，`CHANGE_ME` 是占位符；
+  真实口令 / `JWT_SECRET` / Agent Token 明文只存在本地 `.env` 或 CI Secrets；日志里不打印它们。
+  Agent Token 库里只存 sha256 摘要，明文只在签发响应里出现一次；模拟脚本只从 `AUCTION_AGENT_TOKEN` 读，不写进命令历史或仓库。
+- **可复现**：所有“做到了”都配了可跑的命令或测试；文档里每个数字都能用 [§6.1](#61-一键测试命令) 重跑一遍。
+- **提交规范与自检**见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。

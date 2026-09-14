@@ -126,6 +126,8 @@ python tools/arch_mutation_check.py   # 架构规则的反向确认（期望 9/9
 - 密码、`JWT_SECRET`、Agent Token 明文只存在本地 `.env` 或 GitHub Secrets，**永不入库、不入日志、不入录屏**。
 - 模拟脚本通过环境变量 `AUCTION_AGENT_TOKEN` 读取 Token，**不写入命令历史或仓库**。
 - 若发现误提交：立即吊销对应凭据，并在 `DEBUG_LOG.md` 记录真实事件与处理。
+- 内网地址与拓扑也不入库：文档里的示例地址写成 `192.168.x.x`（`DECISIONS.md` D-7 已按此处理，
+  只保留“共享开发机、宿主 3307”这类可复现信息，不写具体网段与网关）。
 
 ### 8.4 提交历史的可读性
 

@@ -23,7 +23,7 @@
 
 P2 追加 31 个用例；P3 再追加 53 个；架构守卫再追加 9 个；P5 再追加 62 个；P6 再追加 38 个
 （尾段博弈时间与成交主体 9 个、Agent 授权自助化 10 个、预告开拍与托管代理 19 个）；部署优化再追加 8 个
-（一次性迁移与 `MIGRATE_ON_START` 开关：`EnvTest` 4 + `MigrationToggleTest` 3 + `ComposeEntrypointTest` 1，D-39；后台扫描器归属开关：`ScannerBootstrapTest` 6，D-40；配置键防漂移：`EnvDocumentationTest` 3，D-41），全量共 **242 个**，运行方式见 [`README.md` 一键验证](../README.md)：
+（一次性迁移与 `MIGRATE_ON_START` 开关：`EnvTest` 4 + `MigrationToggleTest` 3 + `ComposeEntrypointTest` 1，D-39；后台扫描器归属开关：`ScannerBootstrapTest` 6，D-40；配置键防漂移：`EnvDocumentationTest` 3，D-41），全量共 **242 个**，运行方式见 [`README.md` 一键测试命令](../README.md)：
 
 | 测试类 | 数量 | 覆盖 |
 |---|---:|---|
@@ -233,8 +233,8 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 |---|---|---|---|---|---|
 | F1 | 根目录交付 | `.env.example`、Compose、迁移、种子、一键测试、模拟脚本 | 仓库根目录 | `.env.example`/`db/migration`/`tools/agent_sim.py`/`tools/auction_sim.py`/`tools/agent_credentials.py`/`Dockerfile`/`frontend/Dockerfile`/`frontend/nginx.conf`/`docker-compose.yml`（`docker compose config` 与 `nginx -t` 均已校验）；两个模拟脚本已在开发库实跑（44/44、52/52）；D-37 后 compose 含 `mysql/backend/frontend`，浏览器只访问一个端口（`WEB_PORT` 默认 8088），前端 `npm test` 73 绿、`VITE_WS_SAME_ORIGIN=1 npm run build` 通过 | 🟨 两个镜像已配好但未在本机构建（Docker Hub 不可达、本地镜像源无 node/maven/temurin，C-6） |
 | F2 | 演示账号 | 原文建议的三类账号 | `db/migration/V2` 种子（ADMIN + 两个 BIDDER） | `SeededDemoCredentialsTest`（三个口令登录成功、错口令失败）；`HttpApiIntegrationTest` 用同一批账号走完整 HTTP 登录 | ✅ |
-| F3 | README 路径 | 可复制的完整演示路径 | `README.md` | 照做一遍 | ⬜ |
-| F4 | 演示拍品 | 至少一件可立即开始，服务启动不自动倒计时 | 种子数据 | 实测 | ⬜ |
+| F3 | README 路径 | 可复制的完整演示路径 | `README.md`（§2 快速启动 + §3 八步教程） | 照做一遍 | 🟨 八步里除“`docker compose up --build` 起整栈”本身（本机 Docker daemon 连不上 Docker Hub、无基础镜像，C-6；该步改由 CI `images` job 每次真跑）之外，其余命令已拿运行中的真库 + 真后端**原样执行并逐字核对响应**：开始拍卖→`RUNNING`、`join` 回 `{auctionId,userId,joinedAt}`、出价 110 回 `accepted=true seq=3`、**同一 `requestId` 重放回 `IDEMPOTENCY_REPLAY`/`idempotent=true`**、反超后输家 `frozenAmount=0`、同一人加价 `frozen` 只补差额、自助签发 Token 回 `data.token`（长 43）、`agent_sim.py --agent-only --bid` 1/1 且在 `:8090` 上出价成功、到点结算 `reason=TIMEOUT`/`winnerType=AGENT`（他人视角无 `winnerType`）、钱包 `840/0` 与 `1000/0`、流水 `FREEZE→RELEASE→SETTLE`、`reset_demo_data.sql` 回显 `1000/0` 与 `DRAFT`；同轮修掉 5 处失实（D-42） |
+| F4 | 演示拍品 | 至少一件可立即开始，服务启动不自动倒计时 | 种子数据 | 实测 | ✅ `auc_demo_0001` 在迁移种子与 `db/reset_demo_data.sql` 里都是 `status=DRAFT`、`ends_at=NULL`、`starts_at=NULL`（直查库确认）；服务启动后它不会自己进倒计时，必须管理员点「开始」（实测调 `/admin/auctions/{id}/start` 后才变 `RUNNING` 并写下 `ends_at`） |
 
 ## G. 交付文档与历史（原文 第 4 页）
 
@@ -242,7 +242,7 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 |---|---|---|---|---|---|
 | G1 | `AI_USAGE.md` | 分工、本人决定、未采用方案、真实错误、无法独立解释的代码 | `AI_USAGE.md` | 文档评审 | ✅ 已填写 §1~§6（工具/模型可由 `PI_*` 自证；决定引用 D-32/D-33/D-36/D-5；错误引用 DBG-30/DBG-29/DBG-27 + 2 条补充；§6 列 7 类）；文末 3 项作者核对清单 |
 | G2 | `DESIGN.md` | 边界、事务、结算、并发、恢复、丢消息策略 | `DESIGN.md` | 文档评审 | ✅ 已同步 V1~V6、四个上下文的边界与依赖规则、出价/结算事务、恢复与丢消息策略、验证重点 |
-| G3 | `DECISIONS.md` | ≥3 项决策含代价与验证 | `DECISIONS.md` | 文档评审 | ✅ 已写 D-1~D-38（含背景/候选/选择/代价/验证结果），每条均有落地验证证据 |
+| G3 | `DECISIONS.md` | ≥3 项决策含代价与验证 | `DECISIONS.md` | 文档评审 | ✅ 已写 D-1~D-42（含背景/候选/选择/代价/验证结果），每条均有落地验证证据（D-41/D-42 是最后一轮新增：配置键可发现性守卫、README 重写与内网地址匿名化） |
 | G4 | `DEBUG_LOG.md` | ≥2 个真实问题，禁止编造 | `DEBUG_LOG.md` | 与提交/日志对应 | ✅ 已写 34 条（DBG-1~DBG-34） |
 | G5 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 操作 Agent | `AGENT_TOOL_SPEC.md` | 文档评审 | ✅ 已从“骨架”更新为 P5 已实现并验证：操作步骤、提示词模板、失败边界、验收清单已勾选并登记证据（`tools/agent_sim.py` 44/44）；另补充 D-34 自助 Token 与 D-36 托管代理的区别，以及“只想用自己手上的 Token 跑一遍（`--agent-only`）”一节：只读 `AUCTION_AGENT_TOKEN`，没设就退 2 并打印设法（D-38） |
 | G6 | Git 历史 | 有意义、非机械拆分、说明行为变化 | 提交历史 | `git log` | ⬜ |
