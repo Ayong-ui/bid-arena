@@ -183,10 +183,11 @@ curl -s -X POST http://localhost:8080/api/v1/admin/agent-tokens \
        "auctionIds":["1"],"expiresAt":"2030-01-01T00:00:00Z","rateLimitPerMinute":60}'
 
 # 2. Agent 读快照与出价（注意端口是 8090，不是 8080）
+#    变量名沿用原文与 tools/agent_credentials.py：AUCTION_AGENT_TOKEN
 curl -s http://localhost:8090/api/v1/agent/auctions/1 \
-  -H "Authorization: Bearer $AGENT_TOKEN"
+  -H "Authorization: Bearer $AUCTION_AGENT_TOKEN"
 curl -s -X POST http://localhost:8090/api/v1/agent/auctions/1/bids \
-  -H "Authorization: Bearer $AGENT_TOKEN" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $AUCTION_AGENT_TOKEN" -H 'Content-Type: application/json' \
   -d '{"requestId":"bot-0001","amount":1200}'
 
 # 3. 吊销（幂等；不存在或不是自己的均为 404）
