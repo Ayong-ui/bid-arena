@@ -73,14 +73,15 @@
 - 预告开拍（D-35）：`auctions.starts_at`（可空）+ `AuctionStartScheduler` 到点自动开拍；自动开拍复用与管理员手动 `start` 完全相同的用例（不复制状态流转），时间基准取数据库时间（`Db.now`）；快照下发 `startsAt` 供前端预告。
 - 架构守卫：`ArchUnit` 九条分层/跨上下文/无环规则（§2.4）。
 - 前端：Vue 3 + Pinia 接入真实 HTTP/WS，类型从契约生成，金额/倒计时以服务端为准（P4）；P6 增补尾段“博弈时间”提示（依据快照下发的 `finalGameWindowSeconds`）、成交主体 `AI/真人` 徽标与管理员按场次流水面板（D-33），并把“智能体接入”整页换成用户向的“我的 AI 代理”——主路径是**创建托管代理**（选场次 + 预算上限）与在管列表，自助 Token 收进页底“高级”（D-34/D-36）；大厅与运营台显示“预告 mm:ss 后开拍”（用 `store.serverNow`，不用本机时钟，D-35）。
-- 证据：`mvn clean verify` 共 225 个测试全绿（真库集成 85 + 其余领域/身份/结算/事件/WS/Agent 单元 131 + 架构守卫 9）；
+- 证据：`mvn clean verify` 共 232 个测试全绿（真库集成 88 + 其余领域/身份/结算/事件/WS/Agent/迁移开关单元 135 + 架构守卫 9）；
   关键路径另做变异测试反向确认确实会红（架构 9/9、Agent 14/14、前端 16/16）；前端另有 73 单测与 3 个真后端联调。逐类明细见 `docs/STATUS.md`、`docs/TRACEABILITY.md`。
 
 **尚未实现（如实声明）：** 只能靠 HTTP 复现的部分已全部有脚本——`tools/auction_sim.py` 覆盖并发同/邻价、`requestId`
 重试、拒绝场景、最后五秒狙击、断线快照与结算对账（实测 52/52），`tools/agent_sim.py` 覆盖 Agent 侧（44/44）。
 唯一仍需集成测试承担的是“20 个**不同用户**并发”：公开 API 没有注册端点、种子只有 3 个演示账号，
 这部分由真实库上的 `BidConcurrencyTest` 覆盖。另：
-`docker compose up` 的实测（`Dockerfile`/`frontend/Dockerfile`/`frontend/nginx.conf` 与 `backend`/`frontend` 服务已配置，并经 `docker compose config` 与 `nginx -t` 校验，但未在本机构建镜像——Docker Hub 不可达且本地镜像源无 node/maven/temurin）、
+`docker compose up` 是在 CI 上真跑过的（`Dockerfile`/`frontend/Dockerfile`/`frontend/nginx.conf` 与 `mysql`/`migrate`/`backend`/`frontend` 四个服务已配置，`docker compose config` 与 `nginx -t` 本地校验，CI 每次提交 `docker compose build` + `up -d` 并断言镜像有产物、`:8080` 健康、`:8088` 静态页与 `/api` 反代、`migrate` 退 0；本条曾写“未实测”，已按 CI 证据更新）、
+本机（Docker daemon 在远程 VM 且连不上 Docker Hub，本地镜像源无 node/maven/temurin）与评测机上仍不重建容器（C-6）、
 演示录屏与现场核验素材。
 
 ## 2. 组件与职责
@@ -197,6 +198,7 @@ com.bidarena
 - **结算入口只有一条**：定时扫描、启动后补齐、管理员取消全部调用同一个 `SettlementService`。因此进程是否分离**不影响正确性**——正确性来自拍卖行锁与 `settlements` 主键，而不是进程独占。
 - **重启无需恢复内存状态**：扫描器每一轮都回数据库查"已到期且仍为 `RUNNING`"的拍卖，不维护待结算队列；进程重启后第一轮就把没结的补上。
 - 原文要求的“两个实例同时触发结算”场景，由应用内定时器天然构成（每个实例都会扫），用**并发触发测试**即可验证，无需额外部署一个 worker。
+- **迁移不再是每个实例的启动职责**（D-39）：`bootstrap/MigrateMain` 就是上面说的“同一产物里的第二个 main 方法”（`java -cp app.jar:libs/* com.bidarena.MigrateMain`），compose 以一次性 `migrate` 服务跑它，`backend` 等它退出码 0 才启动。应用侧 `MIGRATE_ON_START` 默认仍为 `true`（本机与单实例零改动），部署里显式设 `false` 后应用**只校验**：库落后于代码就拒绝启动。于是多实例/滚动发布既不会在 `flyway_schema_history` 上互相抢锁，也不存在“新实例已改 schema、旧实例还在跑旧代码”的窗口。
 
 若后续确实需要资源隔离，只需增加一个启动入口（同一产物内第二个 main 方法），不动模块结构。
 
@@ -232,7 +234,7 @@ com.bidarena
 
 ## 7. 部署与演进
 
-Docker Compose 启动 MySQL、后端和前端，Flyway 在应用启动时自动迁移并种子演示账号与草稿拍卖（理由见 `DECISIONS.md` 的 D-2 / D-6）。前端容器用 Nginx 托管产物并把 `/api` 与 `/ws` 反代到后端，**浏览器只访问一个 origin**（`WEB_PORT`，默认 8088）：组件间 HTTP 与 WebSocket 都不再需要跨源配置，Agent API 仍保持独立端口 `:8090` 直连以保留隔离（D-37）。MySQL 对外端口由 `.env` 指定，默认避开宿主机已占用的 3306。Redis 暂不作为事实来源；若未来用于广播或限流，故障时均回退 MySQL，不能依赖 Redis 恢复余额或赢家。
+Docker Compose 启动 MySQL、一次性 `migrate` 与后端、前端：迁移由 `migrate`（同一镜像只换 entrypoint）执行 `MigrateMain`，`backend` 等它退出码 0 后再起来并只做校验（`MIGRATE_ON_START=false`，D-39）；种子演示账号与草稿拍卖写在 V1~V6 迁移里（理由见 `DECISIONS.md` 的 D-2 / D-6）。前端容器用 Nginx 托管产物并把 `/api` 与 `/ws` 反代到后端，**浏览器只访问一个 origin**（`WEB_PORT`，默认 8088）：组件间 HTTP 与 WebSocket 都不再需要跨源配置，Agent API 仍保持独立端口 `:8090` 直连以保留隔离（D-37）。MySQL 对外端口由 `.env` 指定，默认避开宿主机已占用的 3306。Redis 暂不作为事实来源；若未来用于广播或限流，故障时均回退 MySQL，不能依赖 Redis 恢复余额或赢家。
 
 推荐按以下顺序实现，保证每一阶段均可独立验证：
 

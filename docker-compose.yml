@@ -1,5 +1,22 @@
 name: bid-arena
 
+# 后端镜像的构建参数。`migrate` 与 `backend` 是**同一个镜像**，只是 entrypoint 不同：
+# 一个跑一次性迁移（MigrateMain）然后退出，一个跑常驻应用。分开服务而不是两个镜像，
+# 是为了让“迁移用的代码”与“跑应用的代码”永远来自同一次构建——两份产物一旦漂移，
+# 迁移与应用认的 schema 就可能不是同一份。
+x-backend-build: &backend-build
+  context: .
+  dockerfile: Dockerfile
+
+# 库连接配置只写一份：migrate 与 backend 必须看到完全相同的值，
+# 否则会出现“迁移迁到 A 库、应用连的是 B 库”这类最难查的故障。
+x-db-env: &db-env
+  # 容器内互连用服务名与容器内端口（3306），而不是宿主机的 MYSQL_PORT。
+  # 连接串的时区/认证插件参数必须与本机一致，否则 TIMESTAMP 读写会漂移（见 .env.example）。
+  DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-bid_arena}?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&allowPublicKeyRetrieval=true&useSSL=false&characterEncoding=UTF-8&rewriteBatchedStatements=true
+  DB_USER: ${MYSQL_USER:-bid_arena}
+  DB_PASSWORD: ${MYSQL_PASSWORD:-bid_arena_dev}
+
 services:
   mysql:
     image: mysql:8.4
@@ -12,9 +29,9 @@ services:
     ports:
       - "${MYSQL_PORT:-3307}:3306"
     volumes:
-      # 迁移由应用内 Flyway 在启动时执行，不使用 docker-entrypoint-initdb.d。
+      # 迁移由独立的 `migrate` 服务执行（entrypoint 指向 MigrateMain），不使用 docker-entrypoint-initdb.d。
       # 原因：远程 Docker（SSH context）下相对路径 bind mount 在守护进程主机解析，
-      # 且 initdb 仅在空数据卷首次启动时执行，无法应用后续版本。详见 DECISIONS.md D-2/D-6。
+      # 且 initdb 仅在空数据卷首次启动时执行，无法应用后续版本。详见 DECISIONS.md D-2/D-6/D-39。
       - mysql_data:/var/lib/mysql
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -22,21 +39,39 @@ services:
       timeout: 5s
       retries: 20
 
+  # 一次性迁移（D-39）：把 schema 变更从应用启动里摘出来，变成一个只跑一次的步骤。
+  # 为什么不让每个 backend 实例自己迁移：多实例启动时会同时去抢 flyway_schema_history 的表锁，
+  # 抢不到的实例直接启动失败；滚动发布时新实例一启动就改 schema，而旧实例还在跑旧代码。
+  # 退出码非 0 时 backend 不会被启动（见下面的 depends_on）。
+  migrate:
+    build: *backend-build
+    image: bid-arena-backend:local
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment: *db-env
+    entrypoint:
+      - java
+      - -XX:MaxRAMPercentage=75
+      - -cp
+      - /app/app.jar:/app/libs/*
+      - com.bidarena.MigrateMain
+
   backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: *backend-build
     image: bid-arena-backend:local
     restart: unless-stopped
     depends_on:
       mysql:
         condition: service_healthy
+      migrate:
+        # 迁移没成功就不启动应用：宁可整栈报错退出，也不要让应用对着一个它不认识的 schema 提供服务。
+        condition: service_completed_successfully
     environment:
-      # 容器内互连用服务名与容器内端口（3306），而不是宿主机的 MYSQL_PORT。
-      # 连接串的时区/认证插件参数必须与本机一致，否则 TIMESTAMP 读写会漂移（见 .env.example）。
-      DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:-bid_arena}?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&allowPublicKeyRetrieval=true&useSSL=false&characterEncoding=UTF-8&rewriteBatchedStatements=true
-      DB_USER: ${MYSQL_USER:-bid_arena}
-      DB_PASSWORD: ${MYSQL_PASSWORD:-bid_arena_dev}
+      <<: *db-env
+      # 迁移已由上面的 migrate 服务完成，本进程只校验（库落后于代码则拒绝启动），见 D-39。
+      MIGRATE_ON_START: "false"
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 必须在 .env 里显式配置（至少 32 字节）}
       SERVER_PORT: "8080"
       AGENT_SERVER_PORT: "8090"

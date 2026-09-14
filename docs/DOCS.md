@@ -104,6 +104,7 @@
 | 领域边界/状态机 | `DOMAIN_DESIGN.md` → `openapi.yaml` enum → 前端类型 → 测试 |
 | 架构或技术选型 | `DESIGN.md` 与 `DECISIONS.md` |
 | 包结构 / 分层依赖规则 | `DESIGN.md` §2.2~§2.4 → `ArchitectureTest` 规则 → `tools/arch_mutation_check.py` 变异验证 → `docs/STATUS.md` |
+| 新增或修改环境变量 / 启动期开关（如 `MIGRATE_ON_START`） | `.env.example`（取值与适用场景）→ `README.md`（本机与 compose 两条路径）→ `DECISIONS.md`（为何不取更宽松或更自动的方案）→ `src/main/java/com/bidarena/bootstrap/Env.java` + 对应测试 → `docs/STATUS.md` §3 |
 | 修复真实 bug | `DEBUG_LOG.md` |
 | 部署编排（`docker-compose.yml` / `Dockerfile` / `frontend/nginx.conf` / CI） | `README.md` 持续集成与未完成边界 → `docs/STATUS.md` §3 → `.github/workflows/ci.yml` |
 | 引入/放弃方案 | `DECISIONS.md` 与 `AI_USAGE.md` |

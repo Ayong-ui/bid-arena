@@ -1,12 +1,12 @@
 # 持续集成：把“我机器上是绿的”变成“任何一台干净机器上都绿”。
 #
-# 为什么需要它：`mvn clean verify` 的 225 个用例跑在**真实 MySQL** 上（原文要求，见
+# 为什么需要它：`mvn clean verify` 的 232 个用例跑在**真实 MySQL** 上（原文要求，见
 # TestDatabase 的类注释），它成立的前提是“有一个独立测试库 + 正确导出的
 # BID_ARENA_TEST_DB_*”。在此之前，这条结论只在作者本机上成立：别人 clone 下来无法复现，
 # 提交时也没有任何东西能自动发现“只在我机器上绿”。
 #
 # 为什么分成 5 个 job 而不是一条 run 到底：失败时的含义不同，读日志的人应该一眼知道该去查什么。
-#   backend  —— 领域/集成/架构 225 个用例（服务容器提供一次性 MySQL 8.4）
+#   backend  —— 领域/集成/架构 232 个用例（服务容器提供一次性 MySQL 8.4）
 #   frontend —— 类型检查 + 73 单测 + 生产构建（含 D-37 的同源 WS 开关）
 #   e2e      —— 真起后端（8080/8090/18080）跑 tools/agent_sim.py 与 tools/auction_sim.py
 #   config   —— Python 脚本可编译、compose 配置可解析、前端 nginx.conf 语法
@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   backend:
-    name: 后端 225 用例（真实 MySQL）
+    name: 后端 232 用例（真实 MySQL）
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -71,8 +71,8 @@ jobs:
         # （与 DBG-19 “永远为真的守卫”同类）。
         run: |
           got=$(grep -ho 'tests="[0-9]*"' target/surefire-reports/*.xml | grep -o '[0-9]*' | awk '{s+=$1} END{print s}')
-          echo "surefire 总用例数：$got（期望 ≥ 225）"
-          test "$got" -ge 225
+          echo "surefire 总用例数：$got（期望 ≥ 232）"
+          test "$got" -ge 232
       - name: 失败时上传 surefire 报告
         if: failure()
         uses: actions/upload-artifact@v4
@@ -142,7 +142,7 @@ jobs:
           cache: maven
       - name: 打包后端并复制运行时依赖
         # 与 Dockerfile 第 1 阶段的构建方式一致：非 fat jar，用 java -cp 启动。
-        # 这里跳过测试：225 个用例已经由 backend job 负责，重复跑只会让反馈变慢。
+        # 这里跳过测试：232 个用例已经由 backend job 负责，重复跑只会让反馈变慢。
         run: |
           mvn -B -q -DskipTests package
           mvn -B -q dependency:copy-dependencies -DincludeScope=runtime -DoutputDirectory=target/libs
@@ -236,6 +236,22 @@ jobs:
           echo "--- 反代 :8088/api ---";        curl -fsS http://localhost:8088/api/v1/health; echo
           echo "--- 前端静态页 :8088 ---";      curl -fsS http://localhost:8088/ | head -c 300; echo
           docker compose ps
+      - name: 断言迁移是一步独立完成的，应用只校验不迁移（D-39）
+        # 光看“容器起来了”不能证明这件事。真正要看的只有两点：一次性迁移服务确实跑过并退了 0，
+        # 而应用侧走的是“只校验”那条路，而不是自己又把迁移跑了一遍。
+        run: |
+          docker compose ps -a
+          # 1) migrate 服务退出码为 0——backend 的启动就挂在这个退出码上（service_completed_successfully）。
+          cid=$(docker compose ps -aq migrate)
+          code=$(docker inspect -f '{{.State.ExitCode}}' "$cid")
+          [ "$code" = "0" ] || { echo "migrate 服务退出码不是 0：$code"; docker compose logs --no-color migrate; exit 1; }
+          # 2) 它确实做了事（不是因为配置漏了而空转）。
+          docker compose logs --no-color migrate | tail -20
+          docker compose logs --no-color migrate | grep -qE "已执行 [0-9]+ 个迁移|数据库结构已是最新版本" \
+            || { echo "migrate 服务没有输出迁移结论"; exit 1; }
+          # 3) 应用侧走的是“只校验”：这行日志只有 MIGRATE_ON_START=false 才会打。
+          docker compose logs --no-color backend | grep -q "MIGRATE_ON_START=false" \
+            || { echo "backend 没有走只校验路径（是不是有人删了 compose 里的 MIGRATE_ON_START？）"; exit 1; }
       - name: 失败时导出容器日志
         if: failure()
         run: docker compose logs --no-color --tail 80

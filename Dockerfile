@@ -23,7 +23,7 @@ COPY pom.xml ./
 RUN mvn -B -q dependency:go-offline
 
 # 再复制源码与迁移。迁移脚本在仓库根目录 db/migration，经 pom 的 <resources> 打进 classpath，
-# 因此必须一并复制，否则容器里的 Flyway 找不到 V1~V4（见 DECISIONS.md D-2）。
+# 因此必须一并复制，否则容器里的 Flyway 找不到 V1~V6（见 DECISIONS.md D-2）。
 COPY src ./src
 COPY db ./db
 RUN mvn -B -q -DskipTests package \

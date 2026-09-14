@@ -1,5 +1,6 @@
 package com.bidarena.bootstrap;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -81,6 +82,28 @@ public final class Env {
         } catch (NumberFormatException e) {
             throw new IllegalStateException("配置 " + key + " 不是合法整数：" + value, e);
         }
+    }
+
+    /**
+     * 读取布尔配置，缺省时用 {@code fallback}。
+     *
+     * <p>只认 {@code true/false/1/0}（不分大小写）。刻意不接受 {@code yes/on/y} 这类写法：
+     * “开关写错一个词，行为保持不变”是部署里最难发现的一类事故——例如把
+     * {@code MIGRATE_ON_START=no} 当成关闭，而它在这里会直接拒绝启动。
+     *
+     * @throws IllegalStateException 值不是上述四种之一
+     */
+    public static boolean boolOr(String key, boolean fallback) {
+        String value = read(key);
+        if (value == null) {
+            return fallback;
+        }
+        return switch (value.trim().toLowerCase(Locale.ROOT)) {
+            case "true", "1" -> true;
+            case "false", "0" -> false;
+            default -> throw new IllegalStateException(
+                    "配置 " + key + " 不是合法布尔值（只接受 true/false/1/0）：" + value);
+        };
     }
 
     /** 仅供测试清除缓存，使同一 JVM 内可以模拟不同的配置。 */

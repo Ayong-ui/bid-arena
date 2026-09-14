@@ -34,7 +34,8 @@ public class Application {
         Application.class,
         args,
         app -> {
-          // 组合根：先建连接池并迁移到最新 schema，失败则终止启动。
+          // 组合根：先建连接池并对齐 schema——默认执行迁移，MIGRATE_ON_START=false 时只校验
+          // （把迁移收敛成一次性步骤时用，见 D-39）；失败则终止启动。
           // 放在监听端口之前，保证对外可服务时表结构一定是确定的。
           var dataSource = DatabaseBootstrap.start();
           Services services = Services.wire(dataSource);
