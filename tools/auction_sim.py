@@ -65,11 +65,18 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from preconditions import ensure_demo_balances  # noqa: E402  （必须在 sys.path 调整之后）
 
-# 与 db/migration/V1、V3 的种子数据一致（README 的演示账号）。
-ADMIN_EMAIL = "admin@example.com"
-ADMIN_PASSWORD = "Admin123456!"
-BIDDER_A = ("bidder_a@example.com", "Test123456!")
-BIDDER_B = ("bidder_b@example.com", "Test123456!")
+# 演示账号：默认值与 db/migration/V1、V3 的种子一致（即 README 里那三个）。
+# 可用与前端联调测试同名的环境变量覆盖（B 的变量额外多一个 _B_），换了种子/口令的人不必改脚本。
+ADMIN_EMAIL = os.environ.get("BID_ARENA_DEMO_ADMIN_EMAIL", "admin@example.com")
+ADMIN_PASSWORD = os.environ.get("BID_ARENA_DEMO_ADMIN_PASSWORD", "Admin123456!")
+BIDDER_A = (
+    os.environ.get("BID_ARENA_DEMO_BIDDER_EMAIL", "bidder_a@example.com"),
+    os.environ.get("BID_ARENA_DEMO_BIDDER_PASSWORD", "Test123456!"),
+)
+BIDDER_B = (
+    os.environ.get("BID_ARENA_DEMO_BIDDER_B_EMAIL", "bidder_b@example.com"),
+    os.environ.get("BID_ARENA_DEMO_BIDDER_B_PASSWORD", "Test123456!"),
+)
 
 # 出价事务的规则常量（对应 BidService.EXTENSION_*），模拟要把它们当契约来断言。
 EXTENSION_WINDOW_SECONDS = 5

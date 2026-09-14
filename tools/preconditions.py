@@ -13,18 +13,26 @@
 """
 from __future__ import annotations
 
+import os
+
 # 单次全链路模拟的最大花费（含 3 次狙击延时阶段）约 200 上下，留一倍余量；
 # 低于这个数就根本跑不完一轮，早失败比跑一半再失败清楚得多。
 MIN_AVAILABLE_BALANCE = 400
+
+# 恢复命令里的容器名/账号/库名从环境变量取，默认值就是本仓库 compose 的默认值；
+# 改过 docker-compose.yml / .env 的人不必来这里改字符串。
+_MYSQL_CONTAINER = os.environ.get("MYSQL_CONTAINER", "bid-arena-mysql-1")
+_MYSQL_USER = os.environ.get("MYSQL_USER", "bid_arena")
+_MYSQL_DATABASE = os.environ.get("MYSQL_DATABASE", "bid_arena")
 
 RESET_HINT = (
     "这些脚本会在真实库里真的花钱：连跑几次就会把种子的 1000 花完，\n"
     "   之后的出价全是 INSUFFICIENT_BALANCE —— 那不是缺陷，而是数据用完了。\n"
     "   恢复种子状态（仅开发库；不修 schema、不动 Flyway 历史）：\n"
-    "     docker exec -i bid-arena-mysql-1 mysql --default-character-set=utf8mb4 \\\n"
-    "       -ubid_arena -p\"$DB_PASSWORD\" bid_arena < db/reset_demo_data.sql\n"
+    "     docker exec -i {container} mysql --default-character-set=utf8mb4 \\\n"
+    "       -u{user} -p\"$DB_PASSWORD\" {database} < db/reset_demo_data.sql\n"
     "   然后用同样的命令重跑本脚本。"
-)
+).format(container=_MYSQL_CONTAINER, user=_MYSQL_USER, database=_MYSQL_DATABASE)
 
 
 def ensure_demo_balances(wallets):

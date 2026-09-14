@@ -54,16 +54,43 @@ public final class TestDatabase {
         return dataSource;
     }
 
+    /**
+     * 取出 JDBC URL 里的库名（忽略查询串与可选的尾斜杠）。取不到时返回空串。
+     */
+    private static String databaseName(String bareUrl) {
+        String trimmed = bareUrl.endsWith("/") ? bareUrl.substring(0, bareUrl.length() - 1) : bareUrl;
+        int slash = trimmed.lastIndexOf('/');
+        return slash < 0 ? "" : trimmed.substring(slash + 1);
+    }
+
+    /**
+     * 开发库名：从 {@code DB_URL} 推导，而不是写死 {@code bid_arena}。
+     *
+     * <p>写死会在别人改了 {@code MYSQL_DATABASE} 后静默失效：测试库指向新开发库时不再被拦下，
+     * 而 {@link #wipe()} 会把开发数据真的清掉。没配 {@code DB_URL}（测试环境常见）时退回
+     * {@code .env.example} 的默认库名。
+     */
+    private static String devDatabaseName() {
+        String devUrl = System.getenv("DB_URL");
+        if (devUrl == null || devUrl.isBlank()) {
+            return "bid_arena";
+        }
+        String name = databaseName(devUrl.split("\\?")[0]);
+        return name.isEmpty() ? "bid_arena" : name;
+    }
+
     private static DataSource create() {
         String url = require("BID_ARENA_TEST_DB_URL");
         String user = require("BID_ARENA_TEST_DB_USER");
         String password = System.getenv("BID_ARENA_TEST_DB_PASSWORD");
 
         String bare = url.split("\\?")[0];
-        if (bare.endsWith("/bid_arena") || bare.endsWith("/bid_arena/")) {
+        String testDb = databaseName(bare);
+        String devDb = devDatabaseName();
+        if (testDb.equals(devDb)) {
             throw new IllegalStateException(
-                    "BID_ARENA_TEST_DB_URL 指向了开发库 bid_arena。测试会清空业务表，"
-                            + "请改用独立库（例如 bid_arena_test）。当前值: " + url);
+                    "BID_ARENA_TEST_DB_URL 指向了开发库 " + devDb + "。测试会清空业务表，"
+                            + "请改用独立库（例如 " + devDb + "_test）。当前值: " + url);
         }
 
         HikariConfig config = new HikariConfig();

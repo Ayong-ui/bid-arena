@@ -49,6 +49,7 @@ mvn clean verify
 已提供最小开发环境骨架：Solon 3.x 后端（含 HTTP 接口与鉴权）、Vue 3 + TypeScript + Vite 前端，以及 MySQL 8 Docker Compose。
 
 ```powershell
+# Windows PowerShell
 Copy-Item .env.example .env
 # 把 .env 里的 CHANGE_ME 换成真实值，然后导出为环境变量（后端进程读环境变量，不读 .env 文件）
 docker compose up -d mysql
@@ -58,8 +59,18 @@ npm install
 npm run dev
 ```
 
+```bash
+# macOS / Linux / Git Bash
+cp .env.example .env
+# 同上：把 CHANGE_ME 换成真实值，并把里面的变量导出到当前 shell
+docker compose up -d mysql
+mvn -q test-compile
+cd frontend && npm install && npm run dev
+```
+
 - 后端已接入 HTTP 接口层（统一下面一节的启动方式），`Application` 启动时会同时启动到期结算扫描。
-- 前端开发地址：`http://localhost:5173`
+- 前端开发地址：`http://localhost:5173`。后端不在 `8080`（或想换 Vite 端口）**不用改源码**：导出
+  `VITE_DEV_API_TARGET` / `VITE_DEV_PORT`，或写在 `frontend/.env.local` 里即可（见 `frontend/vite.config.ts`）。
 - 健康检查：`GET http://localhost:8080/api/v1/health`（公开，无需令牌）
 
 也可以用容器起后端（本机只需要 Docker，不需要装 JDK/Maven）：
@@ -386,6 +397,9 @@ $env:BID_ARENA_DEMO_ADMIN_EMAIL="admin@example.com";     $env:BID_ARENA_DEMO_ADM
 $env:BID_ARENA_DEMO_BIDDER_EMAIL="bidder_a@example.com"; $env:BID_ARENA_DEMO_BIDDER_PASSWORD="Test123456!"
 npm run test:live  # HTTP 契约 2 个 + WebSocket 事件流 1 个
 ```
+
+这四个 `BID_ARENA_DEMO_*` 变量 `tools/agent_sim.py` / `tools/auction_sim.py` / `tools/stress_test.py` 也认（默认值就是种子账号），
+换了种子口令时不必去改脚本。`auction_sim.py` 还会用到 `BID_ARENA_DEMO_BIDDER_B_EMAIL` / `..._BIDDER_B_PASSWORD`。
 
 测试有效性同样经过变异验证（`python tools/mutation_check.py`，16/16 KILLED），证据汇总见
 [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) 的「前端（P4）」一节。
