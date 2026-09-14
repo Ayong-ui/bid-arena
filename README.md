@@ -220,6 +220,18 @@ python tools/agent_sim.py --duration 60     # 拍卖持续秒数（默认 300）
 
 脚本只用 Python 标准库（不需要 `pip install`）；每次运行自己创建拍卖与 Token，结束后默认清理（`--keep` 可保留供手工核对）。
 
+**想用自己的 Token，而不是让脚本自己签发**（评审“把 Token 交给 Agent”的路径）：
+
+```bash
+# 环境变量优先；环境里没有就在终端按提示粘贴（不回显、不进 shell 历史）
+AUCTION_AGENT_TOKEN=<明文> python tools/agent_sim.py --agent-only --auction-id <auctionId> [--bid]
+python tools/agent_sim.py --agent-only --auction-id <auctionId>    # 交互输入 Token
+```
+
+这个模式不建场、不签发 Token，只用你给的凭据读状态 /（`--bid` 时）出一次价 / 读结果，
+因此它复现的是“这枚 Token 的真实权限”，被 403/409/429 拒也算预期。
+`--no-prompt` 关闭交互（CI 用）；`AGENT_API_BASE` / `AUCTION_ID` 可替代同名参数。
+
 ## 托管 AI 代理（前端「AI 代理」页，D-36）
 
 上一条是**给开发者**的 Agent API；普通用户不需要写程序、也不需要开服务器：登录后点侧边栏 **「AI 代理」→「创建 AI 代理」**，选一场**进行中或尚未开拍**的拍卖、填一个**预算上限**，剩下的由服务端完成。

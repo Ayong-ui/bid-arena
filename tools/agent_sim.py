@@ -25,6 +25,10 @@
                               --agent-base http://192.168.1.10:8090/api/v1
     python tools/agent_sim.py --keep          # 跑完不取消拍卖（便于在前端里继续观察）
 
+只带一枚 Token 参与（评审把自己的 Token 交给 Agent 的路径，见 AGENT_TOOL_SPEC.md）：
+    python tools/agent_sim.py --agent-only --auction-id auc_xxx [--bid]
+    # Token 来源：环境变量 AUCTION_AGENT_TOKEN → 没有则提示交互粘贴（不回显、不进 shell 历史）。
+
 退出码：0 = 全部检查通过；1 = 有检查失败；2 = 前置条件不满足（缺数据，不是缺陷）。
 """
 from __future__ import annotations
@@ -42,6 +46,13 @@ from datetime import datetime, timedelta, timezone
 # 与本脚本同目录的公共前置检查（详见 tools/preconditions.py）。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from preconditions import ensure_demo_balances  # noqa: E402  （必须在 sys.path 调整之后）
+from agent_credentials import (  # noqa: E402
+    AGENT_TOKEN_ENV,
+    AUCTION_ID_ENV,
+    resolve_agent_base,
+    resolve_agent_token,
+    resolve_auction_id,
+)
 
 # 演示账号：默认值与 db/migration/V1、V3 的种子一致（即 README 里那三个）。
 # 可用与前端联调测试同名的环境变量覆盖，换了种子/口令的人不必改脚本：
@@ -176,17 +187,101 @@ def issue_read_only(admin, auction_id, user_id, name="agent-sim 只读"):
     return data_of(envelope).get("token")
 
 
+def agent_only_flow(args):
+    """只带一枚 Token 参与一场**已存在**的拍卖（原文里"评审把 Token 交给 Agent"的路径）。
+
+    与全流程模式的边界很明确：
+      - 不登录管理员、不建场、不签发 Token —— 凭据完全来自调用方；
+      - 因此它复现的是**权限与可见性**（这枚 Token 能读/能出价到什么程度），
+        而不是业务正确性（后者由全流程模式与后端集成测试覆盖）。
+
+    Token 来源：AUCTION_AGENT_TOKEN 环境变量 → 没有且可交互则提示粘贴（`--no-prompt` 可关）。
+    明文只停在进程内存里：本函数与 `resolve_agent_token` 都不会把它打出来。
+    """
+    report = Reporter()
+
+    token = resolve_agent_token(prompt=not args.no_prompt)
+    if not token:
+        print("!! 没拿到 Agent Token。任选一种：\n"
+              "     1) 设好环境变量 %s=<明文 Token> 后重跑；\n"
+              "     2) 直接重跑本命令，按提示粘贴（不回显、不进 shell 历史）。\n"
+              "   明文只在创建响应里出现一次；丢了就在前端「我的 AI 代理」页重新签发。"
+              % AGENT_TOKEN_ENV)
+        return 2
+
+    auction_id = resolve_auction_id(args.auction_id, prompt=not args.no_prompt)
+    if not auction_id:
+        print("!! 还需要 auctionId：加 `--auction-id <id>`，或设置环境变量 %s。" % AUCTION_ID_ENV)
+        return 2
+
+    print("== 只带 Token 参与拍卖（不建场、不签发）==")
+    print("   auctionId  = %s" % auction_id)
+    print("   Agent API  = %s" % args.agent_base)
+
+    def call(method, path, **kwargs):
+        """只用这一枚 Token 发请求；连不上时给"后端没起"的结论，而不是裸 traceback。"""
+        try:
+            return http(args.agent_base, method, path, token=token, **kwargs)
+        except urllib.error.URLError as e:
+            print("!! 连不上 Agent API %s：%s" % (args.agent_base, getattr(e, "reason", e)))
+            print("   后端起了吗？先按 README 启动 :8080 与 :8090 再重跑。")
+            raise SystemExit(2)
+
+    status, envelope = call("GET", "/agent/auctions/%s" % auction_id)
+    report.ok("这枚 Token 能读到该场状态", status == 200, envelope)
+    if status == 200:
+        snapshot = data_of(envelope)
+        print("   当前价=%s 最小加价=%s 截止=%s"
+              % (snapshot.get("currentPrice"), snapshot.get("minIncrement"), snapshot.get("endsAt")))
+
+    if args.bid and status == 200:
+        amount = data_of(envelope)["currentPrice"] + data_of(envelope)["minIncrement"]
+        request_id = new_request_id("agent-byo")
+        status, envelope = call("POST", "/agent/auctions/%s/bids" % auction_id,
+                                body={"requestId": request_id, "amount": amount},
+                                headers={"Idempotency-Key": request_id})
+        if status >= 500:
+            report.ok("出价没有触发服务端错误", False, envelope)
+        else:
+            # 403（只读 Token）/ 409（价低了、尾段博弈时间）/ 429（限流）都是**合法结果**：
+            # 本模式的目的是让评审看清这枚 Token 的真实权限，而不是断言它一定能出价。
+            print("   出价 %s -> HTTP %s code=%s（业务拒绝也算预期，不据此判失败）"
+                  % (amount, status, code_of(envelope)))
+
+    status, envelope = call("GET", "/agent/auctions/%s/result" % auction_id)
+    print("   读结果 -> HTTP %s code=%s（未结算时 404 是预期的）" % (status, code_of(envelope)))
+
+    return report.summary()
+
+
 def main():
     parser = argparse.ArgumentParser(description="竞拍 Agent 端到端模拟")
     parser.add_argument("--base", default="http://localhost:8080/api/v1",
                         help="用户/管理员 API 基址")
-    parser.add_argument("--agent-base", default="http://localhost:8090/api/v1",
-                        help="Agent API 基址（独立端口）")
+    parser.add_argument("--agent-base", default=None,
+                        help="Agent API 基址（独立端口）；也可用环境变量 AGENT_API_BASE")
     parser.add_argument("--duration", type=int, default=300, help="拍卖时长（秒），最小 10")
     parser.add_argument("--keep", action="store_true", help="结束时不取消拍卖")
     parser.add_argument("--skip-boundary", action="store_true",
                         help="跳过越权/过期/吊销/限流等边界检查（只跑一遍正向流程）")
+    parser.add_argument("--agent-only", action="store_true",
+                        help="只扮演竞拍 Agent：用你自己的 Token（AUCTION_AGENT_TOKEN 或交互粘贴）"
+                             "对一场已存在的拍卖读状态/出价/读结果，不建场、不签发 Token")
+    parser.add_argument("--auction-id", default=None,
+                        help="配合 --agent-only：要参与的拍卖 ID；也可用环境变量 AUCTION_ID")
+    parser.add_argument("--bid", action="store_true",
+                        help="配合 --agent-only：额外尝试出一次价（当前价 + 最小加价）")
+    parser.add_argument("--no-prompt", action="store_true",
+                        help="禁止交互输入（CI 用）；拿不到 Token 就直接退出")
     args = parser.parse_args()
+
+    args.agent_base = resolve_agent_base(args.agent_base)
+    if args.agent_only:
+        return agent_only_flow(args)
+
+    if os.environ.get(AGENT_TOKEN_ENV, "").strip():
+        print("（提示：检测到 %s；全流程模式会自己签发 Token。若只想用你自己的 Token，"
+              "加 --agent-only --auction-id <id>）" % AGENT_TOKEN_ENV)
 
     admin = Api(args.base)
     human = Api(args.base)

@@ -217,7 +217,7 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `tools/agent_sim.py`（Agent 侧端到端）、`tools/auction_sim.py`（全链路） | `tools/agent_sim.py` **44/44**（真实双端口，开发库）；`tools/auction_sim.py` **52/52**（八个阶段，见上文“全链路模拟（E1）”，复跑前用 `db/reset_demo_data.sql` 恢复余额，DBG-31）；真正“20 个不同 `user_id`”的并发由 `BidConcurrencyTest` 覆盖 | ✅ |
+| E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `tools/agent_sim.py`（Agent 侧端到端）、`tools/auction_sim.py`（全链路） | `tools/agent_sim.py` **44/44**（真实双端口，开发库）；`tools/auction_sim.py` **52/52**（八个阶段，见上文“全链路模拟（E1）”，复跑前用 `db/reset_demo_data.sql` 恢复余额，DBG-31）；真正“20 个不同 `user_id`”的并发由 `BidConcurrencyTest` 覆盖；`tools/agent_credentials.py` 把凭据来源收敛为“显式参数 → `AUCTION_AGENT_TOKEN` → 交互粘贴”（D-38），`agent_sim.py --agent-only --auction-id <id>` 让评审直接用自己的 Token 参与一场已有拍卖 | ✅ |
 | E2 | 自动化测试 | 覆盖原文列出的全部测试点 | 后端 `src/test`；前端 `frontend/src` | 后端 **225/225** 绿（`mvn clean verify`）；前端 **73 单测** + **3 真后端联调** + **16 变异 KILLED**；Agent 侧 71 个用例 + 14/14 变异 KILLED（P5/P6） | ✅ |
 | E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：216 个用例跑在真实 MySQL 8.4 上（HTTP/WS/Agent/托管代理集成测试共用同一个自启动服务实例），另 9 个为纯静态架构守卫 | ✅ |
 | E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend/src/store/arena.test.ts`（Pinia store，31 个用例）+ `frontend/src/realtime/feed.test.ts`（14）+ `frontend/src/api/client.test.ts`（12）+ `frontend/src/realtime/socket.test.ts`（4）等 | 见上文「前端（P4）」：73 单测 + 3 真后端联调 + 16/16 变异；`npm run typecheck` 与 `vite build` 通过（含 `VITE_WS_SAME_ORIGIN=1`） | ✅ |
@@ -226,7 +226,7 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
-| F1 | 根目录交付 | `.env.example`、Compose、迁移、种子、一键测试、模拟脚本 | 仓库根目录 | `.env.example`/`db/migration`/`tools/agent_sim.py`/`tools/auction_sim.py`/`Dockerfile`/`frontend/Dockerfile`/`frontend/nginx.conf`/`docker-compose.yml`（`docker compose config` 与 `nginx -t` 均已校验）；两个模拟脚本已在开发库实跑（44/44、52/52）；D-37 后 compose 含 `mysql/backend/frontend`，浏览器只访问一个端口（`WEB_PORT` 默认 8088），前端 `npm test` 73 绿、`VITE_WS_SAME_ORIGIN=1 npm run build` 通过 | 🟨 两个镜像已配好但未在本机构建（Docker Hub 不可达、本地镜像源无 node/maven/temurin，C-6） |
+| F1 | 根目录交付 | `.env.example`、Compose、迁移、种子、一键测试、模拟脚本 | 仓库根目录 | `.env.example`/`db/migration`/`tools/agent_sim.py`/`tools/auction_sim.py`/`tools/agent_credentials.py`/`Dockerfile`/`frontend/Dockerfile`/`frontend/nginx.conf`/`docker-compose.yml`（`docker compose config` 与 `nginx -t` 均已校验）；两个模拟脚本已在开发库实跑（44/44、52/52）；D-37 后 compose 含 `mysql/backend/frontend`，浏览器只访问一个端口（`WEB_PORT` 默认 8088），前端 `npm test` 73 绿、`VITE_WS_SAME_ORIGIN=1 npm run build` 通过 | 🟨 两个镜像已配好但未在本机构建（Docker Hub 不可达、本地镜像源无 node/maven/temurin，C-6） |
 | F2 | 演示账号 | 原文建议的三类账号 | `db/migration/V2` 种子（ADMIN + 两个 BIDDER） | `SeededDemoCredentialsTest`（三个口令登录成功、错口令失败）；`HttpApiIntegrationTest` 用同一批账号走完整 HTTP 登录 | ✅ |
 | F3 | README 路径 | 可复制的完整演示路径 | `README.md` | 照做一遍 | ⬜ |
 | F4 | 演示拍品 | 至少一件可立即开始，服务启动不自动倒计时 | 种子数据 | 实测 | ⬜ |
@@ -237,9 +237,9 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 |---|---|---|---|---|---|
 | G1 | `AI_USAGE.md` | 分工、本人决定、未采用方案、真实错误、无法独立解释的代码 | `AI_USAGE.md` | 文档评审 | ✅ 已填写 §1~§6（工具/模型可由 `PI_*` 自证；决定引用 D-32/D-33/D-36/D-5；错误引用 DBG-30/DBG-29/DBG-27 + 2 条补充；§6 列 7 类）；文末 3 项作者核对清单 |
 | G2 | `DESIGN.md` | 边界、事务、结算、并发、恢复、丢消息策略 | `DESIGN.md` | 文档评审 | ✅ 已同步 V1~V6、四个上下文的边界与依赖规则、出价/结算事务、恢复与丢消息策略、验证重点 |
-| G3 | `DECISIONS.md` | ≥3 项决策含代价与验证 | `DECISIONS.md` | 文档评审 | ✅ 已写 D-1~D-37（含背景/候选/选择/代价/验证结果），每条均有落地验证证据 |
+| G3 | `DECISIONS.md` | ≥3 项决策含代价与验证 | `DECISIONS.md` | 文档评审 | ✅ 已写 D-1~D-38（含背景/候选/选择/代价/验证结果），每条均有落地验证证据 |
 | G4 | `DEBUG_LOG.md` | ≥2 个真实问题，禁止编造 | `DEBUG_LOG.md` | 与提交/日志对应 | ✅ 已写 31 条（DBG-1~DBG-31） |
-| G5 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 操作 Agent | `AGENT_TOOL_SPEC.md` | 文档评审 | ✅ 已从“骨架”更新为 P5 已实现并验证：操作步骤、提示词模板、失败边界、验收清单已勾选并登记证据（`tools/agent_sim.py` 44/44）；另补充 D-34 自助 Token 与 D-36 托管代理的区别 |
+| G5 | `AGENT_TOOL_SPEC.md` | 评审如何用 Token 操作 Agent | `AGENT_TOOL_SPEC.md` | 文档评审 | ✅ 已从“骨架”更新为 P5 已实现并验证：操作步骤、提示词模板、失败边界、验收清单已勾选并登记证据（`tools/agent_sim.py` 44/44）；另补充 D-34 自助 Token 与 D-36 托管代理的区别，以及“只想用自己手上的 Token 跑一遍（`--agent-only`）”一节：`AUCTION_AGENT_TOKEN` 优先、缺了交互粘贴（D-38） |
 | G6 | Git 历史 | 有意义、非机械拆分、说明行为变化 | 提交历史 | `git log` | ⬜ |
 | G7 | 录屏 | 3~5 分钟覆盖关键流程 | 交付物 | 人工核验 | ⬜ |
 

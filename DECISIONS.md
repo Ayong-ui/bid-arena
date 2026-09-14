@@ -799,6 +799,27 @@
 
 **验证结果**：✅ `docker compose config` 通过（服务 `mysql/backend/frontend`，frontend 发布 `8088:80`，构建参数正确渲染）；`frontend/nginx.conf` 经本地 Nginx 镜像 `nginx -t` 语法与配置检查通过；前端 `npm run typecheck` 通过；`npm test` **73 绿**（新增 `socket.test.ts` 4 例：直连用 `wsPort`、同源用页面 host、HTTPS 升 `wss`、`auctionId` 编码）；`VITE_WS_SAME_ORIGIN=1 npm run build` 成功，产物中 `VITE_WS_SAME_ORIGIN` 已被 Vite 内联（不再残留字面量）。⏳ 未在本机 VM 真正构建镜像：Docker daemon 在远程 VM 上且**连不上 Docker Hub**，本地镜像源也没有 node/maven/temurin，故仍未 `docker compose up`（延续 §8 的 C-6）。
 
+## D-38　竞拍 Agent 凭据（API key）的来源顺序：环境变量优先，缺了交互输入
+
+**背景**：原文要求评审“通过环境变量 `AUCTION_AGENT_TOKEN`”把 Token 交给竞拍 Agent，并“不得写入命令历史或仓库”。但环境变量不总是设好了：评审手上已有 Token、直接跑 `tools/agent_sim.py` 时，若脚本只认环境变量，人就只能先 `export` / `$env:` 进 shell——那恰恰是原文想避免的（容易进命令历史与录屏）。同时“脚本自己签发 Token”的全流程模式必须继续可用，不能让“没配环境变量”变成新的启动门槛。
+
+| 决策点 | 方案 | 说明 | 代价 |
+|---|---|---|---|
+| 来源顺序 | 只读环境变量 | 实现最简 | 没配上就没有入口，用户只能改 shell / 脚本 |
+| 来源顺序 | **显式参数 → `AUCTION_AGENT_TOKEN` → 交互粘贴**（当前实现） | 三种场景都能用：脚本内部、CI、人手 | 多一个模块 `tools/agent_credentials.py` |
+| 输入方式 | 加 `--token <明文>` 参数 | 直观 | 明文进 shell 历史与进程列表，正是原文禁止的 |
+| 输入方式 | **`getpass` 交互粘贴**（当前实现） | 不回显、不进历史 | 需要一个终端；非终端时不能问 |
+| 无凭据时 | 抛异常 / 退 1 | 一眼看出错了 | 把“没配置”报成“检查失败”，与 CI 里的真失败混淆 |
+| 无凭据时 | **返回 None：缺 Token 提示两种配置方式并退 2；缺 auctionId 单独提示**（当前实现） | 与仓库既有退出码约定一致（2 = 前置不满足） | 调用方要各自决定回退（全流程模式回退到自己签发） |
+| 非交互环境 | 也尝试读 stdin | 管道里能喂 Token | `getpass` 在非终端下行为不一，CI 可能卡住 |
+| 非交互环境 | **`stdin` 非终端或 `--no-prompt` 时不问**（当前实现） | CI 不会卡在等输入 | 非交互时无法粘贴，只能用环境变量 |
+
+**最终选择**：新增 `tools/agent_credentials.py`（`resolve_agent_token` / `resolve_auction_id` / `resolve_agent_base`）；`tools/agent_sim.py` 增加 `--agent-only --auction-id <id> [--bid] [--no-prompt]`，只用调用方给的凭据打 `:8090` 读状态/出价/读结果（不建场、不签发），让评审能直接“把自己的 Token 交给 Agent”；不带 `--agent-only` 的全流程模式保持自己签发，并在检测到该环境变量时提示两者区别。
+
+**代价**：多一个模块与几个新参数；脚本要区分凭据来源（自己签发的 Token 与被提供的 Token 不能混用，故用独立的 `--agent-only` 分支，而不是把外部 Token 塞进原流程）。
+
+**验证结果**：✅ `python -m py_compile` 通过；凭据解析 **8 条断言**通过（显式 > 环境、空白视为未设置、非终端不提问、`--no-prompt` 不提问、直接回车不产生空凭据、`AGENT_API_BASE`/`AUCTION_ID` 覆盖与默认值）；`--agent-only` 在无 Token（非交互）时打印两种配置方式并 **退出码 2**，在后端未启动时提示“先启动 :8080/:8090”并 **退出码 2**（不再是裸 traceback）；`--help` 正确渲染新参数。⏳ 有后端时的真实双端口实跑待 VM 开机后补（同 §8 C-6）。
+
 ---
 
 | 方案 | 未采用原因 | 如果重来会怎样 |
@@ -859,6 +880,9 @@
 | 为代理重开一条私有 WebSocket 提醒 | 给一个低频、单用户的事件新增推送契约与可见性规则，收益远小于成本 | 前端轮询读模型并对比前后状态，只提醒一次（D-36） |
 | 让“开拍”始终由运营手动触发 | 运营不在线时用户与托管代理都只能空等，“到点自动进场”无从谈起 | 预告 `starts_at` + 到点扫描开拍（D-35） |
 | 为自动开拍再写一套状态流转 | 开拍规则被复制第二份，手动与自动两条路径迟早分叉 | 扫描器逐条调用已有的 `start(...)`（D-35） |
+| 脚本只读 `AUCTION_AGENT_TOKEN`、没配就没入口 | 评审手上已有 Token 时只能先塞进 shell，明文容易进命令历史与录屏 | 环境变量优先、缺了交互粘贴（D-38） |
+| 给脚本加 `--token <明文>` 参数 | 明文会进 shell 历史与进程列表，正是原文禁止的 | 用 `getpass` 交互输入（D-38） |
+| 非交互（CI）也尝试读 stdin 取 Token | `getpass` 在非终端下行为不一致，CI 可能卡在等输入 | stdin 非终端或 `--no-prompt` 时不提问、退回环境变量（D-38） |
 
 ---
 
