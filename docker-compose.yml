@@ -82,6 +82,11 @@ services:
       AGENT_SERVER_PORT: "8090"
       WS_PORT: "18080"
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      # 后台扫描器归属（D-40）：缺省全部由本实例负责。多实例/滚动发布时可在 .env 里
+      # 关掉非扫描实例上的对应项；必须保证至少一台负责每一项（见 .env.example）。
+      SETTLE_SCHEDULER_ENABLED: ${SETTLE_SCHEDULER_ENABLED:-true}
+      AUCTION_START_SCHEDULER_ENABLED: ${AUCTION_START_SCHEDULER_ENABLED:-true}
+      AGENT_PROXY_SCHEDULER_ENABLED: ${AGENT_PROXY_SCHEDULER_ENABLED:-true}
     ports:
       - "8080:8080"   # 用户/管理员 HTTP（前端经反代访问；保留发布便于本机 curl/E2E 脚本直连）
       - "8090:8090"   # 竞拍 Agent HTTP（独立端口、独立凭据；`/agent-api` 刻意不经反代，见 frontend/nginx.conf）

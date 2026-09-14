@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/Ayong-ui/bid-arena/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Ayong-ui/bid-arena/actions/workflows/ci.yml)
 
-这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V6）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**尾段“博弈时间”强制拒绝 Agent 出价**、**成交主体（AI / 真人）可追溯且仅对赢家与管理员可见**、**预告开拍与到点自动开拍**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及两条 AI 路径：**面向普通用户的「托管 AI 代理」**（选进行中/未开拍的场次 + 设定预算上限，服务端到点自动进场并按最小加价跟价，D-36）与**面向开发者的竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流，用户可在“我的 AI 代理”页**自助签发自己名下的授权**，D-34）；另有**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）和**一份服务器压测脚本**（`tools/stress_test.py`，尾段博弈时间清场 + 持续吞吐）。全量 **233 个测试**（224 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
+这是一个公开管理的 Bid Arena 拍卖系统仓库。当前已完成：应用内 Flyway 迁移（V1~V6）、身份/钱包/资金流水数据模型、**并发安全的出价事务**、**唯一结算与到期自动结算**、**尾段“博弈时间”强制拒绝 Agent 出价**、**成交主体（AI / 真人）可追溯且仅对赢家与管理员可见**、**预告开拍与到点自动开拍**、**HTTP API + JWT 鉴权 + RBAC + 统一响应封套**、**WebSocket 实时事件与 `seq` 缺口恢复**、**可执行的架构守卫**（ArchUnit 九条分层/跨上下文/无环规则）、**前端接入真实 HTTP/WS**，以及两条 AI 路径：**面向普通用户的「托管 AI 代理」**（选进行中/未开拍的场次 + 设定预算上限，服务端到点自动进场并按最小加价跟价，D-36）与**面向开发者的竞拍 Agent API**（独立端口 `:8090`、独立 Token、范围/权限/过期/吊销/限流，用户可在“我的 AI 代理”页**自助签发自己名下的授权**，D-34）；另有**两份端到端模拟脚本**（Agent 侧 `tools/agent_sim.py`、用户侧全链路 `tools/auction_sim.py`）和**一份服务器压测脚本**（`tools/stress_test.py`，尾段博弈时间清场 + 持续吞吐）。三个后台扫描器（到期结算、预告开拍、托管代理）可用 `SETTLE_SCHEDULER_ENABLED` / `AUCTION_START_SCHEDULER_ENABLED` / `AGENT_PROXY_SCHEDULER_ENABLED` 按实例裁剪（D-40，缺省全开）。全量 **239 个测试**（230 个真实 MySQL 集成/领域测试 + 9 条架构规则）。尚未完成：演示录屏与现场核验素材。
 
 实现路线、当前进度与未完成边界见 [docs/STATUS.md](docs/STATUS.md)，文档权威边界见 [docs/DOCS.md](docs/DOCS.md)，技术选型与被否决方案见 [DECISIONS.md](DECISIONS.md)。
 
@@ -52,7 +52,7 @@ mvn clean verify
 
 | job | 跑什么 | 失败意味着 |
 |---|---|---|
-| `backend` | 服务容器提供一次性 MySQL 8.4，`mvn clean verify`（**233/233**），并断言 surefire 总用例数 ≥ 233 | 领域/集成/架构有回归，或者用例数被过滤器悄悄减少 |
+| `backend` | 服务容器提供一次性 MySQL 8.4，`mvn clean verify`（**239/239**），并断言 surefire 总用例数 ≥ 239 | 领域/集成/架构有回归，或者用例数被过滤器悄悄减少 |
 | `frontend` | `npm ci` → `typecheck` → `npm test`（**73**）→ `VITE_WS_SAME_ORIGIN=1 npm run build` | 前端类型、单测或生产构建坏了 |
 | `e2e` | 真起后端（8080/8090/18080）跑 `tools/agent_sim.py`（**44/44**），复位演示数据后再跑 `tools/auction_sim.py`（**52/52**） | 端到端行为与 `docs/openapi.yaml` 描述不一致 |
 | `config` | `py_compile` 全部工具脚本、`docker compose config -q`、用 `nginx -t` 校验 `frontend/nginx.conf` | 部署编排或工具脚本语法坏了 |
@@ -266,7 +266,7 @@ python tools/agent_sim.py --agent-only --auction-id <auctionId> [--bid]
 - **尾段“博弈时间”没有例外**：托管代理同样是 Agent，最后 20 秒内同样被 `HUMAN_ONLY_PERIOD` 拒；这是产品规则（D-32），不是故障。
 - **提醒走轮询**（仅在“AI 代理”页每 3 秒拉一次列表并对比前后状态），不新增私有 WebSocket 事件。
 
-相关后台配置（都可在 `.env` 里覆盖，见 [`.env.example`](.env.example)）：`AGENT_PROXY_TICK_INTERVAL_MS`（默认 500）、`AGENT_PROXY_BATCH_SIZE`（默认 50）、`AUCTION_START_SCAN_INTERVAL_MS`（默认 1000）、`AUCTION_START_BATCH_SIZE`（默认 50）。
+相关后台配置（都可在 `.env` 里覆盖，见 [`.env.example`](.env.example)）：`AGENT_PROXY_TICK_INTERVAL_MS`（默认 500）、`AGENT_PROXY_BATCH_SIZE`（默认 50）、`AUCTION_START_SCAN_INTERVAL_MS`（默认 1000）、`AUCTION_START_BATCH_SIZE`（默认 50）。三个扫描器是否由**本实例**负责另由 `SETTLE_SCHEDULER_ENABLED` / `AUCTION_START_SCHEDULER_ENABLED` / `AGENT_PROXY_SCHEDULER_ENABLED` 决定（都默认 `true`，D-40）。
 
 ```bash
 # 等价的最小 curl（先登录拿 $TOKEN）
@@ -381,9 +381,12 @@ docker exec -i bid-arena-mysql-1 mysql --default-character-set=utf8mb4 \
   编排第一次真的跑起来是在 CI 上。仍未做的：浏览器里的人工核对，以及在评测机上 `docker compose up`
   （本机 Docker daemon 在远程 VM 且连不上 Docker Hub，本地镜像源也没有 node/maven/temurin 基础镜像，
   已用 `ARG` 暴露基础镜像供受限环境替换；按仓库约定不在评测机上重建容器）。
-- **多实例/滚动发布所需的“扫描器开关”仍未做**。D-39 已经把 schema 变更收敛成一次性步骤，但三个扫描器
-  （结算、开拍、托管代理）仍会在每个实例上无条件启动。当前编排只有**一个** `backend`，所以这不是眼下的问题；
-  真要多实例，缺的不是一个布尔开关，而是“哪个实例负责扫描”的职责划分，所以刻意留到真有第二实例时再设计。
+- **多实例/滚动发布的“扫描器开关”已补上，但真正的自动分工仍未做（D-40）**。三个后台扫描器
+  （到期结算、预告开拍、托管代理）现在各有一个 `*_SCHEDULER_ENABLED` 开关（缺省全开），
+  部署者可以让某些实例只对外服务、不承担后台任务。它**只**表达“本实例不跑”，
+  不表达“别人一定在跑”——真要多实例，缺的仍是“哪个实例负责扫描”的自动分工
+  （选主/分片；Redis 分布式锁一类方案已被明确拒绝），所以关掉开关时必须由部署者保证
+  还有实例在跑对应任务，否则相关到期动作会静默停摆（启动日志会以 WARN 提醒）。
 - **[AI_USAGE.md](AI_USAGE.md) 已填写**：工具与模型（`pi` + `deepseek-v4-flash`）、各模块人机分工与口径、
   四项本人设计决定、六项未采用方案、四项真实错误，以及七类目前仍不能独立解释/修改的代码；
   文末留三项「作者核对清单」（模型列表完整性、比例口径、决定归属）。

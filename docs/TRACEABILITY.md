@@ -23,7 +23,7 @@
 
 P2 追加 31 个用例；P3 再追加 53 个；架构守卫再追加 9 个；P5 再追加 62 个；P6 再追加 38 个
 （尾段博弈时间与成交主体 9 个、Agent 授权自助化 10 个、预告开拍与托管代理 19 个）；部署优化再追加 8 个
-（一次性迁移与 `MIGRATE_ON_START` 开关：`EnvTest` 4 + `MigrationToggleTest` 3 + `ComposeEntrypointTest` 1，D-39），全量共 **233 个**，运行方式见 [`README.md` 一键验证](../README.md)：
+（一次性迁移与 `MIGRATE_ON_START` 开关：`EnvTest` 4 + `MigrationToggleTest` 3 + `ComposeEntrypointTest` 1，D-39；后台扫描器归属开关：`ScannerBootstrapTest` 6，D-40），全量共 **239 个**，运行方式见 [`README.md` 一键验证](../README.md)：
 
 | 测试类 | 数量 | 覆盖 |
 |---|---:|---|
@@ -222,7 +222,7 @@ Agent 凭据（D1）、模拟脚本与 E2E（E1）、前端（E4）与架构包�
 | 编号 | 原文出处 | 要求摘要 | 实现位置 | 验证证据 | 状态 |
 |---|---|---|---|---|---|
 | E1 | 模拟脚本 | 20 用户、并发同/邻价、`requestId` 重试、拒绝场景、最后五秒狙击、断线快照、结束核对 | `tools/agent_sim.py`（Agent 侧端到端）、`tools/auction_sim.py`（全链路） | `tools/agent_sim.py` **44/44**（真实双端口，开发库）；`tools/auction_sim.py` **52/52**（八个阶段，见上文“全链路模拟（E1）”，复跑前用 `db/reset_demo_data.sql` 恢复余额，DBG-31）；真正“20 个不同 `user_id`”的并发由 `BidConcurrencyTest` 覆盖；`tools/agent_credentials.py` 把凭据来源收敛为“显式参数 → `AUCTION_AGENT_TOKEN`”（只读变量、不做交互输入，D-38），`agent_sim.py --agent-only --auction-id <id>` 让评审直接用自己的 Token 参与一场已有拍卖 | ✅ |
-| E2 | 自动化测试 | 覆盖原文列出的全部测试点 | 后端 `src/test`；前端 `frontend/src` | 后端 **233/233** 绿（`mvn clean verify`）；前端 **73 单测** + **3 真后端联调** + **16 变异 KILLED**；Agent 侧 71 个用例 + 14/14 变异 KILLED（P5/P6） | ✅ |
+| E2 | 自动化测试 | 覆盖原文列出的全部测试点 | 后端 `src/test`；前端 `frontend/src` | 后端 **239/239** 绿（`mvn clean verify`；含 D-40 的扫描器归属开关 6 例）；前端 **73 单测** + **3 真后端联调** + **16 变异 KILLED**；Agent 侧 71 个用例 + 14/14 变异 KILLED（P5/P6） | ✅ |
 | E3 | 真实环境 | 并发与结算测试使用真实 MySQL/容器 | 独立测试库 `bid_arena_test`（可用环境变量指定） | 已实测：219 个用例跑在真实 MySQL 8.4 上（HTTP/WS/Agent/托管代理集成测试共用同一个自启动服务实例，含 D-39 的迁移开关 3 例），另 9 个为纯静态架构守卫、5 个为不连库的纯单元（`EnvTest` 4 + `ComposeEntrypointTest` 1） | ✅ |
 | E4 | 前端测试 | 至少一个 Vue Store 或核心组件测试 | `frontend/src/store/arena.test.ts`（Pinia store，31 个用例）+ `frontend/src/realtime/feed.test.ts`（14）+ `frontend/src/api/client.test.ts`（12）+ `frontend/src/realtime/socket.test.ts`（4）等 | 见上文「前端（P4）」：73 单测 + 3 真后端联调 + 16/16 变异；`npm run typecheck` 与 `vite build` 通过（含 `VITE_WS_SAME_ORIGIN=1`） | ✅ |
 

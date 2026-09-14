@@ -2,7 +2,6 @@ package com.bidarena;
 
 import com.bidarena.agentaccess.adapter.AgentAuthFilter;
 import com.bidarena.agentaccess.application.AgentAuctionService;
-import com.bidarena.agentaccess.application.AgentProxyScheduler;
 import com.bidarena.agentaccess.application.AgentProxyService;
 import com.bidarena.agentaccess.application.AgentTokenService;
 import com.bidarena.api.ApiExceptionFilter;
@@ -11,12 +10,11 @@ import com.bidarena.api.CorsFilter;
 import com.bidarena.auction.adapter.AuctionSocketHandler;
 import com.bidarena.auction.application.AuctionCommandService;
 import com.bidarena.auction.application.AuctionQueryService;
-import com.bidarena.auction.application.AuctionStartScheduler;
 import com.bidarena.auction.application.BidService;
-import com.bidarena.auction.application.SettlementScheduler;
 import com.bidarena.bootstrap.AgentApiPlugin;
 import com.bidarena.bootstrap.DatabaseBootstrap;
 import com.bidarena.bootstrap.Env;
+import com.bidarena.bootstrap.ScannerBootstrap;
 import com.bidarena.bootstrap.Services;
 import com.bidarena.identity.application.IdentityService;
 import com.bidarena.identity.application.WsTicketService;
@@ -69,36 +67,14 @@ public class Application {
           //    它必须在 AuthFilter 之后、业务之前：前面的 AuthFilter 已跳过 Agent 前缀。
           app.filter(3, new AgentAuthFilter(services.agentTokens));
 
-          // 到期结算必须由服务端自己完成，不依赖任何客户端调用。
-          // 这里只启动驱动器；它每轮都回数据库查"到期未结算"，因此重启/多实例都安全。
-          SettlementScheduler scheduler =
-              new SettlementScheduler(
-                  services.settlement,
-                  Env.intOr("SETTLE_SCAN_INTERVAL_MS", 1000),
-                  Env.intOr("SETTLE_BATCH_SIZE", 50));
-          scheduler.start();
-          Runtime.getRuntime().addShutdownHook(new Thread(scheduler::stop, "settlement-shutdown"));
-
-          // —— 预告开拍（D-35）——
-          // 与结算扫描同理：服务端自己完成，不依赖任何客户端调用。到点的 DRAFT 变 RUNNING，
-          // 于是定了预告时间的拍卖不需要管理员在线也会开拍。
-          AuctionStartScheduler startScheduler =
-              new AuctionStartScheduler(
-                  services.auctionCommands,
-                  Env.intOr("AUCTION_START_SCAN_INTERVAL_MS", 1000),
-                  Env.intOr("AUCTION_START_BATCH_SIZE", 50));
-          startScheduler.start();
-          Runtime.getRuntime().addShutdownHook(new Thread(startScheduler::stop, "auction-start-shutdown"));
-
-          // —— 托管 AI 代理（D-36）——
-          // 间隔默认 500ms：代理靠"别人加了价"驱动，这个值是用户感知到的 AI 反应速度。
-          AgentProxyScheduler proxyScheduler =
-              new AgentProxyScheduler(
-                  services.agentProxies,
-                  Env.intOr("AGENT_PROXY_TICK_INTERVAL_MS", 500),
-                  Env.intOr("AGENT_PROXY_BATCH_SIZE", 50));
-          proxyScheduler.start();
-          Runtime.getRuntime().addShutdownHook(new Thread(proxyScheduler::stop, "agent-proxy-shutdown"));
+          // —— 后台扫描器（结算 D-7、预告开拍 D-35、托管代理 D-36）——
+          // 三个扫描器都必须由服务端自己完成，不依赖任何客户端调用；它们每轮都回数据库
+          // 查"该做什么"，因此重启/多实例都安全。
+          // 哪个实例负责哪一项由开关决定（D-40），缺省全开：单实例部署行为不变。
+          // 停机钩子由 ScannerBootstrap 一并返回，避免这里出现三段几乎一样的登记代码
+          // （历史上正是这种复制粘贴让"新加一个扫描器却忘了加钩子"成为可能的缺陷）。
+          ScannerBootstrap.Started scanners = ScannerBootstrap.start(services);
+          Runtime.getRuntime().addShutdownHook(new Thread(scanners::stopAll, "scanners-shutdown"));
 
           app.enableWebSocket(true);
 
